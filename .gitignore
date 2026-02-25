@@ -20,6 +20,7 @@ sessions/
 out/
 src/media/
 media/
+src/celerybeat-schedule
 
 # OS / editor
 .DS_Store
@@ -29,6 +30,7 @@ Thumbs.db
 
 # Temp probes / local test files
 tmp_*.py
+r2_test.py
 out*.txt
 scan.txt
 rx.txt
