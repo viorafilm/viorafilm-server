@@ -1,31 +1,38 @@
-{% extends "dashboard/base.html" %}
+﻿{% extends "dashboard/base.html" %}
 {% block content %}
-<h3 class="mb-3">매출 현황</h3>
-<div class="row g-3">
+<div class="row g-3 mb-3">
   <div class="col-md-4">
-    <div class="card">
+    <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted">오늘 매출</div>
-        <div class="fs-4 fw-bold">KRW {{ today_total|default:0 }}</div>
+        <div class="text-muted small">오늘 매출</div>
+        <div class="fs-3 fw-bold">KRW {{ today_total|default:0 }}</div>
       </div>
     </div>
   </div>
   <div class="col-md-4">
-    <div class="card">
+    <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted">이번달 매출</div>
-        <div class="fs-4 fw-bold">KRW {{ month_total|default:0 }}</div>
+        <div class="text-muted small">이번 달 매출</div>
+        <div class="fs-3 fw-bold">KRW {{ month_total|default:0 }}</div>
       </div>
     </div>
   </div>
   <div class="col-md-4">
-    <div class="card">
+    <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted">총 거래 수</div>
-        <div class="fs-4 fw-bold">{{ sales_count|default:0 }}</div>
+        <div class="text-muted small">총 거래 건수</div>
+        <div class="fs-3 fw-bold">{{ sales_count|default:0 }}</div>
       </div>
     </div>
   </div>
 </div>
-{% endblock %}
 
+<div class="card card-soft">
+  <div class="card-body d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary btn-sm" href="/dashboard/devices">장치 상태 보기</a>
+    <a class="btn btn-outline-primary btn-sm" href="/dashboard/sales">매출 내역 보기</a>
+    <a class="btn btn-outline-primary btn-sm" href="/dashboard/coupons">쿠폰 관리 보기</a>
+    <a class="btn btn-outline-primary btn-sm" href="/dashboard/photos">사진 관리 보기</a>
+  </div>
+</div>
+{% endblock %}
