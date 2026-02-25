@@ -24,5 +24,7 @@ urlpatterns = [
     path("", include("mediahub.urls")),
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Serve static/media directly from Django.
+# This keeps admin/docs CSS working even when Nginx static alias is not configured yet.
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
