@@ -1,0 +1,34 @@
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Local runtime data
+logs/
+sessions/
+out/
+src/media/
+media/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temp probes / local test files
+tmp_*.py
+out*.txt
+scan.txt
+rx.txt

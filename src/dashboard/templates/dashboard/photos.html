@@ -1,0 +1,63 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="mb-0">사진 관리</h3>
+  <form class="d-flex gap-2" method="get">
+    <input type="text" class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="token 검색">
+    <button class="btn btn-sm btn-outline-primary" type="submit">검색</button>
+    {% if q %}
+      <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_photos' %}">초기화</a>
+    {% endif %}
+  </form>
+</div>
+<p class="text-muted small">
+  {% if q %}검색 결과{% else %}최근 7일 기준{% endif %}
+</p>
+
+<div class="table-responsive">
+  <table class="table table-striped table-sm align-middle">
+    <thead>
+      <tr>
+        <th>생성시간</th>
+        <th>장치</th>
+        <th>Token</th>
+        <th>상태</th>
+        <th>만료</th>
+        <th>조회수</th>
+        <th>미리보기</th>
+        <th>다운로드 링크</th>
+        <th>공유 링크</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr class="{% if row.is_expired %}table-secondary text-muted{% endif %}">
+        <td>{{ row.session.created_at }}</td>
+        <td>{{ row.session.device.device_code }}</td>
+        <td><code>{{ row.session.token }}</code></td>
+        <td>{% if row.is_expired %}EXPIRED{% else %}ACTIVE{% endif %}</td>
+        <td>{{ row.session.expires_at }}</td>
+        <td>{{ row.session.view_count }}</td>
+        <td>
+          {% if row.print_url %}<img src="{{ row.print_url }}" alt="print" width="120" class="me-2 mb-1 border rounded">{% endif %}
+          {% if row.gif_url %}<img src="{{ row.gif_url }}" alt="gif" width="120" class="mb-1 border rounded">{% endif %}
+          {% if not row.print_url and not row.gif_url %}<span class="text-muted">-</span>{% endif %}
+        </td>
+        <td>
+          {% if row.print_url %}<a href="{{ row.print_url }}" target="_blank">print</a><br>{% endif %}
+          {% if row.frame_url %}<a href="{{ row.frame_url }}" target="_blank">frame</a><br>{% endif %}
+          {% if row.gif_url %}<a href="{{ row.gif_url }}" target="_blank">gif</a><br>{% endif %}
+          {% if row.video_url %}<a href="{{ row.video_url }}" target="_blank">video</a><br>{% endif %}
+          {% for u in row.original_urls %}
+            <a href="{{ u }}" target="_blank">original {{ forloop.counter }}</a><br>
+          {% endfor %}
+        </td>
+        <td><a href="{{ row.share_url }}" target="_blank">open</a></td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="9" class="text-center text-muted">No share sessions</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

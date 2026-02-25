@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photoharu Share</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; line-height: 1.5; }
+    .meta { color: #444; margin-bottom: 18px; }
+    .asset-list { padding-left: 18px; }
+    .asset-list li { margin: 8px 0; }
+    .empty { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Photo Share</h1>
+  <div class="meta">
+    <div>Token: {{ token }}</div>
+    <div>Device: {{ device_code }}</div>
+    <div>Created: {{ created_at }}</div>
+    <div>Expires: {{ expires_at }}</div>
+  </div>
+
+  {% if assets %}
+    <ul class="asset-list">
+      {% for item in assets %}
+        <li><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.name }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">준비된 다운로드 파일이 없습니다.</p>
+  {% endif %}
+</body>
+</html>
+

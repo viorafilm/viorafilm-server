@@ -1,0 +1,80 @@
+services:
+  db:
+    image: postgres:16
+    container_name: photoharu_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-photoharu}
+      POSTGRES_USER: ${POSTGRES_USER:-photoharu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-photoharu_pw}
+    ports:
+      - "5432:5432"
+    volumes:
+      - photoharu_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-photoharu} -d ${POSTGRES_DB:-photoharu}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: photoharu_redis
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: photoharu_web
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - photoharu_media:/app/src/media
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: photoharu_celery_worker
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - photoharu_media:/app/src/media
+    command: ["celery", "-A", "config", "worker", "-l", "info"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: photoharu_celery_beat
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - photoharu_media:/app/src/media
+    command: ["celery", "-A", "config", "beat", "-l", "info"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  photoharu_pgdata:
+  photoharu_media:
+

@@ -1,0 +1,212 @@
+{
+  "start": [
+    {
+      "id": "start_to_frame_select",
+      "rect": [0, 0, 1920, 1080],
+      "action": "goto:frame_select"
+    }
+  ],
+  "frame_select": [
+    {
+      "id": "layout_2641",
+      "rect": [70, 220, 320, 640],
+      "action": "select_layout:2641"
+    },
+    {
+      "id": "layout_6241",
+      "rect": [430, 220, 320, 640],
+      "action": "select_layout:6241"
+    },
+    {
+      "id": "layout_4641",
+      "rect": [790, 220, 320, 640],
+      "action": "select_layout:4641"
+    },
+    {
+      "id": "layout_4661",
+      "rect": [1150, 220, 320, 640],
+      "action": "select_layout:4661"
+    },
+    {
+      "id": "layout_4681",
+      "rect": [1510, 220, 320, 640],
+      "action": "select_layout:4681"
+    }
+  ],
+  "how_many_prints": [
+    {
+      "id": "how_many_minus",
+      "rect": [610, 490, 170, 170],
+      "action": "how_many:minus"
+    },
+    {
+      "id": "how_many_plus",
+      "rect": [1138, 490, 170, 170],
+      "action": "how_many:plus"
+    },
+    {
+      "id": "how_many_back",
+      "rect": [50, 910, 160, 160],
+      "action": "goto:frame_select"
+    },
+    {
+      "id": "how_many_next",
+      "rect": [1720, 910, 160, 160],
+      "action": "goto:payment_method"
+    }
+  ],
+  "payment_method": [
+    {
+      "id": "pay_select_cash",
+      "rect": [0, 0, 1, 1],
+      "action": "payment:cash"
+    },
+    {
+      "id": "pay_select_card",
+      "rect": [0, 0, 1, 1],
+      "action": "payment:card"
+    },
+    {
+      "id": "pay_select_coupon",
+      "rect": [0, 0, 1, 1],
+      "action": "payment:coupon"
+    },
+    {
+      "id": "pay_back",
+      "rect": [40, 900, 220, 220],
+      "action": "goto:how_many_prints"
+    },
+    {
+      "id": "pay_next",
+      "rect": [1740, 910, 180, 160],
+      "action": "payment:next"
+    }
+  ],
+  "payment_complete_success": [
+    {
+      "id": "payment_success_tap",
+      "rect": [0, 0, 1920, 1080],
+      "action": "payment_complete:next"
+    }
+  ],
+  "payment_complete_failed": [
+    {
+      "id": "payment_failed_restart",
+      "rect": [0, 0, 1920, 1080],
+      "action": "goto:start"
+    }
+  ],
+  "camera": [
+    {
+      "id": "shutter_debug_full",
+      "rect": [0, 0, 1920, 1080],
+      "action": "camera:shutter"
+    },
+    {
+      "id": "camera_shutter",
+      "rect": [830, 900, 260, 140],
+      "action": "camera:shutter"
+    },
+    {
+      "id": "camera_back",
+      "rect": [60, 930, 280, 110],
+      "action": "goto:frame_select"
+    },
+    {
+      "id": "camera_next",
+      "rect": [1620, 930, 220, 110],
+      "action": "camera:next"
+    }
+  ],
+  "select_photo": [
+    {
+      "id": "select_photo_back",
+      "rect": [60, 930, 280, 110],
+      "action": "select_photo:back"
+    },
+    {
+      "id": "select_photo_next",
+      "rect": [1580, 930, 280, 110],
+      "action": "select_photo:next"
+    }
+  ],
+  "select_design": [
+    {
+      "id": "select_design_back",
+      "rect": [60, 930, 280, 110],
+      "action": "select_design:back"
+    },
+    {
+      "id": "select_design_prev_frame",
+      "rect": [1255, 732, 129, 123],
+      "action": "select_design:prev_frame"
+    },
+    {
+      "id": "select_design_next_frame",
+      "rect": [1385, 732, 131, 123],
+      "action": "select_design:next_frame"
+    },
+    {
+      "id": "select_design_color",
+      "rect": [1291, 340, 79, 79],
+      "action": "select_design:color"
+    },
+    {
+      "id": "select_design_gray",
+      "rect": [1410, 340, 79, 79],
+      "action": "select_design:gray"
+    },
+    {
+      "id": "select_design_flip_toggle",
+      "rect": [1350, 580, 79, 79],
+      "action": "select_design:flip_toggle"
+    },
+    {
+      "id": "select_design_qr_toggle",
+      "rect": [1183, 945, 58, 58],
+      "action": "select_design:qr_toggle"
+    },
+    {
+      "id": "design_print",
+      "rect": [1680, 890, 240, 240],
+      "action": "select_design:confirm"
+    }
+  ],
+  "admin": [],
+  "preview": [
+    {
+      "id": "preview_back",
+      "rect": [60, 930, 280, 110],
+      "action": "preview:back"
+    },
+    {
+      "id": "preview_confirm",
+      "rect": [1580, 930, 280, 110],
+      "action": "preview:confirm"
+    }
+  ],
+  "after_camera_loading": [],
+  "loading": [],
+  "qr_generating": [],
+  "qr_code": [
+    {
+      "id": "qr_to_thankyou",
+      "rect": [0, 0, 1920, 1080],
+      "action": "goto:thank_you"
+    }
+  ],
+  "thank_you": [
+    {
+      "id": "thank_you_tap",
+      "rect": [0, 0, 1920, 1080],
+      "action": "thank_you:back"
+    }
+  ],
+  "error": [
+    {
+      "id": "error_restart",
+      "rect": [0, 0, 1920, 1080],
+      "action": "goto:start"
+    }
+  ]
+}

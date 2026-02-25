@@ -1,0 +1,35 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+<h3 class="mb-3">장치 관리</h3>
+<div class="table-responsive">
+  <table class="table table-striped table-sm align-middle">
+    <thead>
+      <tr>
+        <th>Device</th>
+        <th>Org/Branch</th>
+        <th>Last Seen</th>
+        <th>Online</th>
+        <th>Internet</th>
+        <th>Camera</th>
+        <th>Printer</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.device.device_code }}</td>
+        <td>{{ row.device.org.code }} / {{ row.device.branch.code }}</td>
+        <td>{{ row.device.last_seen_at|default:"-" }}</td>
+        <td>{% if row.online %}<span class="badge text-bg-success">ONLINE</span>{% else %}<span class="badge text-bg-danger">OFFLINE</span>{% endif %}</td>
+        <td>{{ row.internet_ok }}</td>
+        <td>{{ row.camera_ok }}</td>
+        <td>{{ row.printer_ok }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">No devices</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+

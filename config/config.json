@@ -1,0 +1,133 @@
+{
+  "default_printer_ds620": "DP-DS620",
+  "default_printer_rx1hs": "",
+  "printer_fallback_hint": "If RX1HS printer is not configured or unavailable, fallback to default_printer_ds620.",
+  "canon_edsdk_dll_path": "C:\\Program Files (x86)\\Canon\\EOS Network Setting Tool\\runtimes\\windows\\native\\EDSDK.dll",
+  "camera_backend": "edsdk",
+  "admin": {
+    "test_mode": false,
+    "camera_backend": "auto",
+    "allow_dummy_when_camera_fail": true,
+    "countdown_seconds": 1,
+    "capture_slots_override": "auto",
+    "debug_fullscreen_shutter": false,
+    "print_dry_run": true,
+    "upload_dry_run": true,
+    "qr_enabled": true
+  },
+  "payment_methods": {
+    "cash": true,
+    "card": true,
+    "coupon": true
+  },
+  "modes": {
+    "celebrity_enabled": true,
+    "ai_enabled": false
+  },
+  "celebrity": {
+    "templates_dir": "D:/photoharu/assets/celebrity_templates",
+    "layout_id": "2461"
+  },
+  "layouts": {
+    "strip_2x6": [
+      "2462",
+      "2641",
+      "6241"
+    ]
+  },
+  "bill_acceptor": {
+    "enabled": true,
+    "profile": "KR_ONEPLUS_RS232_V1_7",
+    "port": "COM3",
+    "baud": 9600,
+    "denoms": {
+      "1000": true,
+      "5000": true,
+      "10000": true,
+      "50000": true
+    }
+  },
+  "printing": {
+    "enabled": true,
+    "dry_run": false,
+    "printers": {
+      "DS620": {
+        "win_name": "DP-DS620",
+        "form_4x6": "4x6",
+        "form_2x6": "20x30in"
+      },
+      "DS620_STRIP": {
+        "win_name": "",
+        "form_4x6": "4x6",
+        "form_2x6": ""
+      },
+      "RX1HS": {
+        "win_name": "DNP RX1HS",
+        "form_4x6": "4x6",
+        "form_2x6": "2x6"
+      }
+    },
+    "default_model": "DS620"
+  },
+  "logging": {
+    "level": "DEBUG",
+    "dir": "logs",
+    "rotate_mb": 10,
+    "backup_count": 10
+  },
+  "share": {
+    "base_page_url": "https://example.com/s",
+    "base_file_url": "https://example.com/s"
+  },
+  "coupon": {
+    "enabled": true,
+    "length": 6,
+    "accept_any_in_test": true,
+    "valid_codes": [
+      "123456",
+      "000000"
+    ]
+  },
+  "pricing": {
+    "currency_prefix": "AED",
+    "default_price": 4000,
+    "layouts": {
+      "2641": 1000,
+      "4641": 1000,
+      "4661": 1000,
+      "4681": 4000,
+      "6241": 4000
+    }
+  },
+  "coupons": {
+    "default_coupon_value": 0,
+    "values": {
+      "123-456": 5000,
+      "000-000": 10000
+    }
+  },
+  "gif": {
+    "enabled": true,
+    "frames_per_shot": 3,
+    "interval_ms": 200,
+    "max_width": 480
+  },
+  "thank_you": {
+    "gif_rect": [
+      1400,
+      520,
+      420,
+      420
+    ]
+  },
+  "payment_pricing": {
+    "default_price": 4000,
+    "pricing_by_layout": {
+      "2641": 1000,
+      "4641": 1000,
+      "4661": 1000,
+      "4681": 4000,
+      "6241": 4000
+    }
+  }
+}

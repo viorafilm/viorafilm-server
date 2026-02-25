@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Photoharu Download</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 20px; background: #f8f9fb; }
+    .box { max-width: 840px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 12px; }
+    .muted { color: #666; font-size: 12px; margin-bottom: 14px; }
+    .preview { margin: 16px 0; }
+    .preview img, .preview video { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
+    .downloads a { display: block; margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>사진 다운로드</h2>
+    <div class="muted">만료: {{ expires_at }}</div>
+    {% if expired %}
+      <p>링크가 만료되었습니다 (24시간).</p>
+    {% else %}
+
+    {% if assets.print_url %}
+    <div class="preview">
+      <h4>인쇄 이미지</h4>
+      <img src="{{ assets.print_url }}" alt="print preview">
+    </div>
+    {% endif %}
+
+    {% if assets.gif_url %}
+    <div class="preview">
+      <h4>GIF</h4>
+      <img src="{{ assets.gif_url }}" alt="gif preview">
+    </div>
+    {% endif %}
+
+    {% if assets.video_url %}
+    <div class="preview">
+      <h4>비디오</h4>
+      <video controls preload="metadata">
+        <source src="{{ assets.video_url }}">
+      </video>
+    </div>
+    {% endif %}
+
+    <div class="downloads">
+      {% if assets.print_url %}<a href="{{ assets.print_url }}" download>합성 이미지 다운로드</a>{% endif %}
+      {% if assets.frame_url %}<a href="{{ assets.frame_url }}" download>프레임 PNG 다운로드</a>{% endif %}
+      {% if assets.video_url %}<a href="{{ assets.video_url }}" download>비디오 다운로드</a>{% endif %}
+      {% if assets.gif_url %}<a href="{{ assets.gif_url }}" download>GIF 다운로드</a>{% endif %}
+
+      {% if assets.original_urls %}
+        <h4>원본 다운로드</h4>
+        {% for u in assets.original_urls %}
+          <a href="{{ u }}" download>원본 {{ forloop.counter }}</a>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    {% if not assets.print_url and not assets.video_url and not assets.gif_url and not assets.original_urls %}
+      <p>파일이 아직 업로드되지 않았습니다.</p>
+    {% endif %}
+    {% endif %}
+  </div>
+</body>
+</html>

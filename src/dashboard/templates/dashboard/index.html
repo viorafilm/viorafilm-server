@@ -1,0 +1,31 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+<h3 class="mb-3">매출 현황</h3>
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-body">
+        <div class="text-muted">오늘 매출</div>
+        <div class="fs-4 fw-bold">KRW {{ today_total|default:0 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-body">
+        <div class="text-muted">이번달 매출</div>
+        <div class="fs-4 fw-bold">KRW {{ month_total|default:0 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-body">
+        <div class="text-muted">총 거래 수</div>
+        <div class="fs-4 fw-bold">{{ sales_count|default:0 }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
