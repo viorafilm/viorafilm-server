@@ -26,6 +26,13 @@ make migrate
 make superuser
 ```
 
+## Production (Vultr + Cloudflare)
+- Full guide: `docs/DEPLOY_VULTR_CLOUDFLARE.md`
+- Production compose:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
 ## Share Upload API (R2-ready)
 - Required device auth headers:
   - `X-Device-Code`
