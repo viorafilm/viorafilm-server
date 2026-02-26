@@ -28,30 +28,20 @@ def share_page(request, token: str):
     files = session.files if isinstance(session.files, dict) else {}
     assets = dict(session.assets or {})
 
-    def _url(kind):
+    def _url(kind, filename: str):
         meta = files.get(kind)
-        return generate_download_url_from_meta(meta, request=request)
+        return generate_download_url_from_meta(meta, request=request, filename=filename)
 
-    print_url = _url("print")
-    frame_url = _url("frame")
-    gif_url = _url("gif")
-    video_url = _url("video")
-    original_urls = []
-    for meta in files.get("original") or []:
-        u = generate_download_url_from_meta(meta, request=request)
-        if u:
-            original_urls.append(u)
+    print_url = _url("print", "viorafilm_print.jpg")
+    # UI policy: "GIF" wording is hidden; treat gif asset as video fallback.
+    video_url = _url("video", "viorafilm_video.mp4")
+    if not video_url:
+        video_url = _url("gif", "viorafilm_video.gif")
 
     if print_url:
         assets["print_url"] = print_url
-    if frame_url:
-        assets["frame_url"] = frame_url
-    if gif_url:
-        assets["gif_url"] = gif_url
     if video_url:
         assets["video_url"] = video_url
-    if original_urls:
-        assets["original_urls"] = original_urls
 
     logger.info(
         "[SHARE_PAGE] token=%s status=%s file_keys=%s",

@@ -43,15 +43,20 @@ def build_absolute_file_url(request, relative_path: str) -> str:
     return rel_url
 
 
-def generate_download_url_from_meta(meta: dict, request=None, expires=None) -> str:
+def generate_download_url_from_meta(meta: dict, request=None, expires=None, filename: str = "") -> str:
     if not isinstance(meta, dict):
         return ""
     key = meta.get("key") or ""
     storage = (meta.get("storage") or "").lower()
+    file_name = str(filename or meta.get("filename") or os.path.basename(str(key)))
     if not key:
         return ""
     if storage == "r2":
-        return r2_generate_get_url(key, expires=int(expires or settings.PRESIGNED_EXPIRES_SECONDS))
+        return r2_generate_get_url(
+            key,
+            expires=int(expires or settings.PRESIGNED_EXPIRES_SECONDS),
+            filename=file_name,
+        )
     return build_absolute_file_url(request, key)
 
 

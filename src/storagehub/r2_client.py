@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import lru_cache
 
 from django.conf import settings
@@ -53,14 +54,25 @@ def r2_put_fileobj(fileobj, key: str, content_type: str = "") -> dict:
     return {"bucket": settings.R2_BUCKET_NAME, "key": key}
 
 
-def r2_generate_get_url(key: str, expires: int = None) -> str:
+def _safe_filename(name: str) -> str:
+    raw = os.path.basename(str(name or "").strip())
+    if not raw:
+        return "download.bin"
+    return "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._- ") else "_" for ch in raw).strip() or "download.bin"
+
+
+def r2_generate_get_url(key: str, expires: int = None, filename: str = "") -> str:
     client = get_r2_s3_client()
     if client is None:
         raise RuntimeError("R2 client is not configured")
     ttl = int(expires or getattr(settings, "PRESIGNED_EXPIRES_SECONDS", 600))
+    params = {"Bucket": settings.R2_BUCKET_NAME, "Key": key}
+    if filename:
+        safe = _safe_filename(filename)
+        params["ResponseContentDisposition"] = f'attachment; filename="{safe}"'
     return client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.R2_BUCKET_NAME, "Key": key},
+        Params=params,
         ExpiresIn=ttl,
     )
 
