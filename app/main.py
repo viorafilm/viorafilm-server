@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import math
+import mimetypes
 import os
 import queue
 import re
@@ -19,6 +20,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
 from ctypes import wintypes
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
@@ -30,6 +32,16 @@ except Exception:
     serial = None
     SerialException = Exception
     serial_list_ports = None
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    import winsound  # type: ignore[attr-defined]
+except Exception:
+    winsound = None  # type: ignore[assignment]
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -146,7 +158,7 @@ def setup_logging() -> Path:
     return log_file
 
 try:
-    from PySide6.QtCore import QObject, Qt, QRect, QThread, QTimer, Signal, QBuffer, QByteArray, QIODevice
+    from PySide6.QtCore import QObject, Qt, QRect, QThread, QTimer, Signal, QBuffer, QByteArray, QIODevice, QUrl
     from PySide6.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -168,7 +180,7 @@ try:
     )
 except ImportError:
     try:
-        from PyQt6.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice
+        from PyQt6.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
         from PyQt6.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
         from PyQt6.QtWidgets import (
             QApplication,
@@ -190,7 +202,7 @@ except ImportError:
         )
     except ImportError:
         try:
-            from PyQt5.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice
+            from PyQt5.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
             from PyQt5.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
             from PyQt5.QtWidgets import (
                 QApplication,
@@ -214,6 +226,17 @@ except ImportError:
             raise SystemExit(
                 "Qt bindings are required (PySide6, PyQt6, or PyQt5)."
             ) from exc
+
+try:
+    from PySide6.QtMultimedia import QSoundEffect  # type: ignore
+except Exception:
+    try:
+        from PyQt6.QtMultimedia import QSoundEffect  # type: ignore
+    except Exception:
+        try:
+            from PyQt5.QtMultimedia import QSoundEffect  # type: ignore
+        except Exception:
+            QSoundEffect = None  # type: ignore
 
 from kiosk.print.compose import (
     EXPECTED_SLOT_COUNT_BY_LAYOUT,
@@ -385,6 +408,21 @@ PRINT_QR_ANCHOR_BY_LAYOUT = {
     "2462": "rb",
 }
 
+# 2641 users requested a visibly larger QR on print/preview.
+PRINT_QR_SIZE_MULTIPLIER_BY_LAYOUT = {
+    "2641": 1.3,
+}
+
+# Preview should stay smaller than print to avoid visual overlap in design UI.
+PREVIEW_QR_RECT_SCALE_BY_LAYOUT = {
+    "2641": 1.0,
+}
+
+# Printer trim-safe margin (2641 was clipping near paper edge).
+PRINT_QR_MARGIN_MULTIPLIER_BY_LAYOUT = {
+    "2641": 3.0,
+}
+
 DEFAULT_ADMIN_SETTINGS = {
     "test_mode": False,
     "camera_backend": "auto",
@@ -400,6 +438,10 @@ DEFAULT_ADMIN_SETTINGS = {
 DEFAULT_SHARE_SETTINGS = {
     "base_page_url": "https://example.com/s",
     "base_file_url": "https://example.com/s",
+    "api_base_url": "https://api.viorafilm.com/api",
+    "device_code": "",
+    "device_token": "",
+    "timeout_sec": 12.0,
 }
 
 DEFAULT_PAYMENT_METHODS = {
@@ -492,6 +534,8 @@ DEFAULT_CELEBRITY_SETTINGS = {
     "templates_dir": "D:/photoharu/assets/celebrity_templates",
     "layout_id": "2461",
 }
+
+DEFAULT_OFFLINE_GRACE_HOURS = 72
 
 _TRANSPARENT_SLOT_CACHE: dict[
     tuple[str, int, int, int],
@@ -1768,6 +1812,7 @@ def _compute_print_qr_rect(
     width = max(1, int(width))
     height = max(1, int(height))
     layout_key = str(layout_id or "").strip()
+    qr_scale = float(PRINT_QR_SIZE_MULTIPLIER_BY_LAYOUT.get(layout_key, 1.0))
     anchor = (
         str(anchor_override).strip().lower()
         if str(anchor_override or "").strip().lower() in {"lt", "rt", "lb", "rb"}
@@ -1783,6 +1828,17 @@ def _compute_print_qr_rect(
         margin = max(24, int(round(min(width, height) * 0.03)))
         base_size = max(120, int(round(min(width, height) * 0.13)))
         min_size = max(86, int(round(min(width, height) * 0.08)))
+
+    margin_scale = float(PRINT_QR_MARGIN_MULTIPLIER_BY_LAYOUT.get(layout_key, 1.0))
+    if margin_scale != 1.0:
+        margin = int(round(margin * margin_scale))
+
+    if qr_scale != 1.0:
+        base_size = int(round(base_size * qr_scale))
+        min_size = int(round(min_size * qr_scale))
+        max_qr_side = max(64, int(round(min(width, height) * 0.45)))
+        base_size = max(min_size, min(base_size, max_qr_side))
+        min_size = max(48, min(min_size, base_size))
 
     def _anchor_rect(size: int, dx: int, dy: int) -> tuple[int, int, int, int]:
         if anchor == "lt":
@@ -1812,6 +1868,42 @@ def _compute_print_qr_rect(
 
     # Last resort: anchored minimum size.
     return _anchor_rect(min_size, 0, 0)
+
+
+def _scale_rect_about_center(
+    rect: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+    scale: float,
+) -> tuple[int, int, int, int]:
+    x, y, w, h = rect
+    cw, ch = canvas_size
+    factor = max(0.2, min(2.5, float(scale)))
+    nw = max(1, int(round(w * factor)))
+    nh = max(1, int(round(h * factor)))
+    cx = x + (w / 2.0)
+    cy = y + (h / 2.0)
+    nx = int(round(cx - (nw / 2.0)))
+    ny = int(round(cy - (nh / 2.0)))
+    nx = max(0, min(nx, max(0, int(cw) - nw)))
+    ny = max(0, min(ny, max(0, int(ch) - nh)))
+    return (nx, ny, nw, nh)
+
+
+def _preview_qr_override_rect(
+    layout_id: str,
+    canvas_size: tuple[int, int],
+) -> Optional[tuple[int, int, int, int]]:
+    key = str(layout_id or "").strip()
+    w, h = canvas_size
+    if key == "2641":
+        # Keep preview QR small and docked to right-bottom footer area.
+        side = max(40, int(round(min(w, h) * 0.046)))
+        right_margin = max(2, int(round(w * 0.004)))
+        bottom_margin = max(2, int(round(h * 0.006)))
+        x = max(0, w - side - right_margin)
+        y = max(0, h - side - bottom_margin)
+        return (x, y, side, side)
+    return None
 
 
 def _build_qr_rgb_from_value(qr_value: str) -> Optional[Image.Image]:
@@ -4256,13 +4348,25 @@ class SelectDesignScreen(ImageScreen):
         )
         if qr_enabled and qr_value:
             preview_slots = [tuple(int(v) for v in s) for s in slots[: len(photos)]]
-            preview_qr_rect: Optional[tuple[int, int, int, int]] = None
-            if str(layout_id or "").strip() == "6241":
+            layout_key = str(layout_id or "").strip()
+            anchor_override = "rt" if layout_key == "6241" else None
+            preview_qr_rect: Optional[tuple[int, int, int, int]] = _preview_qr_override_rect(
+                layout_key,
+                composed.size,
+            )
+            if preview_qr_rect is None:
                 preview_qr_rect = _compute_print_qr_rect(
-                    layout_id=layout_id,
-                    canvas_size=composed.size,
-                    occupied_slots=preview_slots,
-                    anchor_override="rt",
+                layout_id=layout_id,
+                canvas_size=composed.size,
+                occupied_slots=preview_slots,
+                anchor_override=anchor_override,
+                )
+            preview_scale = float(PREVIEW_QR_RECT_SCALE_BY_LAYOUT.get(layout_key, 1.0))
+            if preview_qr_rect is not None and abs(preview_scale - 1.0) > 0.001:
+                preview_qr_rect = _scale_rect_about_center(
+                    preview_qr_rect,
+                    composed.size,
+                    preview_scale,
                 )
             composed = _overlay_qr_on_image(
                 image_rgb=composed,
@@ -5930,45 +6034,289 @@ class AppQrUploadWorker(QObject):
         self.capture_slots = int(capture_slots or 0)
         self.design_index = design_index
 
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return bool(default)
+
+    @classmethod
+    def _env_flag(cls, key: str, default: bool = False) -> bool:
+        return cls._as_bool(os.environ.get(key), default)
+
+    def _upload_dry_run_enabled(self) -> bool:
+        cfg_value = self.share_settings.get("upload_dry_run")
+        cfg_enabled = self._as_bool(cfg_value, False)
+        env_enabled = self._env_flag("UPLOAD_DRY_RUN", False)
+        return cfg_enabled or env_enabled
+
+    def _timeout_sec(self) -> float:
+        raw = self.share_settings.get("timeout_sec", DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
+        try:
+            timeout = float(raw)
+        except Exception:
+            timeout = float(DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
+        return min(60.0, max(3.0, timeout))
+
+    def _api_base_url(self) -> str:
+        configured = str(self.share_settings.get("api_base_url", "")).strip().rstrip("/")
+        if configured:
+            return configured
+        base_page = str(self.share_settings.get("base_page_url", "")).strip()
+        if not base_page:
+            return ""
+        split = urlsplit(base_page)
+        if split.scheme and split.netloc:
+            return f"{split.scheme}://{split.netloc}/api"
+        return ""
+
+    def _device_headers(self) -> dict[str, str]:
+        device_code = str(self.share_settings.get("device_code", "")).strip() or str(
+            os.environ.get("KIOSK_DEVICE_CODE", "")
+        ).strip()
+        device_token = str(self.share_settings.get("device_token", "")).strip() or str(
+            os.environ.get("KIOSK_DEVICE_TOKEN", "")
+        ).strip()
+        if not device_code:
+            raise RuntimeError("share.device_code missing")
+        if not device_token:
+            raise RuntimeError("share.device_token missing")
+        return {
+            "X-Device-Code": device_code,
+            "X-Device-Token": device_token,
+            "Accept": "application/json",
+        }
+
+    @staticmethod
+    def _response_error_text(response: Any) -> str:
+        try:
+            text = str(response.text or "").strip()
+        except Exception:
+            text = ""
+        text = text.replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > 240:
+            text = text[:240] + "..."
+        return text
+
+    def _consume_server_lock_response(self, response: Any, trigger: str) -> tuple[bool, Optional[dict[str, Any]]]:
+        payload: Optional[dict[str, Any]] = None
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            lock_payload = payload.get("device_lock")
+            if isinstance(lock_payload, dict):
+                self._apply_server_lock_payload(lock_payload, trigger=trigger)
+            elif str(payload.get("reason", "")).strip().upper() == "DEVICE_LOCKED":
+                self._apply_server_lock_payload(
+                    {
+                        "locked": True,
+                        "lock_reason": str(payload.get("lock_reason", "")).strip(),
+                        "locked_at": str(payload.get("locked_at", "")).strip(),
+                    },
+                    trigger=trigger,
+                )
+                return True, payload
+        return False, payload
+
+    def _post_json(self, client: Any, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+        response = client.post(url, json=payload, headers=headers, timeout=self._timeout_sec())
+        lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="share_api")
+        if lock_hit:
+            raise RuntimeError(f"{url} HTTP {response.status_code}: DEVICE_LOCKED")
+        if int(response.status_code) >= 400:
+            raise RuntimeError(
+                f"{url} HTTP {response.status_code}: {self._response_error_text(response)}"
+            )
+        data = parsed_payload
+        if data is None:
+            try:
+                data = response.json()
+            except Exception:
+                raise RuntimeError(f"{url} invalid json response")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{url} invalid json payload")
+        return data
+
+    def _post_file(
+        self,
+        client: Any,
+        url: str,
+        token: str,
+        kind: str,
+        file_path: Path,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        with file_path.open("rb") as handle:
+            files = {"file": (file_path.name, handle, content_type)}
+            data = {"token": token, "kind": kind}
+            response = client.post(url, data=data, files=files, headers=headers, timeout=self._timeout_sec())
+        lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="share_api")
+        if lock_hit:
+            raise RuntimeError(f"{url} HTTP {response.status_code}: DEVICE_LOCKED")
+        if int(response.status_code) >= 400:
+            raise RuntimeError(
+                f"{url} HTTP {response.status_code}: {self._response_error_text(response)}"
+            )
+        payload = parsed_payload
+        if payload is None:
+            try:
+                payload = response.json()
+            except Exception:
+                raise RuntimeError(f"{url} invalid json response")
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{url} invalid json payload")
+        return payload
+
+    def _build_dummy_urls(self, session_id: str) -> tuple[str, str, str, str]:
+        base_page_url = str(
+            self.share_settings.get("base_page_url", DEFAULT_SHARE_SETTINGS["base_page_url"])
+        ).rstrip("/")
+        base_file_url = str(
+            self.share_settings.get("base_file_url", DEFAULT_SHARE_SETTINGS["base_file_url"])
+        ).rstrip("/")
+        page_url = f"{base_page_url}/{session_id}"
+        frame_url = f"{base_file_url}/{session_id}/frame.png"
+        image_url = f"{base_file_url}/{session_id}/print.jpg"
+        video_url = f"{base_file_url}/{session_id}/video.gif"
+        return page_url, frame_url, image_url, video_url
+
+    def _upload_via_server(
+        self,
+        session_id: str,
+        image_local: Path,
+        frame_local: Path,
+        video_local: Path,
+    ) -> tuple[str, dict[str, dict[str, Any]], str]:
+        if requests is None:
+            raise RuntimeError("requests module not installed")
+        api_base_url = self._api_base_url()
+        if not api_base_url:
+            raise RuntimeError("share.api_base_url missing")
+        headers = self._device_headers()
+        init_url = f"{api_base_url}/kiosk/share/init"
+        upload_url = f"{api_base_url}/kiosk/share/upload"
+        finalize_url = f"{api_base_url}/kiosk/share/finalize"
+
+        with requests.Session() as client:
+            # Use kiosk session_id as share token so printed QR(/s/<session_id>) matches final share link.
+            init_payload = {"session_id": session_id, "token": session_id}
+            init_data = self._post_json(client, init_url, init_payload, headers)
+            token = str(init_data.get("token", "")).strip()
+            page_url = str(init_data.get("share_url", "")).strip()
+            if not token:
+                raise RuntimeError("share init missing token")
+            print(f"[UPLOAD] init ok token={token} share_url={page_url}")
+
+            files_meta: dict[str, dict[str, Any]] = {}
+            upload_specs = [
+                ("PRINT", image_local, "image"),
+                ("FRAME", frame_local, "frame"),
+                ("GIF", video_local, "video"),
+            ]
+            for kind, file_path, local_key in upload_specs:
+                if not file_path.is_file():
+                    continue
+                upload_data = self._post_file(client, upload_url, token, kind, file_path, headers)
+                entry: dict[str, Any] = {"name": file_path.name}
+                key_value = str(upload_data.get("key", "")).strip()
+                if key_value:
+                    entry["key"] = key_value
+                size_bytes = upload_data.get("size_bytes")
+                if isinstance(size_bytes, int):
+                    entry["size_bytes"] = size_bytes
+                files_meta[local_key] = entry
+                print(
+                    f"[UPLOAD] file ok kind={kind} "
+                    f"key={entry.get('key', '')} size={entry.get('size_bytes', 0)}"
+                )
+
+            finalize_payload = {
+                "token": token,
+                "meta": {
+                    "layout_id": self.layout_id,
+                    "print_slots": self.print_slots,
+                    "capture_slots": self.capture_slots,
+                    "design_index": self.design_index,
+                },
+            }
+            finalize_data = self._post_json(client, finalize_url, finalize_payload, headers)
+            finalized_share_url = str(finalize_data.get("share_url", "")).strip()
+            if finalized_share_url:
+                page_url = finalized_share_url
+            if not page_url:
+                relative_url = str(finalize_data.get("url", "")).strip()
+                if relative_url.startswith("/"):
+                    split = urlsplit(api_base_url)
+                    page_url = f"{split.scheme}://{split.netloc}{relative_url}"
+            if not page_url:
+                base_page_url = str(
+                    self.share_settings.get("base_page_url", DEFAULT_SHARE_SETTINGS["base_page_url"])
+                ).rstrip("/")
+                page_url = f"{base_page_url}/{token}"
+
+            print(f"[UPLOAD] finalize ok share_url={page_url}")
+            return page_url, files_meta, token
+
     def run(self) -> None:
         try:
             if self.session is None:
                 raise RuntimeError("session missing")
             session_id = self.session.session_id or self.session.session_dir.name
-            base_page_url = str(
-                self.share_settings.get("base_page_url", DEFAULT_SHARE_SETTINGS["base_page_url"])
-            ).rstrip("/")
-            base_file_url = str(
-                self.share_settings.get("base_file_url", DEFAULT_SHARE_SETTINGS["base_file_url"])
-            ).rstrip("/")
-
-            # Dummy uploader delay.
-            time.sleep(1.0)
-
-            page_url = f"{base_page_url}/{session_id}"
-            frame_url = f"{base_file_url}/{session_id}/frame.png"
-            image_url = f"{base_file_url}/{session_id}/print.jpg"
-            video_url = f"{base_file_url}/{session_id}/video.gif"
-
             share_dir = ensure_share_dir(self.session.session_dir)
             share_json_path = share_dir / "share.json"
+            frame_local = share_dir / "frame.png"
+            image_local = share_dir / "print.jpg"
             video_local = share_dir / "video.gif"
+
+            dry_run_upload = self._upload_dry_run_enabled()
+            file_entries: dict[str, dict[str, Any]] = {}
+            server_token = ""
+            if dry_run_upload:
+                print("[UPLOAD] DRY_RUN reason=upload_dry_run")
+                time.sleep(1.0)
+                page_url, frame_url, image_url, video_url = self._build_dummy_urls(session_id)
+                if frame_local.is_file():
+                    file_entries["frame"] = {"name": "frame.png", "url": frame_url}
+                if image_local.is_file():
+                    file_entries["image"] = {"name": "print.jpg", "url": image_url}
+                if video_local.is_file():
+                    file_entries["video"] = {"name": "video.gif", "url": video_url}
+            else:
+                page_url, server_files, server_token = self._upload_via_server(
+                    session_id=session_id,
+                    image_local=image_local,
+                    frame_local=frame_local,
+                    video_local=video_local,
+                )
+                file_entries.update(server_files)
 
             payload: dict[str, Any] = {
                 "session_id": session_id,
                 "page_url": page_url,
-                "files": {
-                    "frame": {"name": "frame.png", "url": frame_url},
-                    "image": {"name": "print.jpg", "url": image_url},
-                },
+                "files": file_entries,
                 "layout_id": self.layout_id,
                 "print_slots": self.print_slots,
                 "capture_slots": self.capture_slots,
                 "design_index": self.design_index,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
+                "upload_mode": "dry_run" if dry_run_upload else "server",
             }
-            if video_local.is_file():
-                payload["files"]["video"] = {"name": "video.gif", "url": video_url}
+            if server_token:
+                payload["share_token"] = server_token
 
             _write_json_atomic(share_json_path, payload)
             print(f"[SHARE] share.json written path={share_json_path}")
@@ -10010,7 +10358,192 @@ class CameraScreen(ImageScreen):
                     self._draw_cover_pixmap(painter, shot_pixmap, target)
 
 
+class UiSoundManager(QObject):
+    AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".m4a"}
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.enabled = True
+        self._sound_paths: dict[str, Path] = {}
+        self._effects: dict[str, Any] = {}
+        self._fallback_paths: dict[str, Path] = {}
+        self._load_sound_library()
+
+    def _sound_dirs(self) -> list[Path]:
+        return [
+            ROOT_DIR / "assets" / "sounds",
+            ROOT_DIR / "assets" / "sound",
+            ROOT_DIR / "assets" / "audio",
+            ROOT_DIR / "assets" / "ui" / "sounds",
+            ROOT_DIR / "assets" / "ui",
+            ROOT_DIR / "assets",
+        ]
+
+    @classmethod
+    def _is_audio_file(cls, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() in cls.AUDIO_EXTS
+
+    def _find_by_tokens(self, files: list[Path], tokens: list[str]) -> Optional[Path]:
+        for token in tokens:
+            token_lower = token.lower()
+            for path in files:
+                if token_lower in path.stem.lower():
+                    return path
+        return None
+
+    def _load_sound_library(self) -> None:
+        discovered: list[Path] = []
+        for directory in self._sound_dirs():
+            if not directory.is_dir():
+                continue
+            for path in directory.rglob("*"):
+                if self._is_audio_file(path):
+                    discovered.append(path)
+
+        if not discovered:
+            print("[SOUND] no audio files found (assets/sounds|sound|audio)")
+            return
+
+        discovered = sorted(set(discovered), key=lambda p: p.name.lower())
+        click_path = self._find_by_tokens(discovered, ["click", "tap", "button", "touch", "select"])
+        nav_path = self._find_by_tokens(discovered, ["page", "screen", "transition", "nav", "next", "move", "loading"])
+        if click_path is None:
+            click_path = self._find_by_tokens(discovered, ["btn", "select"])
+        if nav_path is None:
+            nav_path = self._find_by_tokens(discovered, ["loading", "page"])
+
+        fallback = discovered[0]
+        self._sound_paths["click"] = click_path or fallback
+        self._sound_paths["nav"] = nav_path or fallback
+        self._fallback_paths = dict(self._sound_paths)
+
+        print(
+            "[SOUND] loaded click="
+            f"{self._sound_paths['click'].name} nav={self._sound_paths['nav'].name} "
+            f"count={len(discovered)}"
+        )
+
+        if QSoundEffect is None:
+            print("[SOUND] QtMultimedia unavailable; using winsound fallback if possible")
+            return
+
+        for key, path in self._sound_paths.items():
+            try:
+                effect = QSoundEffect(self)
+                effect.setSource(QUrl.fromLocalFile(str(path)))
+                effect.setLoopCount(1)
+                effect.setVolume(0.85)
+                self._effects[key] = effect
+            except Exception as exc:
+                print(f"[SOUND] effect init failed key={key} path={path} err={exc}")
+
+    def play(self, key: str) -> None:
+        if not self.enabled:
+            return
+        effect = self._effects.get(key)
+        if effect is not None:
+            try:
+                effect.stop()
+                effect.play()
+                return
+            except Exception:
+                pass
+
+        # Fallback for environments where QtMultimedia backend is unavailable.
+        if winsound is not None:
+            path = self._fallback_paths.get(key)
+            if path is not None and path.is_file() and path.suffix.lower() == ".wav":
+                try:
+                    winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                except Exception:
+                    pass
+
+
+class OfflineLockScreen(QWidget):
+    screen_name = "offline_locked"
+
+    def __init__(self, main_window: "KioskMainWindow") -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.setStyleSheet("QWidget { background: #0b1020; color: white; }")
+
+        self._root_layout = QVBoxLayout(self)
+        self._root_layout.setContentsMargins(160, 120, 160, 120)
+        self._root_layout.setSpacing(20)
+
+        self._title = QLabel("서비스 잠금\nService Locked", self)
+        self._title.setAlignment(ALIGN_CENTER)
+        self._title.setStyleSheet("font-size: 54px; font-weight: 800;")
+
+        self._subtitle = QLabel(
+            "인터넷 미연결 허용시간(72시간)을 초과했습니다.\n"
+            "Offline grace period (72 hours) has expired.",
+            self,
+        )
+        self._subtitle.setAlignment(ALIGN_CENTER)
+        self._subtitle.setStyleSheet("font-size: 28px; color: #d6ddf5;")
+
+        self._detail = QLabel("", self)
+        self._detail.setAlignment(ALIGN_CENTER)
+        self._detail.setWordWrap(True)
+        self._detail.setStyleSheet(
+            "font-size: 24px; color: #a6b3db; background: rgba(255,255,255,0.08); "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 12px; padding: 12px 18px;"
+        )
+
+        self._retry_button = QPushButton("재시도 / Retry", self)
+        self._retry_button.setMinimumHeight(74)
+        self._retry_button.setStyleSheet(
+            "QPushButton { background: #1f7ae0; color: white; font-size: 30px; font-weight: 700; "
+            "border-radius: 12px; padding: 8px 24px; } "
+            "QPushButton:pressed { background: #1565c0; }"
+        )
+        self._retry_button.clicked.connect(self._on_retry_clicked)
+
+        self._hint = QLabel(
+            "인터넷 연결 복구 후 재시도를 누르세요.\n"
+            "Restore internet connection, then tap Retry.",
+            self,
+        )
+        self._hint.setAlignment(ALIGN_CENTER)
+        self._hint.setStyleSheet("font-size: 22px; color: #c4cde9;")
+
+        self._root_layout.addStretch(1)
+        self._root_layout.addWidget(self._title)
+        self._root_layout.addWidget(self._subtitle)
+        self._root_layout.addWidget(self._detail)
+        self._root_layout.addWidget(self._retry_button)
+        self._root_layout.addWidget(self._hint)
+        self._root_layout.addStretch(1)
+
+    def set_lock_message(self, message: str) -> None:
+        self._detail.setText(str(message or "").strip())
+
+    def set_hotspots(self, hotspots: list[Hotspot]) -> None:
+        _ = hotspots
+
+    def set_overlay_visible(self, visible: bool) -> None:
+        _ = visible
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        if hasattr(self.main_window, "_current_runtime_lock_message"):
+            try:
+                self.set_lock_message(str(self.main_window._current_runtime_lock_message()))
+                return
+            except Exception:
+                pass
+        if hasattr(self.main_window, "_offline_lock_message"):
+            self.set_lock_message(str(getattr(self.main_window, "_offline_lock_message", "")))
+
+    def _on_retry_clicked(self) -> None:
+        if hasattr(self.main_window, "retry_offline_unlock"):
+            self.main_window.retry_offline_unlock()
+
+
 class KioskMainWindow(QMainWindow):
+    offline_guard_signal = Signal(str)
+    server_lock_signal = Signal(object)
     FRAME_SELECT_MODE_RECTS: dict[str, tuple[int, int, int, int]] = {
         "celebrity": (0, 920, 960, 160),
         "ai": (960, 920, 960, 160),
@@ -10105,6 +10638,31 @@ class KioskMainWindow(QMainWindow):
         self.coupon_value = 0
         self._frame_select_price_labels: dict[str, QLabel] = {}
         self._frame_select_mode_buttons: dict[str, QPushButton] = {}
+        self.ui_sound = UiSoundManager(self)
+        self._suppress_nav_sound_until: float = 0.0
+        self._license_state_lock = threading.Lock()
+        self._license_state_path = ROOT_DIR / "out" / "license_state.json"
+        self._first_seen_ts = 0.0
+        self._last_online_ts = 0.0
+        self._offline_lock_active = False
+        self._offline_lock_message = ""
+        self._server_lock_active = False
+        self._server_lock_message = ""
+        self._offline_guard_enabled = True
+        self._offline_grace_seconds = int(DEFAULT_OFFLINE_GRACE_HOURS * 3600)
+        self._reported_sale_sessions: set[str] = set()
+        self._sale_report_lock = threading.Lock()
+        self._heartbeat_lock = threading.Lock()
+        self._heartbeat_inflight = False
+        self._offline_queue_lock = threading.Lock()
+        self._offline_flush_lock = threading.Lock()
+        self._offline_flush_inflight = False
+        self._offline_queue_path = ROOT_DIR / "out" / "offline_events_queue.json"
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(30000)
+        self._heartbeat_timer.timeout.connect(self._heartbeat_tick)
+        self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
+        self.server_lock_signal.connect(self._on_server_lock_signal)
 
         after_camera_loading_screen = LoadingScreen(self)
         after_camera_loading_screen.screen_name = "after_camera_loading"
@@ -10160,6 +10718,7 @@ class KioskMainWindow(QMainWindow):
                 ROOT_DIR / "assets" / "ui" / "errorpage" / "error.png",
                 missing_text="Error",
             ),
+            "offline_locked": OfflineLockScreen(self),
         }
 
         for screen in self.screens.values():
@@ -10170,19 +10729,37 @@ class KioskMainWindow(QMainWindow):
         self._apply_admin_settings(self.admin_settings, emit_log=False)
         self._apply_payment_methods(self.payment_methods, emit_log=False)
         self._apply_mode_settings(self.mode_settings, emit_log=False)
-        self.goto_screen("boot_healthcheck")
+        self._init_offline_license_state()
+        pending_events = self._offline_queue_count()
+        if pending_events > 0:
+            print(f"[QUEUE] pending events loaded={pending_events}")
+        self._heartbeat_timer.start()
+        QTimer.singleShot(2500, self._heartbeat_tick)
+        if self._is_runtime_locked():
+            self.goto_screen("offline_locked")
+        else:
+            self.goto_screen("boot_healthcheck")
 
     def goto_screen(self, screen_name: str) -> None:
         if screen_name == "boot_healthcheck" and (
             self.boot_check_done or self._boot_checked
         ):
             screen_name = "start"
+        if self._is_runtime_locked() and screen_name not in {"offline_locked", "admin"}:
+            screen_name = "offline_locked"
         target = self.screens.get(screen_name)
         if not target:
             print(f"[NAV] Unknown screen: {screen_name}")
             return
         current_widget = self.stack.currentWidget()
         current_screen_name = getattr(current_widget, "screen_name", None)
+        should_play_nav_sound = bool(
+            isinstance(current_screen_name, str)
+            and current_screen_name
+            and current_screen_name != screen_name
+        )
+        if time.monotonic() < float(self._suppress_nav_sound_until):
+            should_play_nav_sound = False
         if (
             isinstance(current_screen_name, str)
             and current_screen_name in {"pay_cash", "pay_cash_remaining"}
@@ -10242,6 +10819,8 @@ class KioskMainWindow(QMainWindow):
         elif screen_name == "admin":
             self._prepare_admin_screen()
         self.stack.setCurrentWidget(target)
+        if should_play_nav_sound:
+            self.ui_sound.play("nav")
         if screen_name == "frame_select":
             self._ensure_frame_select_mode_buttons()
             self._refresh_frame_select_mode_buttons()
@@ -10254,6 +10833,10 @@ class KioskMainWindow(QMainWindow):
         print(f"[NAV] {screen_name}")
 
     def complete_boot_healthcheck(self, force: bool = False) -> None:
+        if self._is_runtime_locked():
+            print("[LICENSE] boot start blocked: runtime lock active")
+            self.goto_screen("offline_locked")
+            return
         if not force:
             print("[HEALTH] boot check passed -> start")
         else:
@@ -11304,10 +11887,26 @@ class KioskMainWindow(QMainWindow):
         if isinstance(raw, dict):
             page_url = raw.get("base_page_url")
             file_url = raw.get("base_file_url")
+            api_base_url = raw.get("api_base_url")
+            device_code = raw.get("device_code")
+            device_token = raw.get("device_token")
+            timeout_sec = raw.get("timeout_sec")
             if isinstance(page_url, str) and page_url.strip():
                 result["base_page_url"] = page_url.strip().rstrip("/")
             if isinstance(file_url, str) and file_url.strip():
                 result["base_file_url"] = file_url.strip().rstrip("/")
+            if isinstance(api_base_url, str) and api_base_url.strip():
+                result["api_base_url"] = api_base_url.strip().rstrip("/")
+            if isinstance(device_code, str):
+                result["device_code"] = device_code.strip()
+            if isinstance(device_token, str):
+                result["device_token"] = device_token.strip()
+            if timeout_sec is not None:
+                try:
+                    timeout_value = float(timeout_sec)
+                except Exception:
+                    timeout_value = float(DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
+                result["timeout_sec"] = min(60.0, max(3.0, timeout_value))
         return result
 
     def _normalize_printing_settings(self, raw_settings: object) -> dict:
@@ -11622,6 +12221,294 @@ class KioskMainWindow(QMainWindow):
             except Exception:
                 pass
         print(f"[NOTICE] {message}")
+
+    @staticmethod
+    def _env_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return bool(default)
+
+    @staticmethod
+    def _parse_iso_to_ts(value: str) -> float:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        try:
+            return float(datetime.fromisoformat(text).timestamp())
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _format_duration_kr_en(total_seconds: float) -> str:
+        sec = max(0, int(total_seconds))
+        days, rem = divmod(sec, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        return f"{days}일 {hours}시간 {minutes}분 / {days}d {hours}h {minutes}m"
+
+    @staticmethod
+    def _iso_from_ts(ts_value: float) -> Optional[str]:
+        if float(ts_value or 0.0) <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(float(ts_value)).isoformat(timespec="seconds")
+        except Exception:
+            return None
+
+    def _offline_telemetry_snapshot(self) -> dict[str, Any]:
+        with self._license_state_lock:
+            enabled = bool(self._offline_guard_enabled)
+            grace_seconds = int(self._offline_grace_seconds)
+            first_seen_ts = float(self._first_seen_ts or 0.0)
+            last_online_ts = float(self._last_online_ts or 0.0)
+            lock_active = bool(self._offline_lock_active)
+
+        reference_ts = last_online_ts if last_online_ts > 0 else first_seen_ts
+        reference_source = "last_online" if last_online_ts > 0 else "first_seen"
+        remaining_seconds: Optional[int] = None
+        if enabled and reference_ts > 0 and grace_seconds > 0:
+            elapsed = max(0.0, time.time() - reference_ts)
+            remaining_seconds = int(round(float(grace_seconds) - elapsed))
+        elif not enabled:
+            remaining_seconds = grace_seconds
+        else:
+            reference_source = "none"
+
+        return {
+            "offline_guard_enabled": enabled,
+            "offline_lock_active": lock_active,
+            "offline_grace_seconds": grace_seconds,
+            "offline_grace_remaining_seconds": remaining_seconds,
+            "offline_reference_source": reference_source,
+            "offline_last_online_at": self._iso_from_ts(last_online_ts),
+            "offline_first_seen_at": self._iso_from_ts(first_seen_ts),
+        }
+
+    def _load_license_state_unlocked(self) -> dict[str, Any]:
+        path = Path(self._license_state_path)
+        if not path.is_file():
+            return {}
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[LICENSE] state load failed path={path} err={exc}")
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _save_license_state_unlocked(self, state: dict[str, Any]) -> None:
+        path = Path(self._license_state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(state or {})
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_json_atomic(path, payload)
+
+    def _compute_offline_guard_status(self) -> tuple[bool, str]:
+        if not bool(self._offline_guard_enabled):
+            return False, "offline guard disabled"
+
+        last_online_ts = float(self._last_online_ts or 0.0)
+        first_seen_ts = float(self._first_seen_ts or 0.0)
+        reference_ts = last_online_ts if last_online_ts > 0 else first_seen_ts
+        if reference_ts <= 0:
+            return False, "license state unavailable"
+
+        elapsed = max(0.0, time.time() - reference_ts)
+        remaining = float(self._offline_grace_seconds) - elapsed
+        if remaining > 0:
+            return False, f"remaining={self._format_duration_kr_en(remaining)}"
+
+        over = abs(remaining)
+        base_line = (
+            "마지막 온라인 인증 이후 제한 시간 초과"
+            if last_online_ts > 0
+            else "최초 실행 이후 온라인 인증 없이 제한 시간 초과"
+        )
+        lock_message = (
+            f"{base_line}\n"
+            "인터넷 미연결 시간이 제한(72시간)을 초과했습니다.\n"
+            "Offline time limit exceeded.\n"
+            f"초과 시간 / Overtime: {self._format_duration_kr_en(over)}"
+        )
+        return True, lock_message
+
+    def _is_runtime_locked(self) -> bool:
+        return bool(self._offline_lock_active or self._server_lock_active)
+
+    def _current_runtime_lock_message(self) -> str:
+        if self._server_lock_active:
+            return str(self._server_lock_message or "").strip()
+        return str(self._offline_lock_message or "").strip()
+
+    def _sync_runtime_lock_screen(self, trigger: str) -> None:
+        active = self._is_runtime_locked()
+        message = self._current_runtime_lock_message()
+        lock_screen = self.screens.get("offline_locked")
+        if isinstance(lock_screen, OfflineLockScreen):
+            lock_screen.set_lock_message(message)
+
+        current = self.stack.currentWidget()
+        current_name = getattr(current, "screen_name", "")
+        if active:
+            if current_name not in {"offline_locked", "admin"} and isinstance(lock_screen, OfflineLockScreen):
+                self.stack.setCurrentWidget(lock_screen)
+                print(f"[NAV] runtime_lock({trigger}) -> offline_locked")
+            return
+
+        if current_name == "offline_locked":
+            self.goto_screen("start")
+
+    def _build_server_lock_message(self, reason: str, locked_at: str) -> str:
+        reason_text = str(reason or "").strip() or "-"
+        locked_text = str(locked_at or "").strip() or "-"
+        return (
+            "관리자에 의해 장치가 잠금되었습니다.\n"
+            "This kiosk has been locked by administrator.\n"
+            f"사유 / Reason: {reason_text}\n"
+            f"잠금시각 / Locked At: {locked_text}"
+        )
+
+    def _set_server_lock(self, active: bool, message: str, trigger: str) -> None:
+        was_active = bool(self._server_lock_active)
+        self._server_lock_active = bool(active)
+        self._server_lock_message = str(message or "").strip()
+        if self._server_lock_active and not was_active:
+            print(f"[SERVER_LOCK] LOCKED trigger={trigger} msg={self._server_lock_message}")
+        if not self._server_lock_active and was_active:
+            print(f"[SERVER_LOCK] UNLOCKED trigger={trigger}")
+        self._sync_runtime_lock_screen(trigger=f"server:{trigger}")
+
+    def _on_server_lock_signal(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        active = bool(payload.get("locked", False))
+        reason = str(payload.get("lock_reason", "")).strip()
+        locked_at = str(payload.get("locked_at", "")).strip()
+        trigger = str(payload.get("trigger", "signal")).strip() or "signal"
+        message = self._build_server_lock_message(reason, locked_at) if active else ""
+        self._set_server_lock(active, message, trigger)
+
+    def _apply_server_lock_payload(self, payload: Any, trigger: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        event = {
+            "locked": bool(payload.get("locked", False)),
+            "lock_reason": str(payload.get("lock_reason", "")).strip(),
+            "locked_at": str(payload.get("locked_at", "")).strip(),
+            "trigger": str(trigger or "api"),
+        }
+        try:
+            if QThread.currentThread() == self.thread():
+                self._on_server_lock_signal(event)
+            else:
+                self.server_lock_signal.emit(event)
+        except Exception:
+            self.server_lock_signal.emit(event)
+
+    def _set_offline_lock(self, active: bool, message: str, trigger: str) -> None:
+        was_active = bool(self._offline_lock_active)
+        self._offline_lock_active = bool(active)
+        self._offline_lock_message = str(message or "").strip()
+
+        if self._offline_lock_active:
+            if not was_active:
+                print(f"[LICENSE] LOCKED trigger={trigger} message={self._offline_lock_message}")
+        elif was_active:
+            print(f"[LICENSE] UNLOCKED trigger={trigger}")
+        self._sync_runtime_lock_screen(trigger=f"offline:{trigger}")
+
+    def _enforce_offline_runtime_guard(self, trigger: str = "runtime") -> None:
+        should_lock, message = self._compute_offline_guard_status()
+        self._set_offline_lock(should_lock, message, trigger)
+
+    def _record_online_heartbeat(self) -> None:
+        now_ts = time.time()
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        with self._license_state_lock:
+            state = self._load_license_state_unlocked()
+            state["last_online_at"] = now_iso
+            state["last_online_ts"] = now_ts
+            state["last_online_source"] = "heartbeat"
+            if not str(state.get("first_seen_at", "")).strip():
+                state["first_seen_at"] = now_iso
+            try:
+                first_seen_ts = float(state.get("first_seen_ts", 0.0) or 0.0)
+            except Exception:
+                first_seen_ts = 0.0
+            if first_seen_ts <= 0:
+                state["first_seen_ts"] = now_ts
+                first_seen_ts = now_ts
+            self._save_license_state_unlocked(state)
+            self._first_seen_ts = first_seen_ts
+            self._last_online_ts = now_ts
+        print(f"[LICENSE] online heartbeat at={now_iso}")
+
+    def _init_offline_license_state(self) -> None:
+        raw_hours = os.environ.get("KIOSK_OFFLINE_GRACE_HOURS", str(DEFAULT_OFFLINE_GRACE_HOURS))
+        try:
+            grace_hours = float(raw_hours)
+        except Exception:
+            grace_hours = float(DEFAULT_OFFLINE_GRACE_HOURS)
+        self._offline_grace_seconds = max(3600, int(grace_hours * 3600))
+
+        guard_env = os.environ.get("KIOSK_OFFLINE_GUARD", "1")
+        enabled = self._env_bool(guard_env, True)
+        if self.is_test_mode():
+            enabled = False
+        self._offline_guard_enabled = bool(enabled)
+
+        with self._license_state_lock:
+            state = self._load_license_state_unlocked()
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            changed = False
+            if not str(state.get("first_seen_at", "")).strip():
+                state["first_seen_at"] = now_iso
+                changed = True
+            try:
+                first_seen_ts = float(state.get("first_seen_ts", 0.0) or 0.0)
+            except Exception:
+                first_seen_ts = 0.0
+            if first_seen_ts <= 0:
+                first_seen_ts = self._parse_iso_to_ts(str(state.get("first_seen_at", "")))
+                if first_seen_ts <= 0:
+                    first_seen_ts = time.time()
+                state["first_seen_ts"] = first_seen_ts
+                changed = True
+
+            ts_value = 0.0
+            try:
+                ts_value = float(state.get("last_online_ts", 0.0) or 0.0)
+            except Exception:
+                ts_value = 0.0
+            if ts_value <= 0:
+                ts_value = self._parse_iso_to_ts(str(state.get("last_online_at", "")))
+                if ts_value > 0:
+                    state["last_online_ts"] = ts_value
+                    changed = True
+            self._first_seen_ts = first_seen_ts
+            self._last_online_ts = ts_value
+            if changed:
+                self._save_license_state_unlocked(state)
+
+        print(
+            f"[LICENSE] init guard={1 if self._offline_guard_enabled else 0} "
+            f"grace_hours={self._offline_grace_seconds / 3600:.1f} "
+            f"first_seen_ts={self._first_seen_ts:.0f} "
+            f"last_online_ts={self._last_online_ts:.0f}"
+        )
+        self._enforce_offline_runtime_guard("startup")
+
+    def retry_offline_unlock(self) -> None:
+        print("[LICENSE] manual retry requested")
+        self._show_runtime_notice("재인증 시도중... / Retrying authorization...", duration_ms=1000)
+        self._heartbeat_tick()
 
     def check_runtime_internet_health(self) -> tuple[bool, str]:
         ok, msg = check_internet(timeout=1.0)
@@ -12872,6 +13759,511 @@ class KioskMainWindow(QMainWindow):
             "video_url": video_url,
         }
 
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _resolve_sale_payment_method(self, required: int, coupon_value: int) -> str:
+        if self.is_test_mode():
+            return "TEST"
+
+        method = str(self.current_payment_method or "").strip().lower()
+        if method == "card":
+            return "CARD"
+        if method == "coupon":
+            if coupon_value == required:
+                return "COUPON"
+            if 0 < coupon_value < required:
+                return "COUPON_CASH"
+            return "CASH"
+        if method == "cash":
+            if 0 < coupon_value < required:
+                return "COUPON_CASH"
+            return "CASH"
+
+        if 0 < coupon_value < required:
+            return "COUPON_CASH"
+        if coupon_value == required:
+            return "COUPON"
+        return "CASH"
+
+    def _build_sale_complete_payload(self, session: Session) -> Optional[dict[str, Any]]:
+        session_id = str(getattr(session, "session_id", "") or session.session_dir.name).strip()
+        if not session_id:
+            return None
+
+        required = max(0, self._safe_int(getattr(session, "payment_required", self.current_required_amount), 0))
+        if required <= 0:
+            required = max(0, self._safe_int(self.current_required_amount, 0))
+        if required <= 0:
+            print("[SALES] skip: required_amount missing")
+            return None
+
+        coupon_value = max(0, self._safe_int(getattr(session, "coupon_value", self.current_coupon_value), 0))
+        payment_method = self._resolve_sale_payment_method(required, coupon_value)
+        coupon_code = str(getattr(session, "coupon_code", self.current_coupon_code) or "").strip()
+        prints = max(1, self._safe_int(getattr(session, "print_count", self.current_print_count), 2))
+        layout_id = str(self.current_layout_id or getattr(session, "layout_id", "") or "").strip()
+        if not layout_id:
+            layout_id = "unknown"
+
+        if payment_method in {"CASH", "CARD", "TEST"}:
+            amount_coupon = 0
+            amount_cash = required
+            coupon_code = ""
+        elif payment_method == "COUPON":
+            if not coupon_code:
+                print("[SALES] skip: coupon_code missing for COUPON")
+                return None
+            amount_coupon = required
+            amount_cash = 0
+        else:  # COUPON_CASH
+            if not coupon_code:
+                print("[SALES] skip: coupon_code missing for COUPON_CASH")
+                return None
+            amount_coupon = max(0, min(required, coupon_value))
+            amount_cash = max(0, required - amount_coupon)
+            if amount_coupon <= 0:
+                payment_method = "CASH"
+                coupon_code = ""
+                amount_coupon = 0
+                amount_cash = required
+
+        payload = {
+            "session_id": session_id,
+            "layout_id": layout_id,
+            "prints": int(prints),
+            "currency": "KRW",
+            "price_total": int(required),
+            "payment_method": payment_method,
+            "amount_cash": int(amount_cash),
+            "coupon_code": coupon_code,
+            "amount_coupon": int(amount_coupon),
+            "meta": {
+                "compose_mode": str(self.compose_mode or "normal"),
+                "kiosk_required_amount": int(required),
+                "kiosk_coupon_value": int(coupon_value),
+                "kiosk_inserted_amount": int(self._safe_int(getattr(session, "payment_inserted", self.current_inserted_amount), 0)),
+            },
+        }
+        return payload
+
+    def _is_sale_already_reported(self, session_id: str) -> bool:
+        with self._sale_report_lock:
+            return session_id in self._reported_sale_sessions
+
+    def _mark_sale_reported(self, session_id: str) -> None:
+        with self._sale_report_lock:
+            self._reported_sale_sessions.add(session_id)
+
+    def _build_kiosk_api_auth_headers(self) -> dict[str, str]:
+        share_cfg = self.get_share_settings()
+        device_code = str(share_cfg.get("device_code", "")).strip() or str(os.environ.get("KIOSK_DEVICE_CODE", "")).strip()
+        device_token = str(share_cfg.get("device_token", "")).strip() or str(os.environ.get("KIOSK_DEVICE_TOKEN", "")).strip()
+        if not device_code or not device_token:
+            raise RuntimeError("share.device_code/device_token missing")
+        return {
+            "X-Device-Code": device_code,
+            "X-Device-Token": device_token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def _sales_complete_url(self) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        return f"{api_base}/kiosk/sales/complete"
+
+    def _sales_request_timeout(self) -> float:
+        share_cfg = self.get_share_settings()
+        raw = share_cfg.get("timeout_sec", DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
+        try:
+            timeout = float(raw)
+        except Exception:
+            timeout = 12.0
+        return min(45.0, max(3.0, timeout))
+
+    def _offline_queue_count(self) -> int:
+        with self._offline_queue_lock:
+            return len(self._load_offline_queue_unlocked())
+
+    def _load_offline_queue_unlocked(self) -> list[dict[str, Any]]:
+        path = Path(self._offline_queue_path)
+        if not path.is_file():
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[QUEUE] load failed path={path} err={exc}")
+            return []
+        items = raw.get("items", []) if isinstance(raw, dict) else raw
+        if not isinstance(items, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind", "")).strip().lower()
+            payload = item.get("payload")
+            if kind not in {"sale_complete", "heartbeat"} or not isinstance(payload, dict):
+                continue
+            dedupe_key = str(item.get("dedupe_key", "")).strip()
+            retry_count = self._safe_int(item.get("retry_count"), 0)
+            try:
+                next_try_ts = float(item.get("next_try_ts", time.time()))
+            except Exception:
+                next_try_ts = time.time()
+            try:
+                created_ts = float(item.get("created_ts", next_try_ts))
+            except Exception:
+                created_ts = next_try_ts
+            normalized.append(
+                {
+                    "event_id": str(item.get("event_id", "")).strip()
+                    or f"{kind}-{int(created_ts * 1000)}",
+                    "kind": kind,
+                    "dedupe_key": dedupe_key,
+                    "payload": payload,
+                    "retry_count": max(0, retry_count),
+                    "created_ts": created_ts,
+                    "next_try_ts": next_try_ts,
+                    "last_error": str(item.get("last_error", "")).strip(),
+                }
+            )
+        return normalized
+
+    def _save_offline_queue_unlocked(self, items: list[dict[str, Any]]) -> None:
+        path = Path(self._offline_queue_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, {"items": items, "updated_at": datetime.now().isoformat(timespec="seconds")})
+
+    @staticmethod
+    def _offline_retry_backoff_sec(retry_count: int) -> float:
+        step = max(0, int(retry_count))
+        return float(min(300, 5 * (2 ** min(step, 6))))
+
+    def _enqueue_offline_event(self, *, kind: str, payload: dict[str, Any], dedupe_key: str) -> None:
+        event_kind = str(kind or "").strip().lower()
+        if event_kind not in {"sale_complete", "heartbeat"}:
+            return
+        safe_payload = dict(payload) if isinstance(payload, dict) else {}
+        now_ts = time.time()
+        event = {
+            "event_id": f"{event_kind}-{int(now_ts * 1000)}-{os.getpid()}",
+            "kind": event_kind,
+            "dedupe_key": str(dedupe_key or "").strip(),
+            "payload": safe_payload,
+            "retry_count": 0,
+            "created_ts": now_ts,
+            "next_try_ts": now_ts,
+            "last_error": "",
+        }
+        with self._offline_queue_lock:
+            items = self._load_offline_queue_unlocked()
+            if event["dedupe_key"]:
+                filtered: list[dict[str, Any]] = []
+                replaced = False
+                for item in items:
+                    if str(item.get("dedupe_key", "")).strip() != event["dedupe_key"]:
+                        filtered.append(item)
+                        continue
+                    if replaced:
+                        continue
+                    replaced = True
+                    if event_kind == "sale_complete":
+                        filtered.append(item)
+                    else:
+                        filtered.append(event)
+                if not replaced:
+                    filtered.append(event)
+                items = filtered
+            else:
+                items.append(event)
+            self._save_offline_queue_unlocked(items)
+            print(
+                f"[QUEUE] enqueue kind={event_kind} key={event['dedupe_key'] or '-'} "
+                f"size={len(items)}"
+            )
+
+    def _flush_offline_queue_once(self) -> tuple[int, int]:
+        now_ts = time.time()
+        delivered = 0
+        with self._offline_queue_lock:
+            items = self._load_offline_queue_unlocked()
+        if not items:
+            return 0, 0
+        due_items: list[dict[str, Any]] = []
+        keep_items: list[dict[str, Any]] = []
+        for item in items:
+            try:
+                next_try_ts = float(item.get("next_try_ts", now_ts))
+            except Exception:
+                next_try_ts = now_ts
+            if now_ts < next_try_ts:
+                keep_items.append(item)
+            else:
+                due_items.append(item)
+        with self._offline_queue_lock:
+            self._save_offline_queue_unlocked(keep_items)
+
+        requeue_items: list[dict[str, Any]] = []
+        for item in due_items:
+            kind = str(item.get("kind", "")).strip().lower()
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            ok = False
+            reason = "unknown"
+            if kind == "sale_complete":
+                ok, reason = self._send_sale_complete_request(payload)
+                if ok:
+                    session_id = str(payload.get("session_id", "")).strip()
+                    if session_id:
+                        self._mark_sale_reported(session_id)
+            elif kind == "heartbeat":
+                ok, reason = self._send_heartbeat_request(payload=payload)
+            else:
+                continue
+            if ok:
+                delivered += 1
+                print(
+                    f"[QUEUE] delivered kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'}"
+                )
+                continue
+            if str(reason).strip().upper().startswith("DEVICE_LOCKED"):
+                print(
+                    f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
+                    "reason=DEVICE_LOCKED"
+                )
+                continue
+            retry_count = max(0, self._safe_int(item.get("retry_count"), 0) + 1)
+            backoff = self._offline_retry_backoff_sec(retry_count)
+            item["retry_count"] = retry_count
+            item["next_try_ts"] = now_ts + backoff
+            item["last_error"] = str(reason)[:240]
+            requeue_items.append(item)
+            print(
+                f"[QUEUE] retry kind={kind} attempt={retry_count} "
+                f"backoff={int(backoff)}s reason={reason}"
+            )
+        with self._offline_queue_lock:
+            pending = self._load_offline_queue_unlocked()
+            for item in requeue_items:
+                dedupe_key = str(item.get("dedupe_key", "")).strip()
+                kind = str(item.get("kind", "")).strip().lower()
+                if dedupe_key:
+                    if kind == "heartbeat":
+                        pending = [
+                            existing
+                            for existing in pending
+                            if str(existing.get("dedupe_key", "")).strip() != dedupe_key
+                        ]
+                        pending.append(item)
+                        continue
+                    if any(
+                        str(existing.get("dedupe_key", "")).strip() == dedupe_key
+                        for existing in pending
+                    ):
+                        continue
+                pending.append(item)
+            self._save_offline_queue_unlocked(pending)
+        return delivered, len(pending)
+
+    def _flush_offline_queue_async(self, reason: str = "manual") -> None:
+        with self._offline_flush_lock:
+            if self._offline_flush_inflight:
+                return
+            self._offline_flush_inflight = True
+
+        def _runner() -> None:
+            try:
+                delivered, pending = self._flush_offline_queue_once()
+                if delivered > 0:
+                    print(f"[QUEUE] flush reason={reason} delivered={delivered} pending={pending}")
+            finally:
+                with self._offline_flush_lock:
+                    self._offline_flush_inflight = False
+
+        threading.Thread(target=_runner, daemon=True, name=f"offline-queue-{reason}").start()
+
+    def _send_sale_complete_request(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        if requests is None:
+            return False, "requests module not installed"
+        url = self._sales_complete_url()
+        headers = self._build_kiosk_api_auth_headers()
+        timeout = self._sales_request_timeout()
+
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+                body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+                lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="sales_api")
+                if lock_hit:
+                    return False, "DEVICE_LOCKED"
+                if int(response.status_code) >= 400:
+                    reason = f"HTTP {response.status_code} {body_text[:220]}"
+                    print(f"[SALES] report fail attempt={attempt} reason={reason}")
+                    if attempt < 3:
+                        time.sleep(0.5 * attempt)
+                    continue
+                data = parsed_payload if isinstance(parsed_payload, dict) else (response.json() if response.content else {})
+                if not isinstance(data, dict):
+                    data = {}
+                ok = bool(data.get("ok", False))
+                if not ok:
+                    reason = f"ok=0 payload={str(data)[:220]}"
+                    print(f"[SALES] report fail attempt={attempt} reason={reason}")
+                    if attempt < 3:
+                        time.sleep(0.5 * attempt)
+                    continue
+                sale_id = data.get("sale_id")
+                created = bool(data.get("created", False))
+                already_exists = bool(data.get("already_exists", False))
+                return True, f"sale_id={sale_id} created={1 if created else 0} exists={1 if already_exists else 0}"
+            except Exception as exc:
+                reason = f"{exc}"
+                print(f"[SALES] report fail attempt={attempt} reason={reason}")
+                if attempt < 3:
+                    time.sleep(0.5 * attempt)
+        return False, "max retries reached"
+
+    def _heartbeat_url(self) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        return f"{api_base}/kiosk/heartbeat"
+
+    def _build_heartbeat_payload(self) -> dict[str, Any]:
+        internet_ok, _internet_msg = check_internet(timeout=0.8)
+        printing_settings = self.get_printing_settings()
+        printers = printing_settings.get("printers", {}) if isinstance(printing_settings, dict) else {}
+
+        def _printer_bool(config_key: str) -> bool:
+            item = printers.get(config_key, {}) if isinstance(printers, dict) else {}
+            name = str(item.get("win_name", "")).strip() if isinstance(item, dict) else ""
+            if not name:
+                return True
+            ok, _msg = get_printer_health(name)
+            return bool(ok)
+
+        ds620_ok = _printer_bool("DS620")
+        rx1hs_ok = _printer_bool("RX1HS")
+        printer_ok = bool(ds620_ok or rx1hs_ok)
+
+        payload: dict[str, Any] = {
+            "app_version": str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")),
+            "internet_ok": bool(internet_ok),
+            "camera_ok": True,
+            "printer_ok": bool(printer_ok),
+            "last_error": None,
+        }
+        payload.update(self._offline_telemetry_snapshot())
+        return payload
+
+    def _send_heartbeat_request(
+        self, payload: Optional[dict[str, Any]] = None
+    ) -> tuple[bool, str]:
+        if requests is None:
+            return False, "requests module not installed"
+        url = self._heartbeat_url()
+        headers = self._build_kiosk_api_auth_headers()
+        body = payload if isinstance(payload, dict) else self._build_heartbeat_payload()
+        timeout = self._sales_request_timeout()
+
+        try:
+            response = requests.post(url, json=body, headers=headers, timeout=timeout)
+            body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+            lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="heartbeat_api")
+            if lock_hit:
+                return False, "DEVICE_LOCKED"
+            if int(response.status_code) >= 400:
+                return False, f"HTTP {response.status_code} {body_text[:220]}"
+            data = parsed_payload if isinstance(parsed_payload, dict) else (response.json() if response.content else {})
+            if not isinstance(data, dict):
+                data = {}
+            heartbeat_id = data.get("heartbeat_id")
+            return True, f"id={heartbeat_id}"
+        except Exception as exc:
+            return False, str(exc)
+
+    def _heartbeat_tick(self) -> None:
+        self._enforce_offline_runtime_guard("heartbeat_timer")
+        with self._heartbeat_lock:
+            if self._heartbeat_inflight:
+                return
+            self._heartbeat_inflight = True
+
+        def _runner() -> None:
+            try:
+                delivered, pending = self._flush_offline_queue_once()
+                if delivered > 0:
+                    print(f"[QUEUE] pre-heartbeat delivered={delivered} pending={pending}")
+                payload = self._build_heartbeat_payload()
+                ok, msg = self._send_heartbeat_request(payload=payload)
+                if ok:
+                    self._record_online_heartbeat()
+                    print(f"[HEARTBEAT] ok {msg}")
+                    self.offline_guard_signal.emit("heartbeat_ok")
+                else:
+                    print(f"[HEARTBEAT] fail {msg}")
+                    if not str(msg).strip().upper().startswith("DEVICE_LOCKED"):
+                        self._enqueue_offline_event(
+                            kind="heartbeat",
+                            payload=payload,
+                            dedupe_key="heartbeat",
+                        )
+                    self.offline_guard_signal.emit("heartbeat_fail")
+            finally:
+                with self._heartbeat_lock:
+                    self._heartbeat_inflight = False
+
+        threading.Thread(target=_runner, daemon=True, name="heartbeat-report").start()
+
+    def _report_sale_complete_async(self) -> None:
+        session = self.get_active_session()
+        if session is None:
+            print("[SALES] skip: session missing")
+            return
+        payload = self._build_sale_complete_payload(session)
+        if payload is None:
+            return
+        session_id = str(payload.get("session_id", "")).strip()
+        if not session_id:
+            return
+        if self._is_sale_already_reported(session_id):
+            print(f"[SALES] skip duplicate session={session_id}")
+            return
+
+        def _runner() -> None:
+            print(f"[SALES] report start session={session_id}")
+            ok, message = self._send_sale_complete_request(payload)
+            if ok:
+                self._mark_sale_reported(session_id)
+                print(f"[SALES] report ok session={session_id} {message}")
+            else:
+                print(f"[SALES] report failed session={session_id} {message}")
+                if str(message).strip().upper().startswith("DEVICE_LOCKED"):
+                    print(f"[SALES] queue skipped session={session_id} reason=DEVICE_LOCKED")
+                    return
+                self._enqueue_offline_event(
+                    kind="sale_complete",
+                    payload=payload,
+                    dedupe_key=f"sale:{session_id}",
+                )
+                self._flush_offline_queue_async(reason="sale_fail")
+
+        threading.Thread(target=_runner, daemon=True, name=f"sale-report-{session_id}").start()
+
     def _write_share_json(self, session: Session, urls: dict) -> Optional[Path]:
         try:
             share_dir = ensure_share_dir(session.session_dir)
@@ -12924,6 +14316,7 @@ class KioskMainWindow(QMainWindow):
 
     def _on_print_success(self) -> None:
         print("[PRINT] success")
+        self._report_sale_complete_async()
         preview_screen = self.screens.get("preview")
         if isinstance(preview_screen, PreviewScreen):
             preview_screen.set_confirm_locked(False)
@@ -13100,6 +14493,10 @@ class KioskMainWindow(QMainWindow):
             self.record_start = None
             return
 
+        if self._is_runtime_locked() and screen.screen_name not in {"offline_locked", "admin"}:
+            self.goto_screen("offline_locked")
+            return
+
         if screen.screen_name == "start" and 0 <= x < 100 and 0 <= y < 100:
             self._start_admin_tap_count += 1
             self._start_admin_tap_timer.start(2000)
@@ -13171,6 +14568,8 @@ class KioskMainWindow(QMainWindow):
                 camera_screen.request_shutter()
                 return
         if action:
+            self.ui_sound.play("click")
+            self._suppress_nav_sound_until = time.monotonic() + 0.35
             print(f"[ACTION] screen={screen.screen_name} action={action}")
             if screen.screen_name == "camera" and action == "camera:shutter":
                 print("[HOTSPOT] screen=camera action=camera:shutter")
@@ -13385,6 +14784,14 @@ class KioskMainWindow(QMainWindow):
             self.open_admin()
             return
         current = self.stack.currentWidget()
+        if self._is_runtime_locked():
+            current_name = getattr(current, "screen_name", None)
+            if current_name == "offline_locked" and key in (KEY_ENTER, KEY_RETURN, KEY_SPACE):
+                self.retry_offline_unlock()
+                return
+            if current_name not in {"offline_locked", "admin"}:
+                self.goto_screen("offline_locked")
+                return
         if getattr(current, "screen_name", None) == "camera":
             camera_screen = self.screens.get("camera")
             if isinstance(camera_screen, CameraScreen):
@@ -13476,6 +14883,7 @@ class KioskMainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
+        self._heartbeat_timer.stop()
         self._stop_select_photo_preload_worker(wait=True)
         self.stop_bill_acceptor_test(wait_ms=3000)
         camera_screen = self.screens.get("camera")
