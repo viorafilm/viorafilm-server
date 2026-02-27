@@ -255,6 +255,13 @@ def devices_view(request):
             if not targets:
                 messages.error(request, "먼저 알림 이메일을 저장하세요.")
                 return redirect("dashboard_devices")
+            backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
+            if "console.EmailBackend" in backend:
+                messages.warning(
+                    request,
+                    "현재 이메일 백엔드가 콘솔 모드입니다. 실제 메일 발송을 위해 SMTP 설정을 먼저 입력하세요.",
+                )
+                return redirect("dashboard_devices")
             now_local = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
             subject = "[Viorafilm] 테스트 알림 메일"
             body = (
