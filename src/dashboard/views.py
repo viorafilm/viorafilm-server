@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
 from accounts.models import UserRole
+from alerts.notifier import send_email_targets
 from alerts.models import ChannelType, NotificationChannel
 from audit.service import log_event
 from core.models import Branch, Device, Organization
@@ -249,6 +250,23 @@ def devices_view(request):
                 )
                 created += 1
             messages.success(request, f"알림 이메일 저장 완료: {created}개")
+        elif action == "send_test_email":
+            targets = _get_scope_email_targets(user)
+            if not targets:
+                messages.error(request, "먼저 알림 이메일을 저장하세요.")
+                return redirect("dashboard_devices")
+            now_local = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+            subject = "[Viorafilm] 테스트 알림 메일"
+            body = (
+                "이 메일은 Viorafilm 대시보드에서 발송한 테스트 알림입니다.\n"
+                f"시간: {now_local}\n"
+                f"발신 사용자: {user.username}\n"
+            )
+            sent, failed = send_email_targets(targets, subject, body)
+            if sent:
+                messages.success(request, f"테스트 메일 발송 완료: 성공 {sent}, 실패 {failed}")
+            else:
+                messages.error(request, f"테스트 메일 발송 실패: 성공 {sent}, 실패 {failed}")
         return redirect("dashboard_devices")
 
     devices = _scoped_devices(user)

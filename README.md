@@ -68,9 +68,19 @@ ALERT_USE_SLACK=0
 OFFLINE_THRESHOLD_SECONDS=120
 ALERT_NOTIFY_COOLDOWN_SECONDS=600
 DEFAULT_FROM_EMAIL=noreply@photoharu.local
+# Real SMTP (production)
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_HOST_USER=YOUR_EMAIL@gmail.com
+EMAIL_HOST_PASSWORD=YOUR_APP_PASSWORD
+EMAIL_USE_TLS=1
+EMAIL_USE_SSL=0
+EMAIL_TIMEOUT=10
 ```
 - Slack is disabled by default (`ALERT_USE_SLACK=0`).
 - Configure recipients in Dashboard: `장치 관리 > 이메일 알림 설정`.
+- Test delivery in Dashboard: `장치 관리 > 테스트 메일 발송`.
 - Device issue alerts (offline/printer/camera/internet) will be sent to configured emails.
 
 ### Expired share cleanup
