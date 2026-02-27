@@ -10661,6 +10661,16 @@ class KioskMainWindow(QMainWindow):
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(30000)
         self._heartbeat_timer.timeout.connect(self._heartbeat_tick)
+        self._server_lock_probe_lock = threading.Lock()
+        self._server_lock_probe_inflight = False
+        self._server_lock_probe_timer = QTimer(self)
+        lock_poll_ms = 3000
+        try:
+            lock_poll_ms = int(float(os.environ.get("KIOSK_SERVER_LOCK_POLL_MS", "3000")))
+        except Exception:
+            lock_poll_ms = 3000
+        self._server_lock_probe_timer.setInterval(max(1000, min(10000, lock_poll_ms)))
+        self._server_lock_probe_timer.timeout.connect(self._server_lock_probe_tick)
         self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
         self.server_lock_signal.connect(self._on_server_lock_signal)
 
@@ -10734,7 +10744,9 @@ class KioskMainWindow(QMainWindow):
         if pending_events > 0:
             print(f"[QUEUE] pending events loaded={pending_events}")
         self._heartbeat_timer.start()
+        self._server_lock_probe_timer.start()
         QTimer.singleShot(2500, self._heartbeat_tick)
+        QTimer.singleShot(1000, self._server_lock_probe_tick)
         if self._is_runtime_locked():
             self.goto_screen("offline_locked")
         else:
@@ -13881,6 +13893,15 @@ class KioskMainWindow(QMainWindow):
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/sales/complete"
 
+    def _kiosk_config_url(self) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        return f"{api_base}/kiosk/config"
+
     def _sales_request_timeout(self) -> float:
         share_cfg = self.get_share_settings()
         raw = share_cfg.get("timeout_sec", DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
@@ -14195,6 +14216,48 @@ class KioskMainWindow(QMainWindow):
             return True, f"id={heartbeat_id}"
         except Exception as exc:
             return False, str(exc)
+
+    def _probe_server_lock_state(self) -> tuple[bool, str]:
+        if requests is None:
+            return False, "requests module not installed"
+        url = self._kiosk_config_url()
+        headers = self._build_kiosk_api_auth_headers()
+        headers = dict(headers)
+        headers.pop("Content-Type", None)
+        timeout = min(5.0, self._sales_request_timeout())
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+            lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="config_probe")
+            if lock_hit:
+                return True, "locked"
+            if int(response.status_code) >= 400:
+                return False, f"HTTP {response.status_code} {body_text[:180]}"
+            data = parsed_payload if isinstance(parsed_payload, dict) else (response.json() if response.content else {})
+            if not isinstance(data, dict):
+                return False, "invalid json payload"
+            self._apply_server_lock_payload(data.get("device_lock"), trigger="config_probe")
+            return True, "ok"
+        except Exception as exc:
+            return False, str(exc)
+
+    def _server_lock_probe_tick(self) -> None:
+        with self._server_lock_probe_lock:
+            if self._server_lock_probe_inflight:
+                return
+            self._server_lock_probe_inflight = True
+
+        def _runner() -> None:
+            try:
+                ok, msg = self._probe_server_lock_state()
+                if not ok:
+                    if str(msg).strip().upper().startswith("HTTP 401"):
+                        print(f"[SERVER_LOCK] probe auth fail {msg}")
+            finally:
+                with self._server_lock_probe_lock:
+                    self._server_lock_probe_inflight = False
+
+        threading.Thread(target=_runner, daemon=True, name="server-lock-probe").start()
 
     def _heartbeat_tick(self) -> None:
         self._enforce_offline_runtime_guard("heartbeat_timer")
@@ -14884,6 +14947,7 @@ class KioskMainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         self._heartbeat_timer.stop()
+        self._server_lock_probe_timer.stop()
         self._stop_select_photo_preload_worker(wait=True)
         self.stop_bill_acceptor_test(wait_ms=3000)
         camera_screen = self.screens.get("camera")
