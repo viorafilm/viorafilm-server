@@ -5,7 +5,7 @@
     <div class="card card-soft h-100">
       <div class="card-body">
         <div class="text-muted small">오늘 매출</div>
-        <div class="fs-3 fw-bold">KRW {{ today_total|default:0 }}</div>
+        <div class="fs-3 fw-bold">KRW <span id="todayTotal">{{ today_total|default:0 }}</span></div>
       </div>
     </div>
   </div>
@@ -13,7 +13,7 @@
     <div class="card card-soft h-100">
       <div class="card-body">
         <div class="text-muted small">이번 달 매출</div>
-        <div class="fs-3 fw-bold">KRW {{ month_total|default:0 }}</div>
+        <div class="fs-3 fw-bold">KRW <span id="monthTotal">{{ month_total|default:0 }}</span></div>
       </div>
     </div>
   </div>
@@ -21,7 +21,7 @@
     <div class="card card-soft h-100">
       <div class="card-body">
         <div class="text-muted small">총 거래 건수</div>
-        <div class="fs-3 fw-bold">{{ sales_count|default:0 }}</div>
+        <div class="fs-3 fw-bold"><span id="salesCount">{{ sales_count|default:0 }}</span></div>
       </div>
     </div>
   </div>
@@ -35,4 +35,50 @@
     <a class="btn btn-outline-primary btn-sm" href="/dashboard/photos">사진 관리 보기</a>
   </div>
 </div>
+
+<script>
+  (function () {
+    const INTERVAL_MS = 10000;
+    const LIVE_URL = "{% url 'dashboard_index_live' %}";
+    const todayEl = document.getElementById("todayTotal");
+    const monthEl = document.getElementById("monthTotal");
+    const countEl = document.getElementById("salesCount");
+    if (!todayEl || !monthEl || !countEl) {
+      return;
+    }
+    let inFlight = false;
+
+    async function refreshSummary() {
+      if (inFlight || document.hidden) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const response = await fetch(LIVE_URL, {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (!data || data.ok !== true) {
+          return;
+        }
+        todayEl.textContent = String(data.today_total ?? "0");
+        monthEl.textContent = String(data.month_total ?? "0");
+        countEl.textContent = String(data.sales_count ?? "0");
+      } catch (_err) {
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    window.setInterval(refreshSummary, INTERVAL_MS);
+  })();
+</script>
 {% endblock %}

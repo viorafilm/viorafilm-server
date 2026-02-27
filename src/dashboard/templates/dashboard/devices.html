@@ -73,81 +73,8 @@
             <th>액션</th>
           </tr>
         </thead>
-        <tbody>
-          {% for row in rows %}
-          <tr>
-            <td class="fw-semibold">{{ row.device.device_code }}</td>
-            <td>{{ row.device.org.code }} / {{ row.device.branch.code }}</td>
-            <td>{{ row.device.last_seen_at|default:"-" }}</td>
-            <td>
-              {% if row.online %}
-              <span class="badge text-bg-success">ONLINE</span>
-              {% else %}
-              <span class="badge text-bg-danger">OFFLINE</span>
-              {% endif %}
-            </td>
-            <td>{% if row.internet_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
-            <td>{% if row.camera_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
-            <td>{% if row.printer_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
-            <td>
-              {% if row.offline_guard_enabled %}
-              <span class="badge text-bg-primary">ENABLED</span>
-              {% else %}
-              <span class="badge text-bg-secondary">OFF</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.offline_grace_overdue %}
-              <span class="badge text-bg-danger">{{ row.offline_grace_text }}</span>
-              {% elif row.offline_grace_text == "-" %}
-              <span class="badge text-bg-secondary">-</span>
-              {% else %}
-              <span class="badge text-bg-warning">{{ row.offline_grace_text }}</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.server_lock_active %}
-              <span class="badge text-bg-danger">SERVER LOCK</span>
-              {% elif row.offline_lock_active %}
-              <span class="badge text-bg-warning">OFFLINE LOCK</span>
-              {% else %}
-              <span class="badge text-bg-success">UNLOCKED</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.server_lock_reason %}
-              <span class="small">{{ row.server_lock_reason }}</span>
-              {% else %}
-              <span class="text-muted">-</span>
-              {% endif %}
-            </td>
-            <td>{{ row.offline_last_online_at|default:"-" }}</td>
-            <td>
-              {% if can_manage_locks %}
-                {% if row.server_lock_active %}
-                <form method="post" class="d-flex gap-1">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="unlock_device">
-                  <input type="hidden" name="device_id" value="{{ row.device.id }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success">잠금 해제</button>
-                </form>
-                {% else %}
-                <form method="post" class="d-flex gap-1">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="lock_device">
-                  <input type="hidden" name="device_id" value="{{ row.device.id }}">
-                  <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="사유(선택)" style="max-width: 130px;">
-                  <button type="submit" class="btn btn-sm btn-outline-danger">잠금</button>
-                </form>
-                {% endif %}
-              {% else %}
-              <span class="text-muted small">읽기 전용</span>
-              {% endif %}
-            </td>
-          </tr>
-          {% empty %}
-          <tr><td colspan="13" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
-          {% endfor %}
+        <tbody id="devicesTbody">
+          {% include "dashboard/_devices_tbody.html" %}
         </tbody>
       </table>
     </div>
@@ -159,11 +86,13 @@
     const KEY = "vf_devices_auto_refresh";
     const DEFAULT_ENABLED = true;
     const INTERVAL_MS = 5000;
+    const LIVE_URL = "{% url 'dashboard_devices_live' %}{% if only_locked %}?locked=1{% endif %}";
 
     const btn = document.getElementById("toggleAutoRefreshBtn");
     const refreshBtn = document.getElementById("refreshNowBtn");
     const badge = document.getElementById("autoRefreshBadge");
-    if (!btn || !refreshBtn || !badge) {
+    const tbody = document.getElementById("devicesTbody");
+    if (!btn || !refreshBtn || !badge || !tbody) {
       return;
     }
 
@@ -198,7 +127,39 @@
     }
 
     let enabled = readEnabled();
+    let inFlight = false;
     applyUi(enabled);
+
+    async function refreshRows(manual) {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const response = await fetch(LIVE_URL, {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        });
+        if (!response.ok) {
+          if (manual) {
+            window.location.reload();
+          }
+          return;
+        }
+        const data = await response.json();
+        if (!data || data.ok !== true || typeof data.tbody_html !== "string") {
+          return;
+        }
+        tbody.innerHTML = data.tbody_html;
+      } catch (_err) {
+      } finally {
+        inFlight = false;
+      }
+    }
 
     btn.addEventListener("click", function () {
       enabled = !enabled;
@@ -207,7 +168,7 @@
     });
 
     refreshBtn.addEventListener("click", function () {
-      window.location.reload();
+      refreshRows(true);
     });
 
     window.setInterval(function () {
@@ -220,7 +181,7 @@
       if (isEditingForm()) {
         return;
       }
-      window.location.reload();
+      refreshRows(false);
     }, INTERVAL_MS);
   })();
 </script>

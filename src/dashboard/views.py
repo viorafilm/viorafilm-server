@@ -6,8 +6,9 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.db.models import Sum
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
+from django.template.loader import render_to_string
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
@@ -192,6 +193,67 @@ def _get_scope_email_targets(user):
     return deduped
 
 
+def _build_sales_summary(user):
+    sales = _scoped_sales(user)
+    today = timezone.localdate()
+    now_local = timezone.localtime()
+    today_total = sales.filter(created_at__date=today).aggregate(v=Sum("price_total"))["v"] or 0
+    month_total = (
+        sales.filter(created_at__year=now_local.year, created_at__month=now_local.month).aggregate(v=Sum("price_total"))["v"]
+        or 0
+    )
+    sales_count = sales.count()
+    return {
+        "today_total": int(today_total),
+        "month_total": int(month_total),
+        "sales_count": int(sales_count),
+    }
+
+
+def _build_device_rows(user, only_locked=False):
+    devices = _scoped_devices(user)
+    now = timezone.now()
+    threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
+    rows = []
+    for d in devices[:300]:
+        health = d.last_health_json if isinstance(d.last_health_json, dict) else {}
+        online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < threshold)
+        rows.append(
+            {
+                "device": d,
+                "online": online,
+                "internet_ok": health.get("internet_ok"),
+                "camera_ok": health.get("camera_ok"),
+                "printer_ok": _derive_printer_ok(health),
+                "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
+                "offline_lock_active": bool(health.get("offline_lock_active", False)),
+                "offline_grace_remaining_seconds": _as_optional_int(health.get("offline_grace_remaining_seconds")),
+                "offline_last_online_at": health.get("offline_last_online_at"),
+                "server_lock_active": bool(d.is_locked),
+                "server_lock_reason": d.lock_reason or "",
+                "server_locked_at": d.locked_at,
+            }
+        )
+    for row in rows:
+        remain = row.get("offline_grace_remaining_seconds")
+        if remain is None:
+            row["offline_grace_text"] = "-"
+            row["offline_grace_overdue"] = False
+            continue
+        remain_int = int(remain)
+        if remain_int >= 0:
+            row["offline_grace_text"] = _format_duration_compact(remain_int)
+            row["offline_grace_overdue"] = False
+        else:
+            row["offline_grace_text"] = f"초과 {_format_duration_compact(abs(remain_int))}"
+            row["offline_grace_overdue"] = True
+    for row in rows:
+        row["locked_any"] = bool(row.get("offline_lock_active") or row.get("server_lock_active"))
+    if only_locked:
+        rows = [row for row in rows if row.get("locked_any")]
+    return rows
+
+
 @never_cache
 def login_view(request):
     if request.user.is_authenticated:
@@ -207,21 +269,26 @@ def login_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def index_view(request):
-    sales = _scoped_sales(request.user)
-    today = timezone.localdate()
-    now = timezone.localtime()
-    today_total = sales.filter(created_at__date=today).aggregate(v=Sum("price_total"))["v"] or 0
-    month_total = sales.filter(created_at__year=now.year, created_at__month=now.month).aggregate(v=Sum("price_total"))["v"] or 0
+    summary = _build_sales_summary(request.user)
     return render(
         request,
         "dashboard/index.html",
         {
-            "today_total": today_total,
-            "month_total": month_total,
-            "sales_count": sales.count(),
+            "today_total": summary["today_total"],
+            "month_total": summary["month_total"],
+            "sales_count": summary["sales_count"],
             "can_edit": not _is_viewer(request.user),
         },
     )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
+def index_live_view(request):
+    summary = _build_sales_summary(request.user)
+    summary["ok"] = True
+    summary["generated_at"] = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+    return JsonResponse(summary)
 
 
 @login_required(login_url="/dashboard/login")
@@ -326,48 +393,7 @@ def devices_view(request):
                 messages.success(request, f"장치 잠금 해제 완료: {target.device_code}")
         return redirect("dashboard_devices")
 
-    devices = _scoped_devices(user)
-    now = timezone.now()
-    threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
-    rows = []
-    for d in devices[:300]:
-        health = d.last_health_json if isinstance(d.last_health_json, dict) else {}
-        online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < threshold)
-        rows.append(
-            {
-                "device": d,
-                "online": online,
-                "internet_ok": health.get("internet_ok"),
-                "camera_ok": health.get("camera_ok"),
-                "printer_ok": _derive_printer_ok(health),
-                "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
-                "offline_lock_active": bool(health.get("offline_lock_active", False)),
-                "offline_grace_remaining_seconds": _as_optional_int(
-                    health.get("offline_grace_remaining_seconds")
-                ),
-                "offline_last_online_at": health.get("offline_last_online_at"),
-                "server_lock_active": bool(d.is_locked),
-                "server_lock_reason": d.lock_reason or "",
-                "server_locked_at": d.locked_at,
-            }
-        )
-    for row in rows:
-        remain = row.get("offline_grace_remaining_seconds")
-        if remain is None:
-            row["offline_grace_text"] = "-"
-            row["offline_grace_overdue"] = False
-            continue
-        remain_int = int(remain)
-        if remain_int >= 0:
-            row["offline_grace_text"] = _format_duration_compact(remain_int)
-            row["offline_grace_overdue"] = False
-        else:
-            row["offline_grace_text"] = f"초과 {_format_duration_compact(abs(remain_int))}"
-            row["offline_grace_overdue"] = True
-    for row in rows:
-        row["locked_any"] = bool(row.get("offline_lock_active") or row.get("server_lock_active"))
-    if only_locked:
-        rows = [row for row in rows if row.get("locked_any")]
+    rows = _build_device_rows(user, only_locked=only_locked)
 
     return render(
         request,
@@ -379,6 +405,31 @@ def devices_view(request):
             "can_manage_locks": can_manage_locks,
             "alert_emails_text": ", ".join(_get_scope_email_targets(user)),
         },
+    )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
+def devices_live_view(request):
+    user = request.user
+    only_locked = str(request.GET.get("locked", "")).strip() == "1"
+    rows = _build_device_rows(user, only_locked=only_locked)
+    can_manage_locks = not _is_viewer(user)
+    tbody_html = render_to_string(
+        "dashboard/_devices_tbody.html",
+        {
+            "rows": rows,
+            "can_manage_locks": can_manage_locks,
+        },
+        request=request,
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "generated_at": timezone.localtime().strftime("%Y-%m-%d %H:%M:%S"),
+            "count": len(rows),
+            "tbody_html": tbody_html,
+        }
     )
 
 
