@@ -9,9 +9,20 @@ class HeartbeatSerializer(serializers.Serializer):
     internet_ok = serializers.BooleanField(required=False)
     camera_ok = serializers.BooleanField(required=False)
     printer_ok = serializers.BooleanField(required=False)
+    film_remaining = serializers.IntegerField(required=False, min_value=0)
+    printer_film_remaining = serializers.IntegerField(required=False, min_value=0)
+    media_remaining = serializers.IntegerField(required=False, min_value=0)
+    remaining_media = serializers.IntegerField(required=False, min_value=0)
     printer_ds620 = serializers.DictField(required=False)
     printer_rx1hs = serializers.DictField(required=False)
     last_error = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    offline_guard_enabled = serializers.BooleanField(required=False)
+    offline_lock_active = serializers.BooleanField(required=False)
+    offline_grace_seconds = serializers.IntegerField(required=False)
+    offline_grace_remaining_seconds = serializers.IntegerField(required=False, allow_null=True)
+    offline_reference_source = serializers.CharField(required=False, allow_blank=True)
+    offline_last_online_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    offline_first_seen_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class ConfigAppliedSerializer(serializers.Serializer):
