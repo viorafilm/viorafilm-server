@@ -19,8 +19,6 @@ services:
         "--timeout",
         "120",
       ]
-    ports:
-      - "127.0.0.1:8000:8000"
     volumes:
       - photoharu_media:/app/src/media
     restart: unless-stopped

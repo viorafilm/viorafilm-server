@@ -33,7 +33,7 @@ services:
       - ./src:/app/src
       - photoharu_media:/app/src/media
     ports:
-      - "8000:8000"
+      - "${WEB_BIND_HOST:-0.0.0.0}:${WEB_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -77,4 +77,3 @@ services:
 volumes:
   photoharu_pgdata:
   photoharu_media:
-

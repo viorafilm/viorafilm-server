@@ -28,6 +28,11 @@ make superuser
 
 ## Production (Vultr + Cloudflare)
 - Full guide: `docs/DEPLOY_VULTR_CLOUDFLARE.md`
+- In production `.env`, set:
+```env
+WEB_BIND_HOST=127.0.0.1
+WEB_PORT=8000
+```
 - Production compose:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
