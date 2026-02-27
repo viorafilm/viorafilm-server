@@ -5573,22 +5573,75 @@ class CouponInputScreen(ImageScreen):
         self._submitting = True
         admin_settings = getattr(self.main_window, "admin_settings", {})
         test_mode = bool(admin_settings.get("test_mode", False)) if isinstance(admin_settings, dict) else False
+        required = int(getattr(self.main_window, "current_required_amount", 0) or 0)
+        if required <= 0 and hasattr(self.main_window, "_refresh_required_amount"):
+            try:
+                required = int(self.main_window._refresh_required_amount())
+            except Exception:
+                required = 0
+
+        server_checked = False
+        server_valid = False
+        server_amount = 0
+        server_reason = ""
+        if hasattr(self.main_window, "_verify_coupon_with_server"):
+            try:
+                server_result = self.main_window._verify_coupon_with_server(code, required)
+                if isinstance(server_result, dict):
+                    server_checked = bool(server_result.get("checked", False))
+                    server_valid = bool(server_result.get("valid", False))
+                    server_amount = int(server_result.get("coupon_amount", 0) or 0)
+                    server_reason = str(server_result.get("reason", "") or "").strip()
+            except Exception as exc:
+                print(f"[COUPON] server check exception: {exc}")
+
+        if server_checked:
+            if server_valid:
+                print(f"[COUPON] ok(server) code={code} amount={server_amount} required={required}")
+                if hasattr(self.main_window, "_handle_coupon_success"):
+                    self.main_window._handle_coupon_success(code, server_amount)
+                else:
+                    self.main_window.goto_screen("payment_complete_success")
+                self._submitting = False
+                return
+            reason_msg = {
+                "NOT_FOUND": "등록되지 않은 쿠폰입니다",
+                "USED": "이미 사용된 쿠폰입니다",
+                "EXPIRED": "만료된 쿠폰입니다",
+                "INVALID_FORMAT": "쿠폰 형식이 올바르지 않습니다",
+                "DEVICE_LOCKED": "장치가 잠겨 쿠폰 검증이 불가합니다",
+            }.get(server_reason, "쿠폰이 올바르지 않습니다")
+            print(f"[COUPON] fail(server) code={code} reason={server_reason}")
+            self._show_notice(reason_msg, duration_ms=1200)
+            self.coupon_buf = ""
+            self._update_coupon_display()
+            self._show_invalid_overlay()
+            self._submitting = False
+            return
+
         is_ok = False
+        coupon_value = 0
         if test_mode and self._accept_any_in_test:
             is_ok = True
+            coupon_value = required if required > 0 else 0
         elif code in self._valid_codes:
             is_ok = True
+            if hasattr(self.main_window, "_resolve_coupon_value"):
+                try:
+                    coupon_value = int(self.main_window._resolve_coupon_value(code))
+                except Exception:
+                    coupon_value = 0
 
         if is_ok:
-            print("[COUPON] ok -> apply coupon flow")
+            print("[COUPON] ok(local) -> apply coupon flow")
             if hasattr(self.main_window, "_handle_coupon_success"):
-                self.main_window._handle_coupon_success(code)
+                self.main_window._handle_coupon_success(code, coupon_value)
             else:
                 self.main_window.goto_screen("payment_complete_success")
             self._submitting = False
             return
 
-        print("[COUPON] fail -> show invalid overlay")
+        print("[COUPON] fail(local) -> show invalid overlay")
         self._show_notice("쿠폰이 올바르지 않습니다", duration_ms=1000)
         self.coupon_buf = ""
         self._update_coupon_display()
@@ -10561,6 +10614,7 @@ class OfflineLockScreen(QWidget):
 class KioskMainWindow(QMainWindow):
     offline_guard_signal = Signal(str)
     server_lock_signal = Signal(object)
+    ota_state_signal = Signal(object)
     FRAME_SELECT_MODE_RECTS: dict[str, tuple[int, int, int, int]] = {
         "celebrity": (0, 920, 960, 160),
         "ai": (960, 920, 960, 160),
@@ -10665,6 +10719,11 @@ class KioskMainWindow(QMainWindow):
         self._offline_lock_message = ""
         self._server_lock_active = False
         self._server_lock_message = ""
+        self._ota_force_lock_active = False
+        self._ota_force_lock_message = ""
+        self._ota_target_version = ""
+        self._ota_check_inflight = False
+        self._ota_last_state_signature = ""
         self._offline_guard_enabled = True
         self._offline_grace_seconds = int(DEFAULT_OFFLINE_GRACE_HOURS * 3600)
         self._reported_sale_sessions: set[str] = set()
@@ -10690,8 +10749,17 @@ class KioskMainWindow(QMainWindow):
             lock_poll_ms = 1000
         self._server_lock_probe_timer.setInterval(max(500, min(10000, lock_poll_ms)))
         self._server_lock_probe_timer.timeout.connect(self._server_lock_probe_tick)
+        self._ota_check_timer = QTimer(self)
+        ota_poll_ms = 300000
+        try:
+            ota_poll_ms = int(float(os.environ.get("KIOSK_OTA_CHECK_MS", "300000")))
+        except Exception:
+            ota_poll_ms = 300000
+        self._ota_check_timer.setInterval(max(30000, min(3600000, ota_poll_ms)))
+        self._ota_check_timer.timeout.connect(self._ota_check_tick)
         self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
         self.server_lock_signal.connect(self._on_server_lock_signal)
+        self.ota_state_signal.connect(self._on_ota_state_signal)
 
         after_camera_loading_screen = LoadingScreen(self)
         after_camera_loading_screen.screen_name = "after_camera_loading"
@@ -10764,8 +10832,10 @@ class KioskMainWindow(QMainWindow):
             print(f"[QUEUE] pending events loaded={pending_events}")
         self._heartbeat_timer.start()
         self._server_lock_probe_timer.start()
+        self._ota_check_timer.start()
         QTimer.singleShot(2500, self._heartbeat_tick)
         QTimer.singleShot(1000, self._server_lock_probe_tick)
+        QTimer.singleShot(4000, self._ota_check_tick)
         if self._is_runtime_locked():
             self.goto_screen("offline_locked")
         else:
@@ -11895,8 +11965,19 @@ class KioskMainWindow(QMainWindow):
                 f"ai_enabled={1 if self.mode_settings.get('ai_enabled') else 0}"
             )
 
+    def _is_card_runtime_supported(self) -> bool:
+        if self.is_test_mode():
+            return True
+        return self._env_bool(os.environ.get("KIOSK_CARD_RUNTIME_ENABLED", "0"), False)
+
     def _apply_payment_methods(self, payment_methods: dict, emit_log: bool = True) -> bool:
         normalized, forced_cash = self._normalize_payment_methods(payment_methods)
+        if normalized.get("card", False) and not self._is_card_runtime_supported():
+            normalized["card"] = False
+            if not (normalized.get("cash", False) or normalized.get("coupon", False)):
+                normalized["cash"] = True
+                forced_cash = True
+            print("[PAYMENT_POLICY] card disabled by runtime policy (KIOSK_CARD_RUNTIME_ENABLED=0)")
         self.payment_methods = normalized
         payment_screen = self.screens.get("payment_method")
         if isinstance(payment_screen, AppPaymentMethodScreen):
@@ -12371,11 +12452,13 @@ class KioskMainWindow(QMainWindow):
         return True, lock_message
 
     def _is_runtime_locked(self) -> bool:
-        return bool(self._offline_lock_active or self._server_lock_active)
+        return bool(self._offline_lock_active or self._server_lock_active or self._ota_force_lock_active)
 
     def _current_runtime_lock_message(self) -> str:
         if self._server_lock_active:
             return str(self._server_lock_message or "").strip()
+        if self._ota_force_lock_active:
+            return str(self._ota_force_lock_message or "").strip()
         return str(self._offline_lock_message or "").strip()
 
     def _sync_runtime_lock_screen(self, trigger: str) -> None:
@@ -12442,6 +12525,157 @@ class KioskMainWindow(QMainWindow):
                 self.server_lock_signal.emit(event)
         except Exception:
             self.server_lock_signal.emit(event)
+
+    def _build_ota_force_lock_message(
+        self,
+        target_version: str,
+        min_supported_version: str,
+        notes: str,
+    ) -> str:
+        target = str(target_version or "").strip() or "-"
+        minimum = str(min_supported_version or "").strip() or "-"
+        note_text = str(notes or "").strip()
+        lines = [
+            "필수 업데이트가 필요합니다.",
+            "Mandatory update is required.",
+            f"목표 버전 / Target Version: {target}",
+            f"최소 지원 버전 / Min Supported: {minimum}",
+        ]
+        if note_text:
+            lines.append(f"안내 / Notes: {note_text}")
+        lines.append("관리자에게 문의 후 업데이트를 진행해주세요.")
+        lines.append("Please contact admin and apply update.")
+        return "\n".join(lines)
+
+    def _set_ota_force_lock(self, active: bool, message: str, target_version: str, trigger: str) -> None:
+        was_active = bool(self._ota_force_lock_active)
+        self._ota_force_lock_active = bool(active)
+        self._ota_force_lock_message = str(message or "").strip()
+        self._ota_target_version = str(target_version or "").strip()
+        if self._ota_force_lock_active and not was_active:
+            print(
+                f"[OTA] FORCE_LOCK trigger={trigger} target={self._ota_target_version or '-'} "
+                f"msg={self._ota_force_lock_message}"
+            )
+        if not self._ota_force_lock_active and was_active:
+            print(f"[OTA] FORCE_UNLOCK trigger={trigger}")
+        self._sync_runtime_lock_screen(trigger=f"ota:{trigger}")
+
+    def _on_ota_state_signal(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        active = bool(payload.get("active", False))
+        message = str(payload.get("message", "")).strip()
+        target_version = str(payload.get("target_version", "")).strip()
+        update_available = bool(payload.get("update_available", False))
+        force_update = bool(payload.get("force_update", False))
+        current_version = str(payload.get("current_version", "")).strip()
+        error = str(payload.get("error", "")).strip()
+        signature = "|".join(
+            [
+                "1" if active else "0",
+                "1" if update_available else "0",
+                "1" if force_update else "0",
+                target_version,
+                current_version,
+                error,
+            ]
+        )
+        if signature != self._ota_last_state_signature:
+            self._ota_last_state_signature = signature
+            if error:
+                print(f"[OTA] check fail: {error}")
+            else:
+                print(
+                    f"[OTA] check ok current={current_version or '-'} target={target_version or '-'} "
+                    f"update={1 if update_available else 0} force={1 if force_update else 0}"
+                )
+        self._set_ota_force_lock(active, message, target_version, trigger="check")
+
+    def _probe_ota_state(self) -> dict[str, Any]:
+        current_version = str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
+        result: dict[str, Any] = {
+            "active": False,
+            "message": "",
+            "target_version": "",
+            "update_available": False,
+            "force_update": False,
+            "current_version": current_version,
+            "error": "",
+        }
+        if requests is None:
+            result["error"] = "requests module not installed"
+            return result
+        try:
+            url = self._updates_check_url()
+            headers = self._build_kiosk_api_auth_headers()
+            headers = dict(headers)
+            headers.pop("Content-Type", None)
+        except Exception as exc:
+            result["error"] = f"client config missing ({exc})"
+            return result
+
+        timeout = min(6.0, self._sales_request_timeout())
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                params={"platform": "win", "current": current_version},
+                timeout=timeout,
+            )
+        except Exception as exc:
+            result["error"] = str(exc)
+            return result
+
+        lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="ota_check_api")
+        if lock_hit:
+            result["error"] = "DEVICE_LOCKED"
+            return result
+
+        if int(response.status_code) >= 400:
+            body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+            result["error"] = f"HTTP {response.status_code} {body_text[:180]}"
+            return result
+
+        data = parsed_payload if isinstance(parsed_payload, dict) else {}
+        if not data:
+            try:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    data = parsed
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            result["error"] = "invalid json payload"
+            return result
+
+        update_available = bool(data.get("update_available", False))
+        force_update = bool(data.get("force_update", False))
+        target_version = str(data.get("target_version") or data.get("active_version") or "").strip()
+        min_supported = str(data.get("min_supported_version") or "").strip()
+        notes = str(data.get("notes") or "").strip()
+
+        result["update_available"] = update_available
+        result["force_update"] = force_update
+        result["target_version"] = target_version
+        if force_update:
+            result["active"] = True
+            result["message"] = self._build_ota_force_lock_message(target_version, min_supported, notes)
+        return result
+
+    def _ota_check_tick(self) -> None:
+        if self._ota_check_inflight:
+            return
+        self._ota_check_inflight = True
+
+        def _runner() -> None:
+            try:
+                payload = self._probe_ota_state()
+                self.ota_state_signal.emit(payload)
+            finally:
+                self._ota_check_inflight = False
+
+        threading.Thread(target=_runner, daemon=True, name="ota-check").start()
 
     def _set_offline_lock(self, active: bool, message: str, trigger: str) -> None:
         was_active = bool(self._offline_lock_active)
@@ -13207,13 +13441,17 @@ class KioskMainWindow(QMainWindow):
                 self._stop_bill_acceptor_for_payment()
                 self.goto_screen("payment_complete_success")
 
-    def _handle_coupon_success(self, code: str) -> None:
+    def _handle_coupon_success(self, code: str, coupon_value: Optional[int] = None) -> None:
         self.current_payment_method = "coupon"
         self.payment_method = "coupon"
         self.current_coupon_code = str(code)
         self.coupon_code = self.current_coupon_code
         self.pending_coupon_code = self.current_coupon_code
-        self.current_coupon_value = self._resolve_coupon_value(code)
+        if coupon_value is None:
+            resolved_coupon_value = self._resolve_coupon_value(code)
+        else:
+            resolved_coupon_value = max(0, self._safe_int(coupon_value, 0))
+        self.current_coupon_value = resolved_coupon_value
         self.coupon_value = int(self.current_coupon_value)
         required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
         self.current_inserted_amount = 0
@@ -13921,6 +14159,92 @@ class KioskMainWindow(QMainWindow):
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/config"
 
+    def _updates_check_url(self) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
+        if not api_base:
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        return f"{api_base}/kiosk/updates/check"
+
+    def _coupon_check_url(self) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
+        if not api_base:
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        return f"{api_base}/kiosk/coupon/check"
+
+    def _verify_coupon_with_server(self, code_digits: str, amount_due: int) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "checked": False,
+            "valid": False,
+            "coupon_amount": 0,
+            "remaining_due": max(0, int(amount_due)),
+            "reason": "CHECK_SKIPPED",
+        }
+        if requests is None:
+            result["reason"] = "REQUESTS_MISSING"
+            return result
+
+        code = "".join(ch for ch in str(code_digits or "") if ch.isdigit())[:6]
+        if len(code) != 6:
+            result.update({"checked": True, "reason": "INVALID_FORMAT"})
+            return result
+
+        try:
+            url = self._coupon_check_url()
+            headers = self._build_kiosk_api_auth_headers()
+        except Exception as exc:
+            print(f"[COUPON] server check skipped: {exc}")
+            result["reason"] = "CLIENT_NOT_CONFIGURED"
+            return result
+
+        timeout = min(8.0, self._sales_request_timeout())
+        payload = {"coupon_code": code, "amount_due": max(0, int(amount_due))}
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        except Exception as exc:
+            print(f"[COUPON] server check request failed: {exc}")
+            result["reason"] = "REQUEST_FAILED"
+            return result
+
+        lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="coupon_check_api")
+        if lock_hit:
+            result.update({"checked": True, "reason": "DEVICE_LOCKED"})
+            return result
+
+        if int(response.status_code) >= 400:
+            body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+            print(f"[COUPON] server check http={response.status_code} body={body_text[:160]}")
+            result["reason"] = f"HTTP_{response.status_code}"
+            return result
+
+        data = parsed_payload if isinstance(parsed_payload, dict) else {}
+        if not data:
+            try:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    data = parsed
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            result["reason"] = "INVALID_RESPONSE"
+            return result
+
+        result["checked"] = True
+        result["valid"] = bool(data.get("valid", False))
+        result["coupon_amount"] = max(0, self._safe_int(data.get("coupon_amount"), 0))
+        result["remaining_due"] = max(0, self._safe_int(data.get("remaining_due"), 0))
+        result["reason"] = str(data.get("reason", "UNKNOWN")).strip() or "UNKNOWN"
+        print(
+            f"[COUPON] server checked code={code} valid={1 if result['valid'] else 0} "
+            f"amount={result['coupon_amount']} due={payload['amount_due']} reason={result['reason']}"
+        )
+        return result
+
     def _sales_request_timeout(self) -> float:
         share_cfg = self.get_share_settings()
         raw = share_cfg.get("timeout_sec", DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
@@ -14232,6 +14556,21 @@ class KioskMainWindow(QMainWindow):
             "printer_ok": bool(printer_ok),
             "last_error": None,
         }
+        raw_film_all = str(os.environ.get("KIOSK_FILM_REMAINING", "")).strip()
+        raw_film_ds620 = str(os.environ.get("KIOSK_FILM_REMAINING_DS620", "")).strip()
+        raw_film_rx1hs = str(os.environ.get("KIOSK_FILM_REMAINING_RX1HS", "")).strip()
+        if raw_film_all:
+            parsed = self._safe_int(raw_film_all, -1)
+            if parsed >= 0:
+                payload["film_remaining"] = int(parsed)
+        if raw_film_ds620:
+            parsed = self._safe_int(raw_film_ds620, -1)
+            if parsed >= 0:
+                payload["printer_ds620"] = {"ok": bool(ds620_ok), "film_remaining": int(parsed)}
+        if raw_film_rx1hs:
+            parsed = self._safe_int(raw_film_rx1hs, -1)
+            if parsed >= 0:
+                payload["printer_rx1hs"] = {"ok": bool(rx1hs_ok), "film_remaining": int(parsed)}
         payload.update(self._offline_telemetry_snapshot())
         return payload
 
@@ -15006,6 +15345,7 @@ class KioskMainWindow(QMainWindow):
     def closeEvent(self, event):  # noqa: N802
         self._heartbeat_timer.stop()
         self._server_lock_probe_timer.stop()
+        self._ota_check_timer.stop()
         self._stop_select_photo_preload_worker(wait=True)
         self.stop_bill_acceptor_test(wait_ms=3000)
         camera_screen = self.screens.get("camera")

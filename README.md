@@ -37,6 +37,7 @@ WEB_PORT=8000
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
+- Optional CI/CD: `.github/workflows/deploy-prod.yml` (push to `main` auto deploy via SSH).
 
 ## Share Upload API (R2-ready)
 - Required device auth headers:
@@ -98,6 +99,18 @@ EMAIL_TIMEOUT=10
 - Configure recipients in Dashboard: `장치 관리 > 이메일 알림 설정`.
 - Test delivery in Dashboard: `장치 관리 > 테스트 메일 발송`.
 - Device issue alerts (offline/printer/camera/internet) will be sent to configured emails.
+
+### Kiosk policy toggles (runtime)
+```env
+# Disable card flow in production by default (enabled automatically in test mode)
+KIOSK_CARD_RUNTIME_ENABLED=0
+
+# OTA check interval (milliseconds)
+KIOSK_OTA_CHECK_MS=300000
+```
+
+### Health endpoint (monitoring)
+- `GET /api/health/` now returns DB/Redis checks + active/online device count + open alert count.
 
 ### Expired share cleanup
 - Celery beat runs cleanup every 10 minutes.

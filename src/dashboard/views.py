@@ -131,6 +131,33 @@ def _as_optional_int(value):
         return None
 
 
+def _extract_film_remaining(health):
+    if not isinstance(health, dict):
+        return None
+
+    direct_keys = (
+        "film_remaining",
+        "printer_film_remaining",
+        "media_remaining",
+        "remaining_media",
+    )
+    for key in direct_keys:
+        val = _as_optional_int(health.get(key))
+        if val is not None and val >= 0:
+            return val
+
+    for key in ("printer_ds620", "printer_rx1hs"):
+        item = health.get(key)
+        if not isinstance(item, dict):
+            continue
+        for sub_key in ("film_remaining", "media_remaining", "remaining", "remain"):
+            val = _as_optional_int(item.get(sub_key))
+            if val is not None and val >= 0:
+                return val
+
+    return None
+
+
 def _format_duration_compact(total_seconds: int) -> str:
     seconds = max(0, int(total_seconds))
     days, rem = divmod(seconds, 86400)
@@ -303,6 +330,7 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
                 "internet_ok": health.get("internet_ok"),
                 "camera_ok": health.get("camera_ok"),
                 "printer_ok": _derive_printer_ok(health),
+                "film_remaining": _extract_film_remaining(health),
                 "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
                 "offline_lock_active": bool(health.get("offline_lock_active", False)),
                 "offline_grace_remaining_seconds": _as_optional_int(health.get("offline_grace_remaining_seconds")),

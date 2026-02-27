@@ -98,3 +98,20 @@ git pull origin main
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec web python manage.py migrate
 ```
+
+## 11) Optional: GitHub Actions auto deploy
+Repository includes `.github/workflows/deploy-prod.yml`.
+
+Set GitHub repository secrets:
+- `PROD_HOST` = VPS IP or domain
+- `PROD_USER` = SSH user (example: `root`)
+- `PROD_SSH_KEY` = private SSH key (PEM)
+- `PROD_PORT` = `22` (optional)
+- `PROD_APP_DIR` = `/opt/viorafilm-server` (optional)
+
+When pushing to `main`, workflow runs:
+1. SSH to VPS
+2. `git pull --ff-only origin main`
+3. `docker compose ... up -d --build`
+4. `manage.py migrate`
+5. `collectstatic`
