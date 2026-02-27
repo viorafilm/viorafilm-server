@@ -15,7 +15,11 @@
   <td>{% if row.printer_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
   <td>
     {% if row.film_remaining is not None %}
-    <span class="badge text-bg-info">{{ row.film_remaining }} 장</span>
+      {% if row.film_remaining_estimated %}
+      <span class="badge text-bg-warning">추정 {{ row.film_remaining }} 장</span>
+      {% else %}
+      <span class="badge text-bg-info">{{ row.film_remaining }} 장</span>
+      {% endif %}
     {% else %}
     <span class="badge text-bg-secondary">-</span>
     {% endif %}

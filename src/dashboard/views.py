@@ -316,13 +316,35 @@ def _build_sales_summary(user):
 
 
 def _build_device_rows(user, only_locked=False, devices_qs=None):
-    devices = devices_qs if devices_qs is not None else _scoped_devices(user)
+    devices_qs = devices_qs if devices_qs is not None else _scoped_devices(user)
+    devices = list(devices_qs[:300])
+    device_ids = [int(d.id) for d in devices]
+    default_capacity = 400
+    try:
+        default_capacity = max(0, int(getattr(settings, "DASHBOARD_FILM_DEFAULT_CAPACITY", 400)))
+    except Exception:
+        default_capacity = 400
+    usage_map = {}
+    if device_ids:
+        usage_rows = (
+            SaleTransaction.objects.filter(device_id__in=device_ids)
+            .values("device_id")
+            .annotate(total_prints=Sum("prints"))
+        )
+        usage_map = {int(row["device_id"]): int(row.get("total_prints") or 0) for row in usage_rows}
+
     now = timezone.now()
     threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
     rows = []
-    for d in devices[:300]:
+    for d in devices:
         health = d.last_health_json if isinstance(d.last_health_json, dict) else {}
         online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < threshold)
+        film_remaining = _extract_film_remaining(health)
+        film_estimated = False
+        if film_remaining is None:
+            used = max(0, int(usage_map.get(int(d.id), 0)))
+            film_remaining = max(0, int(default_capacity) - used)
+            film_estimated = True
         rows.append(
             {
                 "device": d,
@@ -330,7 +352,8 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
                 "internet_ok": health.get("internet_ok"),
                 "camera_ok": health.get("camera_ok"),
                 "printer_ok": _derive_printer_ok(health),
-                "film_remaining": _extract_film_remaining(health),
+                "film_remaining": film_remaining,
+                "film_remaining_estimated": film_estimated,
                 "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
                 "offline_lock_active": bool(health.get("offline_lock_active", False)),
                 "offline_grace_remaining_seconds": _as_optional_int(health.get("offline_grace_remaining_seconds")),
