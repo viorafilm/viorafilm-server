@@ -57,6 +57,25 @@ R2_PREFIX=sessions
 
 If R2 values are missing, server falls back to local media storage.
 
+### Alert settings (Email-first)
+```env
+ALERT_USE_SLACK=0
+OFFLINE_THRESHOLD_SECONDS=120
+ALERT_NOTIFY_COOLDOWN_SECONDS=600
+DEFAULT_FROM_EMAIL=noreply@photoharu.local
+```
+- Slack is disabled by default (`ALERT_USE_SLACK=0`).
+- Configure recipients in Dashboard: `장치 관리 > 이메일 알림 설정`.
+- Device issue alerts (offline/printer/camera/internet) will be sent to configured emails.
+
+### Expired share cleanup
+- Celery beat runs cleanup every 10 minutes.
+- Expired share files are deleted from storage and expired share rows are removed.
+- Manual run:
+```bash
+docker compose exec web python manage.py shell -c "from mediahub.tasks import cleanup_expired_shares; cleanup_expired_shares()"
+```
+
 ### Curl test
 ```bash
 curl -X POST http://localhost:8000/api/kiosk/share/init \

@@ -1,8 +1,51 @@
 ﻿{% extends "dashboard/base.html" %}
 {% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="mb-0">장치 관리</h5>
+  <div class="d-flex gap-2">
+    {% if only_locked %}
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_devices' %}">전체 보기</a>
+    {% else %}
+    <a class="btn btn-sm btn-outline-danger" href="{% url 'dashboard_devices' %}?locked=1">잠금 장치만 보기</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card card-soft mb-3">
+  <div class="card-body">
+    <h6 class="mb-2">이메일 알림 설정</h6>
+    <p class="text-muted small mb-3">
+      장치 오프라인/카메라/프린터/인터넷 이상 알림을 받을 이메일을 입력하세요. 쉼표(,)로 여러 개 입력할 수 있습니다.
+    </p>
+    {% if can_edit_notifications %}
+    <form method="post" class="row g-2">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="save_alert_emails">
+      <div class="col-12 col-lg-9">
+        <input
+          type="text"
+          name="alert_emails"
+          class="form-control"
+          placeholder="example1@viorafilm.com, example2@viorafilm.com"
+          value="{{ alert_emails_text }}"
+        >
+      </div>
+      <div class="col-12 col-lg-3 d-grid">
+        <button type="submit" class="btn btn-primary">이메일 저장</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="alert alert-secondary mb-0">VIEWER 권한은 이메일 알림 설정을 수정할 수 없습니다.</div>
+    {% endif %}
+  </div>
+</div>
+
 <div class="card card-soft">
   <div class="card-body">
-    <h5 class="mb-3">장치 관리</h5>
+    <h6 class="mb-3">
+      장치 상태
+      {% if only_locked %}<span class="badge text-bg-danger ms-1">LOCKED ONLY</span>{% endif %}
+    </h6>
     <div class="table-responsive">
       <table class="table table-hover align-middle">
         <thead>
@@ -14,6 +57,10 @@
             <th>인터넷</th>
             <th>카메라</th>
             <th>프린터</th>
+            <th>오프라인 가드</th>
+            <th>오프라인 남은시간</th>
+            <th>잠금</th>
+            <th>마지막 온라인 인증</th>
           </tr>
         </thead>
         <tbody>
@@ -32,9 +79,33 @@
             <td>{% if row.internet_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
             <td>{% if row.camera_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
             <td>{% if row.printer_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
+            <td>
+              {% if row.offline_guard_enabled %}
+              <span class="badge text-bg-primary">ENABLED</span>
+              {% else %}
+              <span class="badge text-bg-secondary">OFF</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.offline_grace_overdue %}
+              <span class="badge text-bg-danger">{{ row.offline_grace_text }}</span>
+              {% elif row.offline_grace_text == "-" %}
+              <span class="badge text-bg-secondary">-</span>
+              {% else %}
+              <span class="badge text-bg-warning">{{ row.offline_grace_text }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.offline_lock_active %}
+              <span class="badge text-bg-danger">LOCKED</span>
+              {% else %}
+              <span class="badge text-bg-success">UNLOCKED</span>
+              {% endif %}
+            </td>
+            <td>{{ row.offline_last_online_at|default:"-" }}</td>
           </tr>
           {% empty %}
-          <tr><td colspan="7" class="text-center text-muted py-4">등록된 장치가 없습니다.</td></tr>
+          <tr><td colspan="11" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
           {% endfor %}
         </tbody>
       </table>

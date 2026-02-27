@@ -1,4 +1,4 @@
-from datetime import timedelta
+﻿from datetime import timedelta
 
 from django.conf import settings
 from django.contrib import messages
@@ -11,6 +11,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 
 from accounts.models import UserRole
+from alerts.models import ChannelType, NotificationChannel
 from audit.service import log_event
 from core.models import Branch, Device, Organization
 from coupons.models import Coupon
@@ -115,6 +116,78 @@ def _derive_printer_ok(health):
     return any(values)
 
 
+def _as_optional_int(value):
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _format_duration_compact(total_seconds: int) -> str:
+    seconds = max(0, int(total_seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    return f"{hours}h {minutes}m"
+
+
+def _parse_email_list(text: str):
+    raw = str(text or "").replace(";", ",")
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    cleaned = []
+    seen = set()
+    for item in parts:
+        if "@" not in item:
+            continue
+        lowered = item.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        cleaned.append(item)
+    return cleaned
+
+
+def _notification_scope_org(user):
+    if _is_super(user):
+        return None
+    if getattr(user, "organization_id", None):
+        return user.organization
+    if getattr(user, "branch_id", None) and getattr(user.branch, "org_id", None):
+        return user.branch.org
+    return None
+
+
+def _get_scope_email_channels(user):
+    org = _notification_scope_org(user)
+    query = NotificationChannel.objects.filter(type=ChannelType.EMAIL)
+    if org is None:
+        query = query.filter(org__isnull=True)
+    else:
+        query = query.filter(org=org)
+    return query.order_by("id")
+
+
+def _get_scope_email_targets(user):
+    targets = []
+    for channel in _get_scope_email_channels(user):
+        value = channel.config.get("to")
+        if isinstance(value, str) and value.strip():
+            targets.append(value.strip())
+    seen = set()
+    deduped = []
+    for email in targets:
+        low = email.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        deduped.append(email)
+    return deduped
+
+
 def login_view(request):
     if request.user.is_authenticated:
         return redirect("dashboard_index")
@@ -147,7 +220,32 @@ def index_view(request):
 
 @login_required(login_url="/dashboard/login")
 def devices_view(request):
-    devices = _scoped_devices(request.user)
+    user = request.user
+    can_edit_notifications = not _is_viewer(user)
+    only_locked = str(request.GET.get("locked", "")).strip() == "1"
+
+    if request.method == "POST":
+        if not can_edit_notifications:
+            return HttpResponseForbidden("Viewer is read-only")
+        action = (request.POST.get("action") or "").strip()
+        if action == "save_alert_emails":
+            emails = _parse_email_list(request.POST.get("alert_emails", ""))
+            scope_org = _notification_scope_org(user)
+            existing = _get_scope_email_channels(user)
+            existing.delete()
+            created = 0
+            for email in emails:
+                NotificationChannel.objects.create(
+                    org=scope_org,
+                    type=ChannelType.EMAIL,
+                    enabled=True,
+                    config={"to": email},
+                )
+                created += 1
+            messages.success(request, f"알림 이메일 저장 완료: {created}개")
+        return redirect("dashboard_devices")
+
+    devices = _scoped_devices(user)
     now = timezone.now()
     threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
     rows = []
@@ -161,9 +259,40 @@ def devices_view(request):
                 "internet_ok": health.get("internet_ok"),
                 "camera_ok": health.get("camera_ok"),
                 "printer_ok": _derive_printer_ok(health),
+                "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
+                "offline_lock_active": bool(health.get("offline_lock_active", False)),
+                "offline_grace_remaining_seconds": _as_optional_int(
+                    health.get("offline_grace_remaining_seconds")
+                ),
+                "offline_last_online_at": health.get("offline_last_online_at"),
             }
         )
-    return render(request, "dashboard/devices.html", {"rows": rows})
+    for row in rows:
+        remain = row.get("offline_grace_remaining_seconds")
+        if remain is None:
+            row["offline_grace_text"] = "-"
+            row["offline_grace_overdue"] = False
+            continue
+        remain_int = int(remain)
+        if remain_int >= 0:
+            row["offline_grace_text"] = _format_duration_compact(remain_int)
+            row["offline_grace_overdue"] = False
+        else:
+            row["offline_grace_text"] = f"초과 {_format_duration_compact(abs(remain_int))}"
+            row["offline_grace_overdue"] = True
+    if only_locked:
+        rows = [row for row in rows if row.get("offline_lock_active")]
+
+    return render(
+        request,
+        "dashboard/devices.html",
+        {
+            "rows": rows,
+            "only_locked": only_locked,
+            "can_edit_notifications": can_edit_notifications,
+            "alert_emails_text": ", ".join(_get_scope_email_targets(user)),
+        },
+    )
 
 
 @login_required(login_url="/dashboard/login")
@@ -290,7 +419,10 @@ def photos_view(request):
     q = (request.GET.get("q") or "").strip()
     now = timezone.now()
     device_ids = list(_scoped_devices(request.user).values_list("id", flat=True))
-    sessions_qs = ShareSession.objects.select_related("device").filter(device_id__in=device_ids)
+    sessions_qs = ShareSession.objects.select_related("device").filter(
+        device_id__in=device_ids,
+        expires_at__gt=now,
+    )
     if q:
         sessions_qs = sessions_qs.filter(token__icontains=q)
     else:
@@ -340,3 +472,4 @@ def photos_view(request):
             }
         )
     return render(request, "dashboard/photos.html", {"rows": rows, "q": q})
+

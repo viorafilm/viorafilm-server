@@ -26,20 +26,4 @@ def cleanup_expired_shares():
             else:
                 delete_by_meta(meta)
 
-        old_assets = dict(session.assets or {})
-        assets = dict(old_assets)
-        assets["expired"] = True
-        assets.pop("print_url", None)
-        assets.pop("frame_url", None)
-        assets.pop("gif_url", None)
-        assets.pop("video_url", None)
-        assets.pop("original_urls", None)
-        changed_fields = []
-        if assets != old_assets:
-            session.assets = assets
-            changed_fields.append("assets")
-        if session.files:
-            session.files = {}
-            changed_fields.append("files")
-        if changed_fields:
-            session.save(update_fields=changed_fields)
+        session.delete()
