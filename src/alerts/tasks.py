@@ -6,7 +6,7 @@ from django.conf import settings
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
-from core.models import Device, Organization
+from core.models import Device
 from sales.models import SaleTransaction
 
 from .models import Alert, AlertType, ChannelType, NotificationChannel, Severity
@@ -145,8 +145,22 @@ def _build_daily_report_body(
     locked_count: int,
     open_alert_count: int,
     open_by_type: dict,
+    top_branches: list,
 ):
     open_lines = ", ".join(f"{k}:{v}" for k, v in sorted(open_by_type.items())) if open_by_type else "-"
+    top_branch_ko = []
+    top_branch_en = []
+    top_n_label = max(1, len(top_branches))
+    for idx, row in enumerate(top_branches, start=1):
+        code = row.get("branch__code") or "-"
+        total = int(row.get("total_amount") or 0)
+        tx = int(row.get("tx_count") or 0)
+        top_branch_ko.append(f"{idx}. {code}: KRW {_format_money(total)} ({tx}\uAC74)")
+        top_branch_en.append(f"{idx}. {code}: KRW {_format_money(total)} ({tx} tx)")
+    if not top_branch_ko:
+        top_branch_ko = ["-"]
+    if not top_branch_en:
+        top_branch_en = ["-"]
     lines = [
         f"[KO] 비오라필름 일일 운영 리포트 ({scope_name})",
         f"날짜: {date_str}",
@@ -158,6 +172,8 @@ def _build_daily_report_body(
         f"잠금 장치 수: {locked_count}",
         f"미해결 알림 수: {open_alert_count}",
         f"미해결 알림 타입: {open_lines}",
+        f"지점별 매출 TOP {top_n_label}:",
+        *top_branch_ko,
         "",
         f"[EN] Viorafilm Daily Operations Report ({scope_name})",
         f"Date: {date_str}",
@@ -169,6 +185,8 @@ def _build_daily_report_body(
         f"Locked Devices: {locked_count}",
         f"Open Alerts: {open_alert_count}",
         f"Open Alert Types: {open_lines}",
+        f"Top Branches by Sales (Top {top_n_label}):",
+        *top_branch_en,
     ]
     return "\n".join(lines)
 
@@ -280,6 +298,7 @@ def send_daily_ops_report():
     day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
     today = day_start.date()
+    top_n = int(getattr(settings, "ALERT_DAILY_TOP_BRANCHES", 5))
 
     channels = NotificationChannel.objects.filter(enabled=True, type=ChannelType.EMAIL).select_related("org")
     for channel in channels:
@@ -315,6 +334,11 @@ def send_daily_ops_report():
         locked_count = _count_locked_devices(devices)
         open_alert_count = alerts_qs.count()
         open_by_type = {row["alert_type"]: row["c"] for row in alerts_qs.values("alert_type").annotate(c=Count("id"))}
+        top_branches = list(
+            sales_qs.values("branch__code")
+            .annotate(total_amount=Sum("price_total"), tx_count=Count("id"))
+            .order_by("-total_amount", "branch__code")[: max(1, top_n)]
+        )
 
         subject = f"[Viorafilm][Daily Report] {today.isoformat()} ({scope_name})"
         body = _build_daily_report_body(
@@ -329,6 +353,7 @@ def send_daily_ops_report():
             locked_count=locked_count,
             open_alert_count=open_alert_count,
             open_by_type=open_by_type,
+            top_branches=top_branches,
         )
         sent, failed = send_email_targets(targets, subject, body)
         logger.info(
