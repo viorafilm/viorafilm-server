@@ -13930,6 +13930,31 @@ class KioskMainWindow(QMainWindow):
             timeout = 12.0
         return min(45.0, max(3.0, timeout))
 
+    def _consume_server_lock_response(self, response: Any, trigger: str) -> tuple[bool, Optional[dict[str, Any]]]:
+        payload: Optional[dict[str, Any]] = None
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            lock_payload = payload.get("device_lock")
+            if isinstance(lock_payload, dict):
+                self._apply_server_lock_payload(lock_payload, trigger=trigger)
+            elif str(payload.get("reason", "")).strip().upper() == "DEVICE_LOCKED":
+                self._apply_server_lock_payload(
+                    {
+                        "locked": True,
+                        "lock_reason": str(payload.get("lock_reason", "")).strip(),
+                        "locked_at": str(payload.get("locked_at", "")).strip(),
+                    },
+                    trigger=trigger,
+                )
+                return True, payload
+        return False, payload
+
     def _offline_queue_count(self) -> int:
         with self._offline_queue_lock:
             return len(self._load_offline_queue_unlocked())
