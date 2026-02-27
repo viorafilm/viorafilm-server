@@ -2,6 +2,31 @@
 {% block content %}
 <h5 class="mb-3">쿠폰 관리</h5>
 
+<form class="row g-2 mb-3" method="get">
+  <div class="col-12 col-md-4 col-lg-3">
+    <label class="form-label mb-1">조직</label>
+    <select class="form-select form-select-sm" name="org_id">
+      <option value="">전체 조직</option>
+      {% for o in filter_orgs %}
+      <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-12 col-md-4 col-lg-3">
+    <label class="form-label mb-1">지점</label>
+    <select class="form-select form-select-sm" name="branch_id">
+      <option value="">전체 지점</option>
+      {% for b in filter_branches %}
+      <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-12 col-md-4 col-lg-3 d-flex align-items-end gap-2">
+    <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_coupons' %}">필터 초기화</a>
+  </div>
+</form>
+
 {% if can_edit %}
 <div class="card card-soft mb-3">
   <div class="card-body">
@@ -55,6 +80,8 @@
 
 <form method="post">
   {% csrf_token %}
+  {% if filter_org_id %}<input type="hidden" name="org_id" value="{{ filter_org_id }}">{% endif %}
+  {% if filter_branch_id %}<input type="hidden" name="branch_id" value="{{ filter_branch_id }}">{% endif %}
   <div class="d-flex flex-wrap gap-2 mb-2">
     {% if can_edit %}
     <button class="btn btn-danger btn-sm" type="submit" name="action" value="delete_selected">선택 삭제</button>

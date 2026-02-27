@@ -22,6 +22,7 @@ from coupons.service import create_batch_and_coupons
 from mediahub.models import ShareSession
 from sales.models import SaleTransaction
 from storagehub.service import generate_download_url_from_meta
+from urllib.parse import urlencode
 
 
 def _is_super(user):
@@ -193,6 +194,83 @@ def _get_scope_email_targets(user):
     return deduped
 
 
+def _pick_valid_int(value):
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    except Exception:
+        return None
+
+
+def _resolve_scope_filters(user, request):
+    if request.method == "POST":
+        raw_org = request.POST.get("org_id") or request.GET.get("org_id")
+        raw_branch = request.POST.get("branch_id") or request.GET.get("branch_id")
+    else:
+        raw_org = request.GET.get("org_id")
+        raw_branch = request.GET.get("branch_id")
+
+    orgs_qs = _available_orgs(user)
+    branches_qs = _available_branches(user)
+
+    selected_org_id = _pick_valid_int(raw_org)
+    selected_branch_id = _pick_valid_int(raw_branch)
+
+    org_ids = set(orgs_qs.values_list("id", flat=True))
+    if selected_org_id not in org_ids:
+        selected_org_id = None
+
+    branch_ids = set(branches_qs.values_list("id", flat=True))
+    if selected_branch_id not in branch_ids:
+        selected_branch_id = None
+
+    if selected_branch_id is not None:
+        branch_obj = branches_qs.filter(id=selected_branch_id).first()
+        if branch_obj is None:
+            selected_branch_id = None
+        elif selected_org_id is not None and int(branch_obj.org_id) != int(selected_org_id):
+            selected_branch_id = None
+        elif selected_org_id is None and _is_super(user):
+            selected_org_id = int(branch_obj.org_id)
+
+    branch_options_qs = branches_qs
+    if selected_org_id is not None:
+        branch_options_qs = branch_options_qs.filter(org_id=selected_org_id)
+
+    return {
+        "org_id": selected_org_id,
+        "branch_id": selected_branch_id,
+        "orgs": orgs_qs,
+        "branches": branch_options_qs,
+    }
+
+
+def _apply_org_branch_filter(qs, org_field, branch_field, filters):
+    org_id = filters.get("org_id")
+    branch_id = filters.get("branch_id")
+    if org_id is not None:
+        qs = qs.filter(**{org_field: org_id})
+    if branch_id is not None:
+        qs = qs.filter(**{branch_field: branch_id})
+    return qs
+
+
+def _query_params_from_filters(filters, extra=None):
+    params = {}
+    org_id = filters.get("org_id")
+    branch_id = filters.get("branch_id")
+    if org_id is not None:
+        params["org_id"] = int(org_id)
+    if branch_id is not None:
+        params["branch_id"] = int(branch_id)
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if value is None or value == "":
+                continue
+            params[key] = value
+    return params
+
+
 def _build_sales_summary(user):
     sales = _scoped_sales(user)
     today = timezone.localdate()
@@ -210,8 +288,8 @@ def _build_sales_summary(user):
     }
 
 
-def _build_device_rows(user, only_locked=False):
-    devices = _scoped_devices(user)
+def _build_device_rows(user, only_locked=False, devices_qs=None):
+    devices = devices_qs if devices_qs is not None else _scoped_devices(user)
     now = timezone.now()
     threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
     rows = []
@@ -295,6 +373,7 @@ def index_live_view(request):
 @never_cache
 def devices_view(request):
     user = request.user
+    filters = _resolve_scope_filters(user, request)
     can_edit_notifications = not _is_viewer(user)
     can_manage_locks = not _is_viewer(user)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
@@ -391,9 +470,13 @@ def devices_view(request):
                     ip=request.META.get("REMOTE_ADDR"),
                 )
                 messages.success(request, f"장치 잠금 해제 완료: {target.device_code}")
+        params = _query_params_from_filters(filters, extra={"locked": "1" if only_locked else None})
+        if params:
+            return redirect(f"/dashboard/devices?{urlencode(params)}")
         return redirect("dashboard_devices")
 
-    rows = _build_device_rows(user, only_locked=only_locked)
+    filtered_devices = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
+    rows = _build_device_rows(user, only_locked=only_locked, devices_qs=filtered_devices)
 
     return render(
         request,
@@ -404,6 +487,10 @@ def devices_view(request):
             "can_edit_notifications": can_edit_notifications,
             "can_manage_locks": can_manage_locks,
             "alert_emails_text": ", ".join(_get_scope_email_targets(user)),
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
         },
     )
 
@@ -412,8 +499,10 @@ def devices_view(request):
 @never_cache
 def devices_live_view(request):
     user = request.user
+    filters = _resolve_scope_filters(user, request)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
-    rows = _build_device_rows(user, only_locked=only_locked)
+    filtered_devices = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
+    rows = _build_device_rows(user, only_locked=only_locked, devices_qs=filtered_devices)
     can_manage_locks = not _is_viewer(user)
     tbody_html = render_to_string(
         "dashboard/_devices_tbody.html",
@@ -436,16 +525,34 @@ def devices_live_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def sales_view(request):
-    sales = _scoped_sales(request.user)[:200]
-    return render(request, "dashboard/sales.html", {"sales": sales})
+    filters = _resolve_scope_filters(request.user, request)
+    sales_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
+    sales = sales_qs[:200]
+    return render(
+        request,
+        "dashboard/sales.html",
+        {
+            "sales": sales,
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
+        },
+    )
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def coupons_view(request):
     user = request.user
+    filters = _resolve_scope_filters(user, request)
     can_edit = not _is_viewer(user)
-    coupons = _scoped_coupons(user)
+    coupons = _apply_org_branch_filter(
+        _scoped_coupons(user),
+        "batch__org_id",
+        "batch__branch_id",
+        filters,
+    )
 
     if request.method == "POST":
         if not can_edit:
@@ -540,6 +647,9 @@ def coupons_view(request):
                 )
             messages.success(request, f"Deleted expired coupons: {count}")
 
+        params = _query_params_from_filters(filters)
+        if params:
+            return redirect(f"/dashboard/coupons?{urlencode(params)}")
         return redirect("dashboard_coupons")
 
     return render(
@@ -550,6 +660,10 @@ def coupons_view(request):
             "orgs": _available_orgs(user),
             "branches": _available_branches(user),
             "can_edit": can_edit,
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
         },
     )
 
@@ -557,9 +671,11 @@ def coupons_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def photos_view(request):
+    filters = _resolve_scope_filters(request.user, request)
     q = (request.GET.get("q") or "").strip()
     now = timezone.now()
-    device_ids = list(_scoped_devices(request.user).values_list("id", flat=True))
+    devices_qs = _apply_org_branch_filter(_scoped_devices(request.user), "org_id", "branch_id", filters)
+    device_ids = list(devices_qs.values_list("id", flat=True))
     sessions_qs = ShareSession.objects.select_related("device").filter(
         device_id__in=device_ids,
         expires_at__gt=now,
@@ -612,5 +728,16 @@ def photos_view(request):
                 "original_urls": original_urls,
             }
         )
-    return render(request, "dashboard/photos.html", {"rows": rows, "q": q})
+    return render(
+        request,
+        "dashboard/photos.html",
+        {
+            "rows": rows,
+            "q": q,
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
+        },
+    )
 

@@ -3,6 +3,30 @@
 <div class="card card-soft">
   <div class="card-body">
     <h5 class="mb-3">매출 관리</h5>
+    <form class="row g-2 mb-3" method="get">
+      <div class="col-12 col-md-4 col-lg-3">
+        <label class="form-label mb-1">조직</label>
+        <select class="form-select form-select-sm" name="org_id">
+          <option value="">전체 조직</option>
+          {% for o in filter_orgs %}
+          <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-3">
+        <label class="form-label mb-1">지점</label>
+        <select class="form-select form-select-sm" name="branch_id">
+          <option value="">전체 지점</option>
+          {% for b in filter_branches %}
+          <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-3 d-flex align-items-end gap-2">
+        <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_sales' %}">필터 초기화</a>
+      </div>
+    </form>
     <div class="table-responsive">
       <table class="table table-hover align-middle">
         <thead>

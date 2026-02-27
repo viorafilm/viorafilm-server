@@ -14,6 +14,34 @@
   </div>
 </div>
 
+<form class="row g-2 mb-3" method="get">
+  <div class="col-12 col-md-4 col-lg-3">
+    <label class="form-label mb-1">조직</label>
+    <select class="form-select form-select-sm" name="org_id">
+      <option value="">전체 조직</option>
+      {% for o in filter_orgs %}
+      <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-12 col-md-4 col-lg-3">
+    <label class="form-label mb-1">지점</label>
+    <select class="form-select form-select-sm" name="branch_id">
+      <option value="">전체 지점</option>
+      {% for b in filter_branches %}
+      <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% if only_locked %}
+  <input type="hidden" name="locked" value="1">
+  {% endif %}
+  <div class="col-12 col-md-4 col-lg-3 d-flex align-items-end gap-2">
+    <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_devices' %}{% if only_locked %}?locked=1{% endif %}">필터 초기화</a>
+  </div>
+</form>
+
 <div class="card card-soft mb-3">
   <div class="card-body">
     <h6 class="mb-2">이메일 알림 설정</h6>
@@ -86,7 +114,9 @@
     const KEY = "vf_devices_auto_refresh";
     const DEFAULT_ENABLED = true;
     const INTERVAL_MS = 5000;
-    const LIVE_URL = "{% url 'dashboard_devices_live' %}{% if only_locked %}?locked=1{% endif %}";
+    const liveBase = "{% url 'dashboard_devices_live' %}";
+    const query = new URLSearchParams(window.location.search);
+    const LIVE_URL = query.toString() ? (liveBase + "?" + query.toString()) : liveBase;
 
     const btn = document.getElementById("toggleAutoRefreshBtn");
     const refreshBtn = document.getElementById("refreshNowBtn");
