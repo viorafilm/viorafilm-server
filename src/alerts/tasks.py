@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 def _should_notify(alert: Alert) -> bool:
-    cooldown = getattr(settings, "ALERT_NOTIFY_COOLDOWN_SECONDS", 600)
     if not alert.last_notified_at:
         return True
+    # Default policy: notify once per incident (until resolved).
+    repeat_enabled = bool(getattr(settings, "ALERT_REPEAT_NOTIFICATIONS", False))
+    if not repeat_enabled:
+        return False
+    cooldown = getattr(settings, "ALERT_NOTIFY_COOLDOWN_SECONDS", 600)
     return (timezone.now() - alert.last_notified_at) >= timedelta(seconds=cooldown)
 
 

@@ -178,6 +178,7 @@ OFFLINE_THRESHOLD_SECONDS = int(env("OFFLINE_THRESHOLD_SECONDS", default=120))
 ALERT_NOTIFY_COOLDOWN_SECONDS = int(env("ALERT_NOTIFY_COOLDOWN_SECONDS", default=600))
 ALERT_USE_SLACK = env.bool("ALERT_USE_SLACK", default=False)
 ALERT_NOTIFY_RECOVERY = env.bool("ALERT_NOTIFY_RECOVERY", default=True)
+ALERT_REPEAT_NOTIFICATIONS = env.bool("ALERT_REPEAT_NOTIFICATIONS", default=False)
 
 # Storage abstraction switch point (local now, R2-ready in storagehub.service).
 STORAGE_BACKEND = env("STORAGE_BACKEND", default="auto")
