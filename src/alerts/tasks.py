@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from core.models import Device
 from sales.models import SaleTransaction
+from audit.service import log_event
 
 from .models import Alert, AlertType, ChannelType, NotificationChannel, Severity
 from .notifier import notify, parse_email_targets, send_email_targets
@@ -366,3 +367,55 @@ def send_daily_ops_report():
             tx_count,
             total_amount,
         )
+
+
+@shared_task
+def auto_lock_offline_devices():
+    if not bool(getattr(settings, "DEVICE_AUTO_LOCK_ENABLED", True)):
+        return
+
+    days = max(1, int(getattr(settings, "DEVICE_AUTO_LOCK_OFFLINE_DAYS", 3)))
+    now = timezone.now()
+    cutoff = now - timedelta(days=days)
+
+    targets = (
+        Device.objects.select_related("org", "branch")
+        .filter(is_active=True, is_locked=False, last_seen_at__lt=cutoff)
+        .only("id", "device_code", "is_locked", "last_seen_at", "org", "branch")
+    )
+
+    locked_count = 0
+    for device in targets:
+        reason = f"AUTO_LOCK_OFFLINE_{days}D"
+        device.is_locked = True
+        device.lock_reason = reason
+        device.locked_at = now
+        device.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+        locked_count += 1
+        log_event(
+            actor_user=None,
+            actor_device=None,
+            action="device.auto_lock.offline",
+            target_type="Device",
+            target_id=str(device.id),
+            before=None,
+            after={
+                "device_code": device.device_code,
+                "days": days,
+                "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+                "lock_reason": reason,
+            },
+            meta={"policy": "offline_days", "days": days},
+            ip=None,
+        )
+        logger.warning(
+            "[DEVICE][AUTO_LOCK] device=%s org=%s branch=%s days=%s last_seen_at=%s",
+            device.device_code,
+            getattr(device.org, "code", "-"),
+            getattr(device.branch, "code", "-"),
+            days,
+            device.last_seen_at,
+        )
+
+    if locked_count:
+        logger.warning("[DEVICE][AUTO_LOCK] total_locked=%s cutoff=%s", locked_count, cutoff.isoformat())

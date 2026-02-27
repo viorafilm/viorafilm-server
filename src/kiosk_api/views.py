@@ -64,6 +64,19 @@ def _blocked_if_locked(device: Device):
     return Response(payload, status=423)
 
 
+def _lock_payload(device: Device):
+    payload = {
+        "locked": bool(getattr(device, "is_locked", False)),
+        "lock_reason": getattr(device, "lock_reason", "") or None,
+        "locked_at": getattr(device, "locked_at", None),
+    }
+    health = device.last_health_json if isinstance(device.last_health_json, dict) else {}
+    payload["offline_lock_active"] = bool(health.get("offline_lock_active", False))
+    payload["offline_guard_enabled"] = bool(health.get("offline_guard_enabled", False))
+    payload["offline_grace_remaining_seconds"] = health.get("offline_grace_remaining_seconds")
+    return payload
+
+
 class AuthTokenView(TokenObtainPairView):
     permission_classes = [AllowAny]
 
@@ -98,7 +111,7 @@ class HeartbeatView(APIView):
             camera_ok=payload.get("camera_ok"),
             printer_ok=payload.get("printer_ok"),
         )
-        return Response({"ok": True, "heartbeat_id": heartbeat.id})
+        return Response({"ok": True, "heartbeat_id": heartbeat.id, "device_lock": _lock_payload(device)})
 
 
 class ConfigView(APIView):
@@ -111,7 +124,13 @@ class ConfigView(APIView):
             return Response({"detail": "Device auth required"}, status=401)
 
         config, version_tag = get_effective_config(device)
-        return Response({"config_version": version_tag, "config": config})
+        config = dict(config or {})
+        security_cfg = dict(config.get("security") or {})
+        security_cfg.setdefault("offline_guard_enabled", bool(getattr(settings, "KIOSK_OFFLINE_GUARD_ENABLED", True)))
+        security_cfg.setdefault("offline_grace_days", int(getattr(settings, "KIOSK_OFFLINE_GRACE_DAYS", 3)))
+        security_cfg.setdefault("server_lock_enforced", True)
+        config["security"] = security_cfg
+        return Response({"config_version": version_tag, "config": config, "device_lock": _lock_payload(device)})
 
 
 class ConfigAppliedView(APIView):

@@ -70,6 +70,10 @@ ALERT_DAILY_REPORT_ENABLED=1
 ALERT_DAILY_REPORT_HOUR=9
 ALERT_DAILY_REPORT_MINUTE=0
 ALERT_DAILY_TOP_BRANCHES=5
+DEVICE_AUTO_LOCK_ENABLED=1
+DEVICE_AUTO_LOCK_OFFLINE_DAYS=3
+KIOSK_OFFLINE_GUARD_ENABLED=1
+KIOSK_OFFLINE_GRACE_DAYS=3
 OFFLINE_THRESHOLD_SECONDS=120
 ALERT_NOTIFY_COOLDOWN_SECONDS=600
 DEFAULT_FROM_EMAIL=noreply@photoharu.local
@@ -87,6 +91,8 @@ EMAIL_TIMEOUT=10
 - Recovery notifications can be enabled/disabled with `ALERT_NOTIFY_RECOVERY`.
 - Daily ops report is sent by celery beat (`ALERT_DAILY_REPORT_*`).
 - Top branches in daily report can be configured with `ALERT_DAILY_TOP_BRANCHES`.
+- Auto lock can be enabled with `DEVICE_AUTO_LOCK_ENABLED` and days with `DEVICE_AUTO_LOCK_OFFLINE_DAYS` (default 3).
+- Kiosk default offline guard policy is provided in `/api/kiosk/config` via `KIOSK_OFFLINE_GUARD_ENABLED` and `KIOSK_OFFLINE_GRACE_DAYS`.
 - Configure recipients in Dashboard: `장치 관리 > 이메일 알림 설정`.
 - Test delivery in Dashboard: `장치 관리 > 테스트 메일 발송`.
 - Device issue alerts (offline/printer/camera/internet) will be sent to configured emails.

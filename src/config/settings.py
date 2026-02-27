@@ -136,6 +136,10 @@ ALERT_DAILY_REPORT_ENABLED = env.bool("ALERT_DAILY_REPORT_ENABLED", default=True
 ALERT_DAILY_REPORT_HOUR = env.int("ALERT_DAILY_REPORT_HOUR", default=9)
 ALERT_DAILY_REPORT_MINUTE = env.int("ALERT_DAILY_REPORT_MINUTE", default=0)
 ALERT_DAILY_TOP_BRANCHES = env.int("ALERT_DAILY_TOP_BRANCHES", default=5)
+DEVICE_AUTO_LOCK_ENABLED = env.bool("DEVICE_AUTO_LOCK_ENABLED", default=True)
+DEVICE_AUTO_LOCK_OFFLINE_DAYS = env.int("DEVICE_AUTO_LOCK_OFFLINE_DAYS", default=3)
+KIOSK_OFFLINE_GUARD_ENABLED = env.bool("KIOSK_OFFLINE_GUARD_ENABLED", default=True)
+KIOSK_OFFLINE_GRACE_DAYS = env.int("KIOSK_OFFLINE_GRACE_DAYS", default=3)
 
 CELERY_BEAT_SCHEDULE = {
     "alerts_check_device_offline": {
@@ -153,6 +157,10 @@ CELERY_BEAT_SCHEDULE = {
     "alerts_send_daily_ops_report": {
         "task": "alerts.tasks.send_daily_ops_report",
         "schedule": crontab(hour=ALERT_DAILY_REPORT_HOUR, minute=ALERT_DAILY_REPORT_MINUTE),
+    },
+    "alerts_auto_lock_offline_devices": {
+        "task": "alerts.tasks.auto_lock_offline_devices",
+        "schedule": 300.0,
     },
 }
 
