@@ -1,14 +1,18 @@
+import logging
 from datetime import timedelta
 
 from celery import shared_task
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
-from core.models import Device
+from core.models import Device, Organization
+from sales.models import SaleTransaction
 
-from .models import Alert, AlertType, Severity
-from .notifier import notify
+from .models import Alert, AlertType, ChannelType, NotificationChannel, Severity
+from .notifier import notify, parse_email_targets, send_email_targets
+
+logger = logging.getLogger(__name__)
 
 
 def _should_notify(alert: Alert) -> bool:
@@ -110,6 +114,65 @@ def _printer_state(health: dict):
     return printer_ok, detail_ko, detail_en
 
 
+def _channel_targets(channel: NotificationChannel):
+    targets = parse_email_targets(channel.config.get("to"))
+    if not targets:
+        targets = parse_email_targets(channel.config.get("recipients"))
+    return targets
+
+
+def _count_locked_devices(devices):
+    return sum(
+        1
+        for device in devices
+        if isinstance(device.last_health_json, dict) and bool(device.last_health_json.get("offline_lock_active"))
+    )
+
+
+def _format_money(amount: int) -> str:
+    return f"{int(amount):,}"
+
+
+def _build_daily_report_body(
+    scope_name: str,
+    date_str: str,
+    tx_count: int,
+    total_amount: int,
+    cash_amount: int,
+    coupon_amount: int,
+    online_count: int,
+    offline_count: int,
+    locked_count: int,
+    open_alert_count: int,
+    open_by_type: dict,
+):
+    open_lines = ", ".join(f"{k}:{v}" for k, v in sorted(open_by_type.items())) if open_by_type else "-"
+    lines = [
+        f"[KO] 비오라필름 일일 운영 리포트 ({scope_name})",
+        f"날짜: {date_str}",
+        f"거래 건수: {tx_count}",
+        f"총 매출: KRW {_format_money(total_amount)}",
+        f"현금 합계: KRW {_format_money(cash_amount)}",
+        f"쿠폰 합계: KRW {_format_money(coupon_amount)}",
+        f"장치 온라인/오프라인: {online_count}/{offline_count}",
+        f"잠금 장치 수: {locked_count}",
+        f"미해결 알림 수: {open_alert_count}",
+        f"미해결 알림 타입: {open_lines}",
+        "",
+        f"[EN] Viorafilm Daily Operations Report ({scope_name})",
+        f"Date: {date_str}",
+        f"Transactions: {tx_count}",
+        f"Total Sales: KRW {_format_money(total_amount)}",
+        f"Cash Total: KRW {_format_money(cash_amount)}",
+        f"Coupon Total: KRW {_format_money(coupon_amount)}",
+        f"Devices Online/Offline: {online_count}/{offline_count}",
+        f"Locked Devices: {locked_count}",
+        f"Open Alerts: {open_alert_count}",
+        f"Open Alert Types: {open_lines}",
+    ]
+    return "\n".join(lines)
+
+
 @shared_task
 def check_device_offline():
     threshold = getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120)
@@ -204,3 +267,76 @@ def check_device_health():
                     "프린터 상태가 복구되었습니다.",
                     "Printer status recovered.",
                 )
+
+
+@shared_task
+def send_daily_ops_report():
+    if not bool(getattr(settings, "ALERT_DAILY_REPORT_ENABLED", True)):
+        return
+
+    threshold = int(getattr(settings, "OFFLINE_THRESHOLD_SECONDS", 120))
+    cutoff = timezone.now() - timedelta(seconds=threshold)
+    now_local = timezone.localtime()
+    day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    today = day_start.date()
+
+    channels = NotificationChannel.objects.filter(enabled=True, type=ChannelType.EMAIL).select_related("org")
+    for channel in channels:
+        targets = _channel_targets(channel)
+        if not targets:
+            continue
+
+        org = channel.org
+        scope_name = f"ORG:{org.code}" if org else "GLOBAL"
+
+        sales_qs = SaleTransaction.objects.filter(created_at__gte=day_start, created_at__lt=day_end)
+        devices_qs = Device.objects.filter(is_active=True)
+        alerts_qs = Alert.objects.filter(resolved_at__isnull=True)
+        if org:
+            sales_qs = sales_qs.filter(org=org)
+            devices_qs = devices_qs.filter(org=org)
+            alerts_qs = alerts_qs.filter(device__org=org)
+
+        sales_agg = sales_qs.aggregate(
+            tx_count=Count("id"),
+            total_amount=Sum("price_total"),
+            cash_amount=Sum("amount_cash"),
+            coupon_amount=Sum("amount_coupon"),
+        )
+        tx_count = int(sales_agg.get("tx_count") or 0)
+        total_amount = int(sales_agg.get("total_amount") or 0)
+        cash_amount = int(sales_agg.get("cash_amount") or 0)
+        coupon_amount = int(sales_agg.get("coupon_amount") or 0)
+
+        online_count = devices_qs.filter(last_seen_at__gte=cutoff).count()
+        offline_count = devices_qs.filter(Q(last_seen_at__lt=cutoff) | Q(last_seen_at__isnull=True)).count()
+        devices = list(devices_qs.only("last_health_json"))
+        locked_count = _count_locked_devices(devices)
+        open_alert_count = alerts_qs.count()
+        open_by_type = {row["alert_type"]: row["c"] for row in alerts_qs.values("alert_type").annotate(c=Count("id"))}
+
+        subject = f"[Viorafilm][Daily Report] {today.isoformat()} ({scope_name})"
+        body = _build_daily_report_body(
+            scope_name=scope_name,
+            date_str=today.isoformat(),
+            tx_count=tx_count,
+            total_amount=total_amount,
+            cash_amount=cash_amount,
+            coupon_amount=coupon_amount,
+            online_count=online_count,
+            offline_count=offline_count,
+            locked_count=locked_count,
+            open_alert_count=open_alert_count,
+            open_by_type=open_by_type,
+        )
+        sent, failed = send_email_targets(targets, subject, body)
+        logger.info(
+            "[ALERT][DAILY_REPORT] scope=%s sent=%s failed=%s targets=%s tx=%s total=%s",
+            scope_name,
+            sent,
+            failed,
+            ",".join(targets),
+            tx_count,
+            total_amount,
+        )

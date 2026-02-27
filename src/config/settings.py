@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from celery.schedules import crontab
 import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -131,6 +132,9 @@ SPECTACULAR_SETTINGS = {
 CELERY_BROKER_URL = "redis://redis:6379/0"
 CELERY_RESULT_BACKEND = "redis://redis:6379/1"
 CELERY_TIMEZONE = TIME_ZONE
+ALERT_DAILY_REPORT_ENABLED = env.bool("ALERT_DAILY_REPORT_ENABLED", default=True)
+ALERT_DAILY_REPORT_HOUR = env.int("ALERT_DAILY_REPORT_HOUR", default=9)
+ALERT_DAILY_REPORT_MINUTE = env.int("ALERT_DAILY_REPORT_MINUTE", default=0)
 
 CELERY_BEAT_SCHEDULE = {
     "alerts_check_device_offline": {
@@ -144,6 +148,10 @@ CELERY_BEAT_SCHEDULE = {
     "mediahub_cleanup_expired_shares": {
         "task": "mediahub.tasks.cleanup_expired_shares",
         "schedule": 600.0,
+    },
+    "alerts_send_daily_ops_report": {
+        "task": "alerts.tasks.send_daily_ops_report",
+        "schedule": crontab(hour=ALERT_DAILY_REPORT_HOUR, minute=ALERT_DAILY_REPORT_MINUTE),
     },
 }
 
