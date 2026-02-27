@@ -94,6 +94,23 @@ def _to_positive_int(value, default_value: int) -> int:
     return parsed if parsed > 0 else default_value
 
 
+def _normalize_kiosk_api_base_url(value: object) -> str:
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    try:
+        split = urlsplit(raw)
+    except Exception:
+        return raw
+    if not split.scheme or not split.netloc:
+        return raw
+    path = str(split.path or "").rstrip("/")
+    segments = [seg for seg in path.split("/") if seg]
+    if "api" not in segments:
+        path = f"{path}/api" if path else "/api"
+    return f"{split.scheme}://{split.netloc}{path}".rstrip("/")
+
+
 def setup_logging() -> Path:
     global _LOGGING_INITIALIZED
     global _LOG_FILE_PATH
@@ -6067,7 +6084,7 @@ class AppQrUploadWorker(QObject):
         return min(60.0, max(3.0, timeout))
 
     def _api_base_url(self) -> str:
-        configured = str(self.share_settings.get("api_base_url", "")).strip().rstrip("/")
+        configured = _normalize_kiosk_api_base_url(self.share_settings.get("api_base_url", ""))
         if configured:
             return configured
         base_page = str(self.share_settings.get("base_page_url", "")).strip()
@@ -6075,8 +6092,8 @@ class AppQrUploadWorker(QObject):
             return ""
         split = urlsplit(base_page)
         if split.scheme and split.netloc:
-            return f"{split.scheme}://{split.netloc}/api"
-        return ""
+            return _normalize_kiosk_api_base_url(f"{split.scheme}://{split.netloc}")
+        return _normalize_kiosk_api_base_url(base_page)
 
     def _device_headers(self) -> dict[str, str]:
         device_code = str(self.share_settings.get("device_code", "")).strip() or str(
@@ -10663,13 +10680,15 @@ class KioskMainWindow(QMainWindow):
         self._heartbeat_timer.timeout.connect(self._heartbeat_tick)
         self._server_lock_probe_lock = threading.Lock()
         self._server_lock_probe_inflight = False
+        self._server_lock_probe_last_error = ""
+        self._server_lock_probe_last_error_ts = 0.0
         self._server_lock_probe_timer = QTimer(self)
-        lock_poll_ms = 3000
+        lock_poll_ms = 1000
         try:
-            lock_poll_ms = int(float(os.environ.get("KIOSK_SERVER_LOCK_POLL_MS", "3000")))
+            lock_poll_ms = int(float(os.environ.get("KIOSK_SERVER_LOCK_POLL_MS", "1000")))
         except Exception:
-            lock_poll_ms = 3000
-        self._server_lock_probe_timer.setInterval(max(1000, min(10000, lock_poll_ms)))
+            lock_poll_ms = 1000
+        self._server_lock_probe_timer.setInterval(max(500, min(10000, lock_poll_ms)))
         self._server_lock_probe_timer.timeout.connect(self._server_lock_probe_tick)
         self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
         self.server_lock_signal.connect(self._on_server_lock_signal)
@@ -11908,7 +11927,7 @@ class KioskMainWindow(QMainWindow):
             if isinstance(file_url, str) and file_url.strip():
                 result["base_file_url"] = file_url.strip().rstrip("/")
             if isinstance(api_base_url, str) and api_base_url.strip():
-                result["api_base_url"] = api_base_url.strip().rstrip("/")
+                result["api_base_url"] = _normalize_kiosk_api_base_url(api_base_url)
             if isinstance(device_code, str):
                 result["device_code"] = device_code.strip()
             if isinstance(device_token, str):
@@ -13886,18 +13905,18 @@ class KioskMainWindow(QMainWindow):
 
     def _sales_complete_url(self) -> str:
         share_cfg = self.get_share_settings()
-        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
         if not api_base:
-            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
         if not api_base:
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/sales/complete"
 
     def _kiosk_config_url(self) -> str:
         share_cfg = self.get_share_settings()
-        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
         if not api_base:
-            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
         if not api_base:
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/config"
@@ -14157,9 +14176,9 @@ class KioskMainWindow(QMainWindow):
 
     def _heartbeat_url(self) -> str:
         share_cfg = self.get_share_settings()
-        api_base = str(share_cfg.get("api_base_url", "")).strip().rstrip("/")
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
         if not api_base:
-            api_base = str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip().rstrip("/")
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
         if not api_base:
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/heartbeat"
@@ -14250,9 +14269,20 @@ class KioskMainWindow(QMainWindow):
         def _runner() -> None:
             try:
                 ok, msg = self._probe_server_lock_state()
-                if not ok:
-                    if str(msg).strip().upper().startswith("HTTP 401"):
-                        print(f"[SERVER_LOCK] probe auth fail {msg}")
+                now_ts = time.monotonic()
+                text = str(msg or "").strip()
+                if ok:
+                    self._server_lock_probe_last_error = ""
+                    self._server_lock_probe_last_error_ts = 0.0
+                else:
+                    should_log = (
+                        text != self._server_lock_probe_last_error
+                        or (now_ts - float(self._server_lock_probe_last_error_ts)) >= 30.0
+                    )
+                    if should_log:
+                        print(f"[SERVER_LOCK] probe fail {text}")
+                        self._server_lock_probe_last_error = text
+                        self._server_lock_probe_last_error_ts = now_ts
             finally:
                 with self._server_lock_probe_lock:
                     self._server_lock_probe_inflight = False
@@ -14555,6 +14585,9 @@ class KioskMainWindow(QMainWindow):
             print(f"[R] rect=[{left}, {top}, {width}, {height}]")
             self.record_start = None
             return
+
+        if not self._server_lock_active:
+            self._server_lock_probe_tick()
 
         if self._is_runtime_locked() and screen.screen_name not in {"offline_locked", "admin"}:
             self.goto_screen("offline_locked")
