@@ -1,4 +1,4 @@
-{% for row in rows %}
+﻿{% for row in rows %}
 <tr>
   <td class="fw-semibold">{{ row.device.device_code }}</td>
   <td>{{ row.device.org.code }} / {{ row.device.branch.code }}</td>
@@ -16,9 +16,9 @@
   <td>
     {% if row.film_remaining is not None %}
       {% if row.film_remaining_estimated %}
-      <span class="badge text-bg-warning">추정 {{ row.film_remaining }} 장</span>
+      <span class="badge text-bg-warning">EST {{ row.film_remaining }} sheets</span>
       {% else %}
-      <span class="badge text-bg-info">{{ row.film_remaining }} 장</span>
+      <span class="badge text-bg-info">{{ row.film_remaining }} sheets</span>
       {% endif %}
     {% else %}
     <span class="badge text-bg-secondary">-</span>
@@ -64,22 +64,22 @@
         {% csrf_token %}
         <input type="hidden" name="action" value="unlock_device">
         <input type="hidden" name="device_id" value="{{ row.device.id }}">
-        <button type="submit" class="btn btn-sm btn-outline-success">잠금 해제</button>
+        <button type="submit" class="btn btn-sm btn-outline-success">Unlock</button>
       </form>
       {% else %}
       <form method="post" class="d-flex gap-1">
         {% csrf_token %}
         <input type="hidden" name="action" value="lock_device">
         <input type="hidden" name="device_id" value="{{ row.device.id }}">
-        <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="사유(선택)" style="max-width: 130px;">
-        <button type="submit" class="btn btn-sm btn-outline-danger">잠금</button>
+        <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="reason (optional)" style="max-width: 130px;">
+        <button type="submit" class="btn btn-sm btn-outline-danger">Lock</button>
       </form>
       {% endif %}
     {% else %}
-    <span class="text-muted small">읽기 전용</span>
+    <span class="text-muted small">Read only</span>
     {% endif %}
   </td>
 </tr>
 {% empty %}
-<tr><td colspan="14" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
+<tr><td colspan="14" class="text-center text-muted py-4">No devices found.</td></tr>
 {% endfor %}
