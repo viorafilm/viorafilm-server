@@ -2,7 +2,10 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h5 class="mb-0">장치 관리</h5>
-  <div class="d-flex gap-2">
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    <span class="badge text-bg-secondary" id="autoRefreshBadge">AUTO 5s</span>
+    <button type="button" class="btn btn-sm btn-outline-primary" id="toggleAutoRefreshBtn">자동 새로고침 ON</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshNowBtn">지금 새로고침</button>
     {% if only_locked %}
     <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_devices' %}">전체 보기</a>
     {% else %}
@@ -150,4 +153,75 @@
     </div>
   </div>
 </div>
+
+<script>
+  (function () {
+    const KEY = "vf_devices_auto_refresh";
+    const DEFAULT_ENABLED = true;
+    const INTERVAL_MS = 5000;
+
+    const btn = document.getElementById("toggleAutoRefreshBtn");
+    const refreshBtn = document.getElementById("refreshNowBtn");
+    const badge = document.getElementById("autoRefreshBadge");
+    if (!btn || !refreshBtn || !badge) {
+      return;
+    }
+
+    function readEnabled() {
+      const raw = window.localStorage.getItem(KEY);
+      if (raw === null) {
+        return DEFAULT_ENABLED;
+      }
+      return raw === "1";
+    }
+
+    function writeEnabled(enabled) {
+      window.localStorage.setItem(KEY, enabled ? "1" : "0");
+    }
+
+    function applyUi(enabled) {
+      btn.textContent = enabled ? "자동 새로고침 ON" : "자동 새로고침 OFF";
+      btn.classList.toggle("btn-outline-primary", enabled);
+      btn.classList.toggle("btn-outline-secondary", !enabled);
+      badge.textContent = enabled ? "AUTO 5s" : "AUTO OFF";
+      badge.classList.toggle("text-bg-secondary", enabled);
+      badge.classList.toggle("text-bg-dark", !enabled);
+    }
+
+    function isEditingForm() {
+      const el = document.activeElement;
+      if (!el) {
+        return false;
+      }
+      const tag = String(el.tagName || "").toUpperCase();
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    }
+
+    let enabled = readEnabled();
+    applyUi(enabled);
+
+    btn.addEventListener("click", function () {
+      enabled = !enabled;
+      writeEnabled(enabled);
+      applyUi(enabled);
+    });
+
+    refreshBtn.addEventListener("click", function () {
+      window.location.reload();
+    });
+
+    window.setInterval(function () {
+      if (!enabled) {
+        return;
+      }
+      if (document.hidden) {
+        return;
+      }
+      if (isEditingForm()) {
+        return;
+      }
+      window.location.reload();
+    }, INTERVAL_MS);
+  })();
+</script>
 {% endblock %}
