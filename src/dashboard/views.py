@@ -229,6 +229,7 @@ def index_view(request):
 def devices_view(request):
     user = request.user
     can_edit_notifications = not _is_viewer(user)
+    can_manage_locks = not _is_viewer(user)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
 
     if request.method == "POST":
@@ -274,6 +275,55 @@ def devices_view(request):
                 messages.success(request, f"테스트 메일 발송 완료: 성공 {sent}, 실패 {failed}")
             else:
                 messages.error(request, f"테스트 메일 발송 실패: 성공 {sent}, 실패 {failed}")
+        elif action in ("lock_device", "unlock_device"):
+            device_id_raw = (request.POST.get("device_id") or "").strip()
+            if not device_id_raw.isdigit():
+                messages.error(request, "잘못된 장치 ID 입니다.")
+                return redirect("dashboard_devices")
+
+            target = _scoped_devices(user).filter(id=int(device_id_raw)).first()
+            if not target:
+                messages.error(request, "해당 장치를 찾을 수 없습니다.")
+                return redirect("dashboard_devices")
+            if not can_manage_locks:
+                return HttpResponseForbidden("Viewer is read-only")
+
+            if action == "lock_device":
+                reason = (request.POST.get("lock_reason") or "").strip()
+                target.is_locked = True
+                target.lock_reason = reason[:255]
+                target.locked_at = timezone.now()
+                target.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+                log_event(
+                    actor_user=user,
+                    actor_device=None,
+                    action="device.lock",
+                    target_type="Device",
+                    target_id=str(target.id),
+                    before=None,
+                    after={"device_code": target.device_code, "lock_reason": target.lock_reason},
+                    meta={},
+                    ip=request.META.get("REMOTE_ADDR"),
+                )
+                messages.success(request, f"장치 잠금 처리 완료: {target.device_code}")
+            else:
+                old_reason = target.lock_reason
+                target.is_locked = False
+                target.lock_reason = ""
+                target.locked_at = None
+                target.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+                log_event(
+                    actor_user=user,
+                    actor_device=None,
+                    action="device.unlock",
+                    target_type="Device",
+                    target_id=str(target.id),
+                    before={"lock_reason": old_reason},
+                    after={"device_code": target.device_code},
+                    meta={},
+                    ip=request.META.get("REMOTE_ADDR"),
+                )
+                messages.success(request, f"장치 잠금 해제 완료: {target.device_code}")
         return redirect("dashboard_devices")
 
     devices = _scoped_devices(user)
@@ -296,6 +346,9 @@ def devices_view(request):
                     health.get("offline_grace_remaining_seconds")
                 ),
                 "offline_last_online_at": health.get("offline_last_online_at"),
+                "server_lock_active": bool(d.is_locked),
+                "server_lock_reason": d.lock_reason or "",
+                "server_locked_at": d.locked_at,
             }
         )
     for row in rows:
@@ -311,8 +364,10 @@ def devices_view(request):
         else:
             row["offline_grace_text"] = f"초과 {_format_duration_compact(abs(remain_int))}"
             row["offline_grace_overdue"] = True
+    for row in rows:
+        row["locked_any"] = bool(row.get("offline_lock_active") or row.get("server_lock_active"))
     if only_locked:
-        rows = [row for row in rows if row.get("offline_lock_active")]
+        rows = [row for row in rows if row.get("locked_any")]
 
     return render(
         request,
@@ -321,6 +376,7 @@ def devices_view(request):
             "rows": rows,
             "only_locked": only_locked,
             "can_edit_notifications": can_edit_notifications,
+            "can_manage_locks": can_manage_locks,
             "alert_emails_text": ", ".join(_get_scope_email_targets(user)),
         },
     )

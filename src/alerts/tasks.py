@@ -125,7 +125,8 @@ def _count_locked_devices(devices):
     return sum(
         1
         for device in devices
-        if isinstance(device.last_health_json, dict) and bool(device.last_health_json.get("offline_lock_active"))
+        if bool(getattr(device, "is_locked", False))
+        or (isinstance(device.last_health_json, dict) and bool(device.last_health_json.get("offline_lock_active")))
     )
 
 

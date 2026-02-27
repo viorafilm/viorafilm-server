@@ -65,7 +65,9 @@
             <th>오프라인 가드</th>
             <th>오프라인 남은시간</th>
             <th>잠금</th>
+            <th>잠금 사유</th>
             <th>마지막 온라인 인증</th>
+            <th>액션</th>
           </tr>
         </thead>
         <tbody>
@@ -101,16 +103,47 @@
               {% endif %}
             </td>
             <td>
-              {% if row.offline_lock_active %}
-              <span class="badge text-bg-danger">LOCKED</span>
+              {% if row.server_lock_active %}
+              <span class="badge text-bg-danger">SERVER LOCK</span>
+              {% elif row.offline_lock_active %}
+              <span class="badge text-bg-warning">OFFLINE LOCK</span>
               {% else %}
               <span class="badge text-bg-success">UNLOCKED</span>
               {% endif %}
             </td>
+            <td>
+              {% if row.server_lock_reason %}
+              <span class="small">{{ row.server_lock_reason }}</span>
+              {% else %}
+              <span class="text-muted">-</span>
+              {% endif %}
+            </td>
             <td>{{ row.offline_last_online_at|default:"-" }}</td>
+            <td>
+              {% if can_manage_locks %}
+                {% if row.server_lock_active %}
+                <form method="post" class="d-flex gap-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="unlock_device">
+                  <input type="hidden" name="device_id" value="{{ row.device.id }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success">잠금 해제</button>
+                </form>
+                {% else %}
+                <form method="post" class="d-flex gap-1">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="lock_device">
+                  <input type="hidden" name="device_id" value="{{ row.device.id }}">
+                  <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="사유(선택)" style="max-width: 130px;">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">잠금</button>
+                </form>
+                {% endif %}
+              {% else %}
+              <span class="text-muted small">읽기 전용</span>
+              {% endif %}
+            </td>
           </tr>
           {% empty %}
-          <tr><td colspan="11" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
+          <tr><td colspan="13" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
           {% endfor %}
         </tbody>
       </table>

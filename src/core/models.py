@@ -34,6 +34,9 @@ class Device(models.Model):
     device_code = models.CharField(max_length=64, unique=True)
     display_name = models.CharField(max_length=200, blank=True, default="")
     is_active = models.BooleanField(default=True)
+    is_locked = models.BooleanField(default=False)
+    lock_reason = models.CharField(max_length=255, blank=True, default="")
+    locked_at = models.DateTimeField(null=True, blank=True)
     token_hash = models.CharField(max_length=64, blank=True, default="")
     token_hint = models.CharField(max_length=16, blank=True, default="")
 

@@ -48,6 +48,22 @@ def _safe_version(v: str) -> Version:
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{6,128}$")
 
 
+def _blocked_if_locked(device: Device):
+    if not device or not getattr(device, "is_locked", False):
+        return None
+    payload = {
+        "ok": False,
+        "reason": "DEVICE_LOCKED",
+        "detail": "Device is locked by admin",
+        "locked": True,
+    }
+    if getattr(device, "lock_reason", ""):
+        payload["lock_reason"] = device.lock_reason
+    if getattr(device, "locked_at", None):
+        payload["locked_at"] = device.locked_at
+    return Response(payload, status=423)
+
+
 class AuthTokenView(TokenObtainPairView):
     permission_classes = [AllowAny]
 
@@ -179,6 +195,9 @@ class ShareCreateView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = ShareCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -198,6 +217,9 @@ class ShareInitUploadView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = ShareUploadInitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -262,6 +284,9 @@ class ShareUploadFileView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = ShareUploadFileSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -354,6 +379,9 @@ class ShareFinalizeView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = ShareFinalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -399,6 +427,9 @@ class ShareCompleteView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = ShareCompleteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -426,6 +457,9 @@ class CouponCheckView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = CouponCheckSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -469,6 +503,9 @@ class SaleCompleteView(APIView):
         device: Device = getattr(request, "device", None)
         if not device:
             return Response({"detail": "Device auth required"}, status=401)
+        blocked = _blocked_if_locked(device)
+        if blocked:
+            return blocked
 
         serializer = SaleCompleteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
