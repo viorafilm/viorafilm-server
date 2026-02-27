@@ -9,6 +9,7 @@ from django.db.models import Sum
 from django.http import HttpResponseForbidden
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 
 from accounts.models import UserRole
 from alerts.models import ChannelType, NotificationChannel
@@ -34,6 +35,8 @@ def _is_branch_admin(user):
 
 
 def _is_viewer(user):
+    if getattr(user, "is_superuser", False):
+        return False
     return getattr(user, "role", None) == UserRole.VIEWER
 
 
@@ -188,6 +191,7 @@ def _get_scope_email_targets(user):
     return deduped
 
 
+@never_cache
 def login_view(request):
     if request.user.is_authenticated:
         return redirect("dashboard_index")
@@ -200,6 +204,7 @@ def login_view(request):
 
 
 @login_required(login_url="/dashboard/login")
+@never_cache
 def index_view(request):
     sales = _scoped_sales(request.user)
     today = timezone.localdate()
@@ -219,6 +224,7 @@ def index_view(request):
 
 
 @login_required(login_url="/dashboard/login")
+@never_cache
 def devices_view(request):
     user = request.user
     can_edit_notifications = not _is_viewer(user)
@@ -296,12 +302,14 @@ def devices_view(request):
 
 
 @login_required(login_url="/dashboard/login")
+@never_cache
 def sales_view(request):
     sales = _scoped_sales(request.user)[:200]
     return render(request, "dashboard/sales.html", {"sales": sales})
 
 
 @login_required(login_url="/dashboard/login")
+@never_cache
 def coupons_view(request):
     user = request.user
     can_edit = not _is_viewer(user)
@@ -415,6 +423,7 @@ def coupons_view(request):
 
 
 @login_required(login_url="/dashboard/login")
+@never_cache
 def photos_view(request):
     q = (request.GET.get("q") or "").strip()
     now = timezone.now()
