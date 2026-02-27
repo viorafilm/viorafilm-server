@@ -553,6 +553,10 @@ DEFAULT_CELEBRITY_SETTINGS = {
 }
 
 DEFAULT_OFFLINE_GRACE_HOURS = 72
+DEFAULT_FILM_REMAINING_BY_MODEL = {
+    "DS620": 400,
+    "RX1HS": 400,
+}
 
 _TRANSPARENT_SLOT_CACHE: dict[
     tuple[str, int, int, int],
@@ -10734,6 +10738,10 @@ class KioskMainWindow(QMainWindow):
         self._offline_flush_lock = threading.Lock()
         self._offline_flush_inflight = False
         self._offline_queue_path = ROOT_DIR / "out" / "offline_events_queue.json"
+        self._film_state_lock = threading.Lock()
+        self._film_state_path = ROOT_DIR / "out" / "film_remaining_state.json"
+        self._film_remaining_by_model: dict[str, int] = {}
+        self._active_print_context: dict[str, Any] = {}
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(30000)
         self._heartbeat_timer.timeout.connect(self._heartbeat_tick)
@@ -10827,6 +10835,7 @@ class KioskMainWindow(QMainWindow):
         self._apply_payment_methods(self.payment_methods, emit_log=False)
         self._apply_mode_settings(self.mode_settings, emit_log=False)
         self._init_offline_license_state()
+        self._init_film_remaining_state()
         pending_events = self._offline_queue_count()
         if pending_events > 0:
             print(f"[QUEUE] pending events loaded={pending_events}")
@@ -13897,6 +13906,15 @@ class KioskMainWindow(QMainWindow):
             dry_run=bool(printing_settings.get("dry_run", False)),
             test_mode=bool(self.is_test_mode()),
         )
+        self._active_print_context = {
+            "model": str(model or "DS620"),
+            "enabled": bool(printing_settings.get("enabled", True)),
+            "dry_run": bool(printing_settings.get("dry_run", False)),
+            "test_mode": bool(self.is_test_mode()),
+            "strip_split": bool(strip_split),
+            "strip_sets": max(1, int(strip_sets)),
+            "copies": int(safe_copies),
+        }
         thread = QThread(self)
         worker.moveToThread(thread)
 
@@ -14034,6 +14052,119 @@ class KioskMainWindow(QMainWindow):
             return int(value)
         except Exception:
             return int(default)
+
+    @staticmethod
+    def _normalize_film_model(model: str) -> str:
+        key = str(model or "").strip().upper()
+        if key == "DS620_STRIP":
+            return "DS620"
+        if key not in {"DS620", "RX1HS"}:
+            return "DS620"
+        return key
+
+    @staticmethod
+    def _env_optional_nonnegative_int(name: str) -> Optional[int]:
+        raw = str(os.environ.get(name, "")).strip()
+        if not raw:
+            return None
+        try:
+            parsed = int(raw)
+        except Exception:
+            return None
+        if parsed < 0:
+            return None
+        return parsed
+
+    def _save_film_remaining_state_unlocked(self) -> None:
+        payload = {
+            "models": dict(self._film_remaining_by_model),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        _write_json_atomic(self._film_state_path, payload)
+
+    def _load_film_remaining_state_unlocked(self) -> dict[str, int]:
+        path = Path(self._film_state_path)
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[FILM] state load failed path={path} err={exc}")
+            return {}
+        models = raw.get("models") if isinstance(raw, dict) else None
+        if not isinstance(models, dict):
+            return {}
+        loaded: dict[str, int] = {}
+        for key, value in models.items():
+            model = self._normalize_film_model(str(key))
+            parsed = self._safe_int(value, -1)
+            if parsed >= 0:
+                loaded[model] = parsed
+        return loaded
+
+    def _init_film_remaining_state(self) -> None:
+        printing = self.get_printing_settings()
+        printers = printing.get("printers", {}) if isinstance(printing, dict) else {}
+        default_model = self._normalize_film_model(str(printing.get("default_model", "DS620")))
+
+        env_global = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING")
+        env_ds620 = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_DS620")
+        env_rx1hs = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_RX1HS")
+        env_values = {
+            "DS620": env_ds620,
+            "RX1HS": env_rx1hs,
+        }
+        if env_global is not None and env_values.get(default_model) is None:
+            env_values[default_model] = env_global
+
+        config_values: dict[str, Optional[int]] = {"DS620": None, "RX1HS": None}
+        if isinstance(printers, dict):
+            for model in ("DS620", "RX1HS"):
+                item = printers.get(model, {})
+                if isinstance(item, dict):
+                    parsed = self._safe_int(item.get("film_remaining"), -1)
+                    if parsed >= 0:
+                        config_values[model] = parsed
+
+        with self._film_state_lock:
+            saved = self._load_film_remaining_state_unlocked()
+            state: dict[str, int] = {}
+            for model in ("DS620", "RX1HS"):
+                value = env_values.get(model)
+                if value is None:
+                    value = saved.get(model)
+                if value is None:
+                    value = config_values.get(model)
+                if value is None:
+                    value = int(DEFAULT_FILM_REMAINING_BY_MODEL.get(model, 400))
+                state[model] = max(0, int(value))
+            self._film_remaining_by_model = state
+            self._save_film_remaining_state_unlocked()
+        print(
+            "[FILM] init "
+            f"DS620={self._film_remaining_by_model.get('DS620')} "
+            f"RX1HS={self._film_remaining_by_model.get('RX1HS')}"
+        )
+
+    def _get_film_remaining(self, model: str) -> Optional[int]:
+        key = self._normalize_film_model(model)
+        with self._film_state_lock:
+            value = self._film_remaining_by_model.get(key)
+        if value is None:
+            return None
+        return max(0, int(value))
+
+    def _consume_film_remaining(self, model: str, used_units: int) -> None:
+        key = self._normalize_film_model(model)
+        consume = max(0, int(used_units))
+        if consume <= 0:
+            return
+        with self._film_state_lock:
+            before = max(0, int(self._film_remaining_by_model.get(key, 0)))
+            after = max(0, before - consume)
+            self._film_remaining_by_model[key] = after
+            self._save_film_remaining_state_unlocked()
+        print(f"[FILM] consume model={key} used={consume} remaining={after}")
 
     def _resolve_sale_payment_method(self, required: int, coupon_value: int) -> str:
         if self.is_test_mode():
@@ -14556,21 +14687,40 @@ class KioskMainWindow(QMainWindow):
             "printer_ok": bool(printer_ok),
             "last_error": None,
         }
-        raw_film_all = str(os.environ.get("KIOSK_FILM_REMAINING", "")).strip()
-        raw_film_ds620 = str(os.environ.get("KIOSK_FILM_REMAINING_DS620", "")).strip()
-        raw_film_rx1hs = str(os.environ.get("KIOSK_FILM_REMAINING_RX1HS", "")).strip()
-        if raw_film_all:
-            parsed = self._safe_int(raw_film_all, -1)
-            if parsed >= 0:
-                payload["film_remaining"] = int(parsed)
-        if raw_film_ds620:
-            parsed = self._safe_int(raw_film_ds620, -1)
-            if parsed >= 0:
-                payload["printer_ds620"] = {"ok": bool(ds620_ok), "film_remaining": int(parsed)}
-        if raw_film_rx1hs:
-            parsed = self._safe_int(raw_film_rx1hs, -1)
-            if parsed >= 0:
-                payload["printer_rx1hs"] = {"ok": bool(rx1hs_ok), "film_remaining": int(parsed)}
+        ds620_remaining = self._get_film_remaining("DS620")
+        rx1hs_remaining = self._get_film_remaining("RX1HS")
+
+        env_all = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING")
+        env_ds620 = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_DS620")
+        env_rx1hs = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_RX1HS")
+        if env_ds620 is not None:
+            ds620_remaining = env_ds620
+        if env_rx1hs is not None:
+            rx1hs_remaining = env_rx1hs
+
+        if ds620_remaining is not None:
+            ds_payload = payload.get("printer_ds620")
+            if not isinstance(ds_payload, dict):
+                ds_payload = {}
+            ds_payload["ok"] = bool(ds620_ok)
+            ds_payload["film_remaining"] = int(ds620_remaining)
+            payload["printer_ds620"] = ds_payload
+        if rx1hs_remaining is not None:
+            rx_payload = payload.get("printer_rx1hs")
+            if not isinstance(rx_payload, dict):
+                rx_payload = {}
+            rx_payload["ok"] = bool(rx1hs_ok)
+            rx_payload["film_remaining"] = int(rx1hs_remaining)
+            payload["printer_rx1hs"] = rx_payload
+
+        default_model = self._normalize_film_model(str(printing_settings.get("default_model", "DS620")))
+        primary_remaining = ds620_remaining if default_model == "DS620" else rx1hs_remaining
+        if primary_remaining is None:
+            primary_remaining = ds620_remaining if ds620_remaining is not None else rx1hs_remaining
+        if env_all is not None:
+            primary_remaining = env_all
+        if primary_remaining is not None:
+            payload["film_remaining"] = int(primary_remaining)
         payload.update(self._offline_telemetry_snapshot())
         return payload
 
@@ -14772,6 +14922,19 @@ class KioskMainWindow(QMainWindow):
             return None
 
     def _on_print_success(self) -> None:
+        ctx = dict(self._active_print_context) if isinstance(self._active_print_context, dict) else {}
+        self._active_print_context = {}
+        should_consume = bool(ctx.get("enabled", True)) and not bool(ctx.get("dry_run", False)) and not bool(
+            ctx.get("test_mode", False)
+        )
+        if should_consume:
+            model = str(ctx.get("model", "DS620"))
+            strip_split = bool(ctx.get("strip_split", False))
+            if strip_split:
+                used_units = max(1, self._safe_int(ctx.get("strip_sets"), 1)) * 2
+            else:
+                used_units = max(1, self._safe_int(ctx.get("copies"), 1))
+            self._consume_film_remaining(model, used_units)
         print("[PRINT] success")
         self._report_sale_complete_async()
         preview_screen = self.screens.get("preview")
@@ -14831,6 +14994,7 @@ class KioskMainWindow(QMainWindow):
         self.handle_qr_generating_done(None)
 
     def _on_print_failure(self, error_message: str) -> None:
+        self._active_print_context = {}
         print(f"[PRINT] failure: {error_message}")
         preview_screen = self.screens.get("preview")
         if isinstance(preview_screen, PreviewScreen):
