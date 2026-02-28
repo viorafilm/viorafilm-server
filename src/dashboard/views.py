@@ -1,12 +1,14 @@
-﻿from datetime import timedelta
+﻿import csv
+from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
-from django.db.models import Sum
-from django.http import HttpResponseForbidden, JsonResponse
+from django.db.models import Count, Sum
+from django.db.models.functions import TruncDate
+from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -315,6 +317,75 @@ def _build_sales_summary(user):
     }
 
 
+def _parse_date_ymd(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _resolve_sales_period(request):
+    period = str(request.GET.get("period") or "month").strip().lower()
+    if period not in {"week", "month", "custom"}:
+        period = "month"
+
+    today = timezone.localdate()
+    if period == "week":
+        start_date = today - timedelta(days=6)
+        end_date = today
+    elif period == "month":
+        start_date = today - timedelta(days=29)
+        end_date = today
+    else:
+        start_date = _parse_date_ymd(request.GET.get("start_date"))
+        end_date = _parse_date_ymd(request.GET.get("end_date"))
+        if start_date is None or end_date is None:
+            start_date = today - timedelta(days=29)
+            end_date = today
+            period = "month"
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+    return {"period": period, "start_date": start_date, "end_date": end_date}
+
+
+def _apply_sales_period_filter(qs, period_info):
+    start_date = period_info.get("start_date")
+    end_date = period_info.get("end_date")
+    if start_date is not None:
+        qs = qs.filter(created_at__date__gte=start_date)
+    if end_date is not None:
+        qs = qs.filter(created_at__date__lte=end_date)
+    return qs
+
+
+def _build_sales_chart_payload(sales_qs):
+    rows = list(
+        sales_qs.annotate(day=TruncDate("created_at"))
+        .values("day")
+        .annotate(total=Sum("price_total"), tx_count=Count("id"))
+        .order_by("day")
+    )
+    return {
+        "labels": [str(row["day"]) for row in rows],
+        "totals": [int(row.get("total") or 0) for row in rows],
+        "counts": [int(row.get("tx_count") or 0) for row in rows],
+    }
+
+
+def _csv_response(filename, headers, rows):
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.write("\ufeff")
+    writer = csv.writer(response)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow(row)
+    return response
+
+
 def _build_device_rows(user, only_locked=False, devices_qs=None):
     devices_qs = devices_qs if devices_qs is not None else _scoped_devices(user)
     devices = list(devices_qs[:300])
@@ -577,18 +648,81 @@ def devices_live_view(request):
 @never_cache
 def sales_view(request):
     filters = _resolve_scope_filters(request.user, request)
-    sales_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
-    sales = sales_qs[:200]
+    period_info = _resolve_sales_period(request)
+    sales_base_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
+    sales_qs = _apply_sales_period_filter(sales_base_qs, period_info)
+    sales = list(sales_qs[:300])
+    total_amount = int(sales_qs.aggregate(v=Sum("price_total")).get("v") or 0)
+    total_count = int(sales_qs.count())
+    chart_payload = _build_sales_chart_payload(sales_qs)
     return render(
         request,
         "dashboard/sales.html",
         {
             "sales": sales,
+            "sales_total_amount": total_amount,
+            "sales_total_count": total_count,
+            "period": period_info["period"],
+            "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else "",
+            "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else "",
+            "chart_labels": chart_payload["labels"],
+            "chart_totals": chart_payload["totals"],
+            "chart_counts": chart_payload["counts"],
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
         },
+    )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
+def sales_export_view(request):
+    filters = _resolve_scope_filters(request.user, request)
+    period_info = _resolve_sales_period(request)
+    sales_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
+    sales_qs = _apply_sales_period_filter(sales_qs, period_info)
+
+    rows = []
+    for s in sales_qs.order_by("-created_at").iterator():
+        rows.append(
+            [
+                timezone.localtime(s.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                getattr(s.org, "code", ""),
+                getattr(s.branch, "code", ""),
+                getattr(s.device, "device_code", ""),
+                s.session_id,
+                s.layout_id,
+                s.prints,
+                s.currency,
+                s.price_total,
+                s.payment_method,
+                s.amount_cash,
+                s.amount_coupon,
+                s.coupon.formatted_code if s.coupon else "",
+            ]
+        )
+
+    filename = f"viorafilm_sales_{timezone.localtime().strftime('%Y%m%d_%H%M%S')}.csv"
+    return _csv_response(
+        filename=filename,
+        headers=[
+            "created_at",
+            "org_code",
+            "branch_code",
+            "device_code",
+            "session_id",
+            "layout_id",
+            "prints",
+            "currency",
+            "price_total",
+            "payment_method",
+            "amount_cash",
+            "amount_coupon",
+            "coupon_code",
+        ],
+        rows=rows,
     )
 
 
@@ -721,6 +855,57 @@ def coupons_view(request):
 
 @login_required(login_url="/dashboard/login")
 @never_cache
+def coupons_export_view(request):
+    filters = _resolve_scope_filters(request.user, request)
+    coupons_qs = _apply_org_branch_filter(
+        _scoped_coupons(request.user),
+        "batch__org_id",
+        "batch__branch_id",
+        filters,
+    ).order_by("-created_at")
+
+    rows = []
+    for c in coupons_qs.iterator():
+        rows.append(
+            [
+                c.formatted_code,
+                c.code,
+                c.currency,
+                c.amount,
+                c.status,
+                timezone.localtime(c.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                timezone.localtime(c.expires_at).strftime("%Y-%m-%d %H:%M:%S"),
+                timezone.localtime(c.used_at).strftime("%Y-%m-%d %H:%M:%S") if c.used_at else "",
+                getattr(c.batch.org, "code", "") if c.batch else "",
+                getattr(c.batch.branch, "code", "") if c.batch else "",
+                c.used_session_id or "",
+                c.used_by_device.device_code if c.used_by_device else "",
+            ]
+        )
+
+    filename = f"viorafilm_coupons_{timezone.localtime().strftime('%Y%m%d_%H%M%S')}.csv"
+    return _csv_response(
+        filename=filename,
+        headers=[
+            "formatted_code",
+            "code",
+            "currency",
+            "amount",
+            "status",
+            "created_at",
+            "expires_at",
+            "used_at",
+            "org_code",
+            "branch_code",
+            "used_session_id",
+            "used_device_code",
+        ],
+        rows=rows,
+    )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
 def photos_view(request):
     filters = _resolve_scope_filters(request.user, request)
     q = (request.GET.get("q") or "").strip()
@@ -791,4 +976,3 @@ def photos_view(request):
             "filter_branches": filters["branches"],
         },
     )
-

@@ -97,7 +97,7 @@ def quote_coupon(code, amount_due):
     return True, amount_coupon, remaining, "OK", coupon
 
 
-def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_expected):
+def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_expected=None):
     normalized = normalize_coupon_code(code)
     with transaction.atomic():
         coupon = Coupon.objects.select_for_update().filter(code=normalized).first()
@@ -109,8 +109,13 @@ def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_exp
             raise ValueError("COUPON_ALREADY_USED")
         if coupon.is_expired:
             raise ValueError("COUPON_EXPIRED")
-        if int(coupon.amount) != int(amount_coupon_expected):
-            raise ValueError("COUPON_AMOUNT_MISMATCH")
+        if amount_coupon_expected is not None:
+            try:
+                expected_value = int(amount_coupon_expected)
+            except Exception:
+                expected_value = 0
+            if expected_value > 0 and int(coupon.amount) != expected_value:
+                raise ValueError("COUPON_AMOUNT_MISMATCH")
         if int(amount_due) < int(coupon.amount):
             raise ValueError("COUPON_EXCEEDS_DUE")
 
@@ -135,4 +140,3 @@ def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_exp
         ip=None,
     )
     return coupon
-

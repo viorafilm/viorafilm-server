@@ -1,8 +1,17 @@
 ﻿{% extends "dashboard/base.html" %}
 {% block content %}
-<div class="card card-soft">
+<div class="card card-soft mb-3">
   <div class="card-body">
-    <h5 class="mb-3">매출 관리</h5>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <h5 class="mb-0">매출 관리</h5>
+      <a
+        class="btn btn-success btn-sm"
+        href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}"
+      >
+        엑셀 다운로드(CSV)
+      </a>
+    </div>
+
     <form class="row g-2 mb-3" method="get">
       <div class="col-12 col-md-4 col-lg-3">
         <label class="form-label mb-1">조직</label>
@@ -22,11 +31,50 @@
           {% endfor %}
         </select>
       </div>
-      <div class="col-12 col-md-4 col-lg-3 d-flex align-items-end gap-2">
+      <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">기간</label>
+        <select class="form-select form-select-sm" name="period" id="periodSelect">
+          <option value="week" {% if period == 'week' %}selected{% endif %}>1주</option>
+          <option value="month" {% if period == 'month' %}selected{% endif %}>1달</option>
+          <option value="custom" {% if period == 'custom' %}selected{% endif %}>특정 기간</option>
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">시작일</label>
+        <input class="form-control form-control-sm" type="date" name="start_date" id="startDateInput" value="{{ start_date|default:'' }}">
+      </div>
+      <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">종료일</label>
+        <input class="form-control form-control-sm" type="date" name="end_date" id="endDateInput" value="{{ end_date|default:'' }}">
+      </div>
+      <div class="col-12 d-flex align-items-end gap-2">
         <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
         <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_sales' %}">필터 초기화</a>
       </div>
     </form>
+
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-6">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">기간 매출 합계</div>
+          <div class="fs-4 fw-bold">KRW {{ sales_total_amount }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-6">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">기간 거래 건수</div>
+          <div class="fs-4 fw-bold">{{ sales_total_count }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-soft mb-3">
+      <div class="card-body">
+        <h6 class="mb-3">매출 그래프</h6>
+        <canvas id="salesTotalChart" height="120"></canvas>
+      </div>
+    </div>
+
     <div class="table-responsive">
       <table class="table table-hover align-middle">
         <thead>
@@ -63,4 +111,75 @@
     </div>
   </div>
 </div>
+
+{{ chart_labels|json_script:"chart-labels" }}
+{{ chart_totals|json_script:"chart-totals" }}
+{{ chart_counts|json_script:"chart-counts" }}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  (function () {
+    const periodSelect = document.getElementById("periodSelect");
+    const startDateInput = document.getElementById("startDateInput");
+    const endDateInput = document.getElementById("endDateInput");
+    if (periodSelect && startDateInput && endDateInput) {
+      function syncDateDisabled() {
+        const custom = periodSelect.value === "custom";
+        startDateInput.disabled = !custom;
+        endDateInput.disabled = !custom;
+      }
+      periodSelect.addEventListener("change", syncDateDisabled);
+      syncDateDisabled();
+    }
+
+    const labels = JSON.parse(document.getElementById("chart-labels").textContent || "[]");
+    const totals = JSON.parse(document.getElementById("chart-totals").textContent || "[]");
+    const counts = JSON.parse(document.getElementById("chart-counts").textContent || "[]");
+    const canvas = document.getElementById("salesTotalChart");
+    if (!canvas) {
+      return;
+    }
+    new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            type: "bar",
+            label: "매출 (KRW)",
+            data: totals,
+            backgroundColor: "rgba(14, 165, 233, 0.5)",
+            borderColor: "rgba(14, 165, 233, 1)",
+            borderWidth: 1
+          },
+          {
+            type: "line",
+            label: "거래 건수",
+            data: counts,
+            borderColor: "rgba(239, 68, 68, 1)",
+            backgroundColor: "rgba(239, 68, 68, 0.2)",
+            yAxisID: "y1",
+            tension: 0.25
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "매출(KRW)" }
+          },
+          y1: {
+            beginAtZero: true,
+            position: "right",
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "거래 건수" }
+          }
+        }
+      }
+    });
+  })();
+</script>
 {% endblock %}

@@ -531,8 +531,67 @@ class SaleCompleteView(APIView):
         data = serializer.validated_data
 
         session_id = str(data["session_id"])
+        method = str(data["payment_method"]).upper()
+        valid_methods = {x for x, _ in SaleTransaction.PAYMENT_CHOICES}
+        if method not in valid_methods:
+            return Response({"ok": False, "reason": "INVALID_PAYMENT_METHOD"}, status=400)
+
+        price_total = int(data["price_total"])
+        amount_cash = int(data.get("amount_cash", 0))
+        amount_coupon = int(data.get("amount_coupon", 0))
+        coupon_code = (data.get("coupon_code") or "").strip()
+        coupon_method_requested = method in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH)
+        if (not coupon_method_requested) and (amount_cash + amount_coupon != price_total):
+            return Response({"ok": False, "reason": "AMOUNT_SUM_MISMATCH"}, status=400)
+
         existing = SaleTransaction.objects.filter(device=device, session_id=session_id).select_related("coupon").first()
         if existing:
+            # Reconcile legacy/early-saved rows that were recorded as CASH before coupon was redeemed.
+            if (
+                coupon_method_requested
+                and existing.coupon_id is None
+            ):
+                try:
+                    with transaction.atomic():
+                        coupon_obj = redeem_coupon_atomic(
+                            device=device,
+                            code=coupon_code,
+                            session_id=session_id,
+                            amount_due=price_total,
+                            amount_coupon_expected=None,
+                        )
+                        resolved_coupon = min(price_total, int(coupon_obj.amount))
+                        resolved_cash = max(0, price_total - resolved_coupon)
+                        resolved_method = (
+                            SaleTransaction.METHOD_COUPON
+                            if resolved_cash == 0
+                            else SaleTransaction.METHOD_COUPON_CASH
+                        )
+                        existing.coupon = coupon_obj
+                        existing.payment_method = resolved_method
+                        existing.amount_coupon = resolved_coupon
+                        existing.amount_cash = resolved_cash
+                        existing.price_total = price_total
+                        existing.currency = str(data.get("currency", existing.currency or "KRW"))
+                        existing.layout_id = str(data.get("layout_id", existing.layout_id))
+                        existing.prints = int(data.get("prints", existing.prints or 2))
+                        existing.meta = data.get("meta", existing.meta or {})
+                        existing.save(
+                            update_fields=[
+                                "coupon",
+                                "payment_method",
+                                "amount_coupon",
+                                "amount_cash",
+                                "price_total",
+                                "currency",
+                                "layout_id",
+                                "prints",
+                                "meta",
+                            ]
+                        )
+                except ValueError:
+                    # Keep idempotent behavior: return existing row even if reconcile fails.
+                    pass
             log_event(
                 actor_user=None,
                 actor_device=device,
@@ -564,21 +623,8 @@ class SaleCompleteView(APIView):
                 }
             )
 
-        method = str(data["payment_method"]).upper()
-        valid_methods = {x for x, _ in SaleTransaction.PAYMENT_CHOICES}
-        if method not in valid_methods:
-            return Response({"ok": False, "reason": "INVALID_PAYMENT_METHOD"}, status=400)
-
-        price_total = int(data["price_total"])
-        amount_cash = int(data.get("amount_cash", 0))
-        amount_coupon = int(data.get("amount_coupon", 0))
-        coupon_code = (data.get("coupon_code") or "").strip()
-
-        if amount_cash + amount_coupon != price_total:
-            return Response({"ok": False, "reason": "AMOUNT_SUM_MISMATCH"}, status=400)
-
         coupon_obj = None
-        if method in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH):
+        if coupon_method_requested:
             if not coupon_code:
                 return Response({"ok": False, "reason": "COUPON_REQUIRED"}, status=400)
             try:
@@ -587,13 +633,22 @@ class SaleCompleteView(APIView):
                     code=coupon_code,
                     session_id=session_id,
                     amount_due=price_total,
-                    amount_coupon_expected=amount_coupon,
+                    amount_coupon_expected=None,
                 )
             except ValueError as exc:
                 return Response({"ok": False, "reason": str(exc)}, status=400)
+            amount_coupon = min(price_total, int(coupon_obj.amount))
+            amount_cash = max(0, price_total - amount_coupon)
+            method = (
+                SaleTransaction.METHOD_COUPON
+                if amount_cash == 0
+                else SaleTransaction.METHOD_COUPON_CASH
+            )
         else:
             if amount_coupon != 0:
                 return Response({"ok": False, "reason": "INVALID_COUPON_AMOUNT_FOR_METHOD"}, status=400)
+            if amount_cash != price_total:
+                return Response({"ok": False, "reason": "AMOUNT_SUM_MISMATCH"}, status=400)
 
         try:
             with transaction.atomic():

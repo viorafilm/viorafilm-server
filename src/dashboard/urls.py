@@ -3,6 +3,7 @@ from django.urls import path
 
 from .views import (
     coupons_view,
+    coupons_export_view,
     devices_view,
     devices_live_view,
     index_view,
@@ -10,6 +11,7 @@ from .views import (
     login_view,
     photos_view,
     sales_view,
+    sales_export_view,
 )
 
 urlpatterns = [
@@ -20,6 +22,8 @@ urlpatterns = [
     path("devices", devices_view, name="dashboard_devices"),
     path("live/devices", devices_live_view, name="dashboard_devices_live"),
     path("sales", sales_view, name="dashboard_sales"),
+    path("sales/export", sales_export_view, name="dashboard_sales_export"),
     path("coupons", coupons_view, name="dashboard_coupons"),
+    path("coupons/export", coupons_export_view, name="dashboard_coupons_export"),
     path("photos", photos_view, name="dashboard_photos"),
 ]

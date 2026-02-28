@@ -1,6 +1,14 @@
 ﻿{% extends "dashboard/base.html" %}
 {% block content %}
-<h5 class="mb-3">쿠폰 관리</h5>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h5 class="mb-0">쿠폰 관리</h5>
+  <a
+    class="btn btn-success btn-sm"
+    href="{% url 'dashboard_coupons_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}"
+  >
+    엑셀 다운로드(CSV)
+  </a>
+</div>
 
 <form class="row g-2 mb-3" method="get">
   <div class="col-12 col-md-4 col-lg-3">
