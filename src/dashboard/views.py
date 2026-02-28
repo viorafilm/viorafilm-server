@@ -26,6 +26,12 @@ from sales.models import SaleTransaction
 from storagehub.service import generate_download_url_from_meta
 from urllib.parse import urlencode
 
+AI_EST_USD_PER_IMAGE = 0.039
+AI_EST_KRW_PER_USD = 1400.0
+AI_EST_DEFAULT_IMAGES_PER_SALE = 2
+AI_EST_SERVER_COST_MULTIPLIER = 8.0
+AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
+
 
 def _is_super(user):
     return getattr(user, "role", None) == UserRole.SUPERADMIN
@@ -657,15 +663,29 @@ def sales_view(request):
 
     mode_counts = {"normal": 0, "ai": 0, "celebrity": 0}
     mode_amounts = {"normal": 0, "ai": 0, "celebrity": 0}
+    ai_generated_images = 0
     for price_total, meta in sales_qs.values_list("price_total", "meta"):
         mode = "normal"
+        sale_ai_images = 0
         if isinstance(meta, dict):
             raw_mode = str(meta.get("compose_mode", "")).strip().lower()
             if raw_mode in {"ai", "celebrity"}:
                 mode = raw_mode
+            if mode == "ai":
+                try:
+                    sale_ai_images = int(meta.get("ai_generated_count", AI_EST_DEFAULT_IMAGES_PER_SALE) or 0)
+                except Exception:
+                    sale_ai_images = AI_EST_DEFAULT_IMAGES_PER_SALE
+                if sale_ai_images <= 0:
+                    sale_ai_images = AI_EST_DEFAULT_IMAGES_PER_SALE
         amount = int(price_total or 0)
         mode_counts[mode] += 1
         mode_amounts[mode] += amount
+        if mode == "ai":
+            ai_generated_images += sale_ai_images
+
+    ai_estimated_server_cost = int(ai_generated_images * AI_EST_KRW_PER_IMAGE)
+    ai_estimated_server_cost_x8 = int(round(ai_estimated_server_cost * AI_EST_SERVER_COST_MULTIPLIER))
 
     chart_payload = _build_sales_chart_payload(sales_qs)
     return render(
@@ -683,6 +703,11 @@ def sales_view(request):
             "chart_counts": chart_payload["counts"],
             "mode_counts": mode_counts,
             "mode_amounts": mode_amounts,
+            "ai_generated_images": ai_generated_images,
+            "ai_estimated_server_cost": ai_estimated_server_cost,
+            "ai_estimated_server_cost_x8": ai_estimated_server_cost_x8,
+            "ai_est_krw_per_image": AI_EST_KRW_PER_IMAGE,
+            "ai_est_server_cost_multiplier": AI_EST_SERVER_COST_MULTIPLIER,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],

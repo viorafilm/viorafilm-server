@@ -562,6 +562,7 @@ AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
 AI_CAMERA_OVERLAY_PATH = ROOT_DIR / "assets" / "ui" / "14_ai_mode" / "4641_AImode.png"
+CHEAPEST_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 DEFAULT_AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
     "kpop_idol": {
@@ -2322,7 +2323,10 @@ def _generate_ai_variant_via_gemini(
 
     style_info = AI_STYLE_PRESETS.get(style_id) or {}
     prompt = str(style_info.get("prompt", "")).strip() or "Stylized portrait"
-    model = str(os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")).strip() or "gemini-2.5-flash-image"
+    requested_model = str(os.environ.get("GEMINI_IMAGE_MODEL", "")).strip()
+    model = CHEAPEST_GEMINI_IMAGE_MODEL
+    if requested_model and requested_model != model:
+        print(f"[AI] model override requested={requested_model} -> forced={model}")
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     try:
@@ -15588,6 +15592,10 @@ class KioskMainWindow(QMainWindow):
             "amount_coupon": int(amount_coupon),
             "meta": {
                 "compose_mode": str(self.compose_mode or "normal"),
+                "ai_generated_count": 2 if str(self.compose_mode or "").strip().lower() == "ai" else 0,
+                "ai_model": CHEAPEST_GEMINI_IMAGE_MODEL
+                if str(self.compose_mode or "").strip().lower() == "ai"
+                else "",
                 "kiosk_required_amount": int(required),
                 "kiosk_coupon_value": int(coupon_value),
                 "kiosk_inserted_amount": int(self._safe_int(getattr(session, "payment_inserted", self.current_inserted_amount), 0)),
