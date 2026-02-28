@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import ctypes
+import base64
 import io
 import json
 import logging
@@ -18,11 +19,11 @@ from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 from ctypes import wintypes
 from urllib.parse import urlsplit
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 try:
     import serial
@@ -191,6 +192,7 @@ try:
         QScrollArea,
         QSpinBox,
         QStackedWidget,
+        QTextEdit,
         QToolButton,
         QVBoxLayout,
         QWidget,
@@ -213,6 +215,7 @@ except ImportError:
             QScrollArea,
             QSpinBox,
             QStackedWidget,
+            QTextEdit,
             QToolButton,
             QVBoxLayout,
             QWidget,
@@ -235,6 +238,7 @@ except ImportError:
                 QScrollArea,
                 QSpinBox,
                 QStackedWidget,
+                QTextEdit,
                 QToolButton,
                 QVBoxLayout,
                 QWidget,
@@ -433,6 +437,7 @@ PRINT_QR_SIZE_MULTIPLIER_BY_LAYOUT = {
 # Preview should stay smaller than print to avoid visual overlap in design UI.
 PREVIEW_QR_RECT_SCALE_BY_LAYOUT = {
     "2641": 1.0,
+    "4641": 0.62,
 }
 
 # Printer trim-safe margin (2641 was clipping near paper edge).
@@ -550,6 +555,37 @@ DEFAULT_MODE_SETTINGS = {
 DEFAULT_CELEBRITY_SETTINGS = {
     "templates_dir": "D:/photoharu/assets/celebrity_templates",
     "layout_id": "2461",
+}
+
+AI_LAYOUT_ID = "4641"
+AI_CAPTURE_SLOTS = 4
+AI_SELECT_SLOTS = 2
+AI_OUTPUT_SLOTS = 4
+
+DEFAULT_AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
+    "kpop_idol": {
+        "label_ko": "KPOP 아이돌",
+        "label_en": "KPOP Idol",
+        "prompt": "K-pop inspired portrait, clean skin, glossy magazine tone, vibrant but natural colors",
+    },
+    "caricature": {
+        "label_ko": "캐리커처",
+        "label_en": "Caricature",
+        "prompt": "Stylized caricature portrait with playful exaggeration, clear outlines, colorful shading",
+    },
+    "anime": {
+        "label_ko": "애니메이션",
+        "label_en": "Anime",
+        "prompt": "Anime portrait style, smooth cel shading, clean lines, high contrast",
+    },
+    "vintage": {
+        "label_ko": "빈티지 필름",
+        "label_en": "Vintage Film",
+        "prompt": "Vintage film portrait, warm tones, slight grain, nostalgic look",
+    },
+}
+AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
+    key: dict(value) for key, value in DEFAULT_AI_STYLE_PRESETS.items()
 }
 
 DEFAULT_OFFLINE_GRACE_HOURS = 72
@@ -1060,42 +1096,45 @@ def win_print_image(
     import win32ui
     from PIL import ImageWin
 
+    print(
+        f"[PRINT] win_print_image enter printer=\"{printer_name}\" "
+        f"image={image_path} copies={max(1, int(copies))}"
+    )
     path = str(image_path)
     if not Path(path).is_file():
         raise FileNotFoundError(f"image not found: {path}")
     if not str(printer_name).strip():
         raise RuntimeError("printer_name is empty")
 
-    health_ok, health_msg = get_printer_health(str(printer_name))
-    if not health_ok:
-        print(
-            f"[PRINT] blocked offline printer=\"{printer_name}\" "
-            f"msg=\"{health_msg}\""
-        )
-        raise RuntimeError(f"printer offline: {health_msg}")
+    com_initialized = False
+    try:
+        import pythoncom  # type: ignore
 
-    p_status, p_status_text = _get_printer_status_snapshot(str(printer_name))
-    print(f"[PRINT] printer status before=0x{p_status:08X} ({p_status_text})")
-    critical_mask = (
-        int(getattr(win32print, "PRINTER_STATUS_OFFLINE", 0))
-        | int(getattr(win32print, "PRINTER_STATUS_ERROR", 0))
-        | int(getattr(win32print, "PRINTER_STATUS_PAPER_OUT", 0))
-        | int(getattr(win32print, "PRINTER_STATUS_PAPER_JAM", 0))
-        | int(getattr(win32print, "PRINTER_STATUS_DOOR_OPEN", 0))
-        | int(getattr(win32print, "PRINTER_STATUS_USER_INTERVENTION", 0))
-    )
-    if p_status & critical_mask:
-        raise RuntimeError(f"printer not ready status=0x{p_status:08X} ({p_status_text})")
+        pythoncom.CoInitialize()
+        com_initialized = True
+    except Exception:
+        com_initialized = False
 
-    with Image.open(path) as src:
-        img = src.convert("RGB")
-
-    hdc = win32ui.CreateDC()
-    hdc.CreatePrinterDC(str(printer_name))
+    hdc = None
     doc_started = False
     job_id: Optional[int] = None
+
+    # Runtime offline checks are executed before worker start.
+    # Avoid duplicate OpenPrinter/GetPrinter calls here because some
+    # Windows drivers intermittently block in worker threads.
     try:
+        print(f"[PRINT] image open start path={path}")
+        with Image.open(path) as src:
+            img = src.convert("RGB")
+        print(f"[PRINT] image open ok size={img.size[0]}x{img.size[1]}")
+
+        print(f"[PRINT] CreatePrinterDC start printer=\"{printer_name}\"")
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(str(printer_name))
+        print(f"[PRINT] CreatePrinterDC ok printer=\"{printer_name}\"")
+        print(f"[PRINT_FORM] apply start desired=\"{str(form_name or '')}\"")
         _try_apply_printer_form(str(printer_name), hdc, str(form_name or ""))
+        print("[PRINT_FORM] apply done")
         pw = int(hdc.GetDeviceCaps(win32con.HORZRES))
         ph = int(hdc.GetDeviceCaps(win32con.VERTRES))
         iw, ih = img.size
@@ -1125,6 +1164,7 @@ def win_print_image(
         )
 
         docname = Path(path).name
+        print(f"[PRINT] StartDoc begin doc=\"{docname}\"")
         start_result = hdc.StartDoc(docname)
         try:
             parsed = int(start_result)
@@ -1137,15 +1177,17 @@ def win_print_image(
         dib = ImageWin.Dib(img)
 
         for _ in range(max(1, int(copies))):
+            print("[PRINT] StartPage")
             hdc.StartPage()
             dib.draw(hdc.GetHandleOutput(), (x1, y1, x2, y2))
             hdc.EndPage()
+            print("[PRINT] EndPage")
+        print("[PRINT] EndDoc begin")
         hdc.EndDoc()
+        print("[PRINT] EndDoc done")
         doc_started = False
         if job_id is not None:
             _wait_spooler_job(str(printer_name), int(job_id), timeout_sec=8.0)
-        p_status_after, p_status_after_text = _get_printer_status_snapshot(str(printer_name))
-        print(f"[PRINT] printer status after=0x{p_status_after:08X} ({p_status_after_text})")
     except Exception:
         if doc_started:
             try:
@@ -1154,10 +1196,18 @@ def win_print_image(
                 pass
         raise
     finally:
-        try:
-            hdc.DeleteDC()
-        except Exception:
-            pass
+        if hdc is not None:
+            try:
+                hdc.DeleteDC()
+            except Exception:
+                pass
+        if com_initialized:
+            try:
+                import pythoncom  # type: ignore
+
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def _split_print_image_for_2x6(image_path: Path) -> tuple[Path, Path]:
@@ -2190,6 +2240,135 @@ def _apply_photo_effects(
     return image
 
 
+def _apply_local_ai_style(source: Image.Image, style_id: str) -> Image.Image:
+    style_key = str(style_id or "").strip().lower()
+    image = source.convert("RGB")
+
+    if style_key == "kpop_idol":
+        image = ImageEnhance.Color(image).enhance(1.22)
+        image = ImageEnhance.Brightness(image).enhance(1.08)
+        image = ImageEnhance.Contrast(image).enhance(1.12)
+        image = image.filter(ImageFilter.SMOOTH_MORE).filter(ImageFilter.SMOOTH_MORE)
+        tint = Image.new("RGB", image.size, (255, 228, 238))
+        return Image.blend(image, tint, 0.10)
+
+    if style_key == "caricature":
+        poster = ImageOps.posterize(image, 3)
+        edges = image.convert("L").filter(ImageFilter.FIND_EDGES).filter(ImageFilter.SMOOTH)
+        line_mask = edges.point(lambda p: 255 if p > 70 else 0).convert("1")
+        dark_lines = Image.new("RGB", image.size, (15, 15, 15))
+        merged = Image.composite(dark_lines, poster, line_mask)
+        return ImageEnhance.Contrast(merged).enhance(1.18)
+
+    if style_key == "anime":
+        base = ImageOps.posterize(image, 4)
+        base = ImageEnhance.Color(base).enhance(1.25)
+        base = ImageEnhance.Contrast(base).enhance(1.2)
+        line = image.convert("L").filter(ImageFilter.CONTOUR)
+        line = line.point(lambda p: 255 if p > 115 else 0).convert("1")
+        return Image.composite(Image.new("RGB", image.size, (25, 25, 30)), base, line)
+
+    if style_key == "vintage":
+        gray = ImageOps.grayscale(image)
+        sepia = ImageOps.colorize(gray, black="#3a2a1e", white="#f5d7a8")
+        sepia = ImageEnhance.Contrast(sepia).enhance(0.9)
+        sepia = ImageEnhance.Brightness(sepia).enhance(0.98)
+        return sepia
+
+    return image
+
+
+def _extract_image_from_gemini_response(payload: object) -> Optional[Image.Image]:
+    if not isinstance(payload, dict):
+        return None
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            inline_data = part.get("inlineData") or part.get("inline_data")
+            if not isinstance(inline_data, dict):
+                continue
+            b64 = inline_data.get("data")
+            if not isinstance(b64, str) or not b64.strip():
+                continue
+            try:
+                raw = base64.b64decode(b64)
+                with Image.open(io.BytesIO(raw)) as parsed:
+                    return parsed.convert("RGB")
+            except Exception:
+                continue
+    return None
+
+
+def _generate_ai_variant_via_gemini(
+    source: Image.Image,
+    style_id: str,
+) -> Optional[Image.Image]:
+    api_key = str(os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+    if not api_key or requests is None:
+        return None
+
+    style_info = AI_STYLE_PRESETS.get(style_id) or {}
+    prompt = str(style_info.get("prompt", "")).strip() or "Stylized portrait"
+    model = str(os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")).strip() or "gemini-2.5-flash-image"
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    try:
+        buffer = io.BytesIO()
+        source.convert("RGB").save(buffer, format="JPEG", quality=94)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as exc:
+        print(f"[AI] encode failed style={style_id} err={exc}")
+        return None
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": encoded}},
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0.35},
+    }
+
+    try:
+        response = requests.post(endpoint, json=payload, timeout=40)
+        if response.status_code >= 400:
+            print(f"[AI] gemini failed status={response.status_code} style={style_id}")
+            return None
+        parsed = response.json()
+        image = _extract_image_from_gemini_response(parsed)
+        if image is None:
+            print(f"[AI] gemini no image style={style_id}")
+            return None
+        print(f"[AI] gemini ok model={model} style={style_id}")
+        return image
+    except Exception as exc:
+        print(f"[AI] gemini exception style={style_id} err={exc}")
+        return None
+
+
+def _generate_ai_variant_image(source: Image.Image, style_id: str) -> Image.Image:
+    remote = _generate_ai_variant_via_gemini(source, style_id)
+    if remote is not None:
+        return remote
+    print(f"[AI] local filter fallback style={style_id}")
+    return _apply_local_ai_style(source, style_id)
+
+
 def _design_assets_base_dir(layout_id: Optional[str] = None) -> Path:
     layout_text = str(layout_id or "").strip()
     celebrity_root = ROOT_DIR / "assets" / "ui" / "10_select_Design_celebrity" / "Frame"
@@ -2692,6 +2871,137 @@ class CelebrityTemplateSelectScreen(ImageScreen):
         self._render_page()
 
 
+class AiStyleSelectScreen(ImageScreen):
+    TITLE_RECT = (0, 62, 1920, 74)
+    BACK_RECT = (42, 36, 150, 70)
+    CARD_RECTS = [
+        (260, 230, 620, 250),
+        (1040, 230, 620, 250),
+        (260, 560, 620, 250),
+        (1040, 560, 620, 250),
+    ]
+    SUBTITLE_RECT = (260, 860, 1400, 90)
+
+    def __init__(self, main_window: "KioskMainWindow") -> None:
+        background_path = ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "please_select_a_frame.png"
+        super().__init__(main_window, "ai_style_select", background_path)
+        self._style_ids: list[str] = list(DEFAULT_AI_STYLE_PRESETS.keys())[:4]
+
+        self._title_label = QLabel("AI 스타일 선택 / Select AI Style", self)
+        self._title_label.setAlignment(ALIGN_CENTER)
+        self._title_label.setStyleSheet(
+            "QLabel { color: white; font-size: 44px; font-weight: 800; background-color: rgba(0,0,0,115); }"
+        )
+        self._title_label.setAttribute(WA_TRANSPARENT, True)
+
+        self._subtitle_label = QLabel(
+            "4641 AI MODE: 촬영 4장 -> AI 처리 4장 중 2장 선택",
+            self,
+        )
+        self._subtitle_label.setAlignment(ALIGN_CENTER)
+        self._subtitle_label.setStyleSheet(
+            "QLabel { color: #FFE8A8; font-size: 30px; font-weight: 700; background-color: rgba(0,0,0,135); "
+            "border-radius: 10px; }"
+        )
+        self._subtitle_label.setAttribute(WA_TRANSPARENT, True)
+
+        self._back_button = QPushButton("뒤로", self)
+        self._back_button.setStyleSheet(
+            "QPushButton { background-color: rgba(0,0,0,160); color: white; font-size: 28px; font-weight: 700; "
+            "border: 2px solid rgba(255,255,255,160); border-radius: 10px; }"
+            "QPushButton:pressed { background-color: rgba(0,0,0,210); }"
+        )
+        self._back_button.clicked.connect(self._on_back_clicked)
+        if hasattr(Qt, "FocusPolicy"):
+            self._back_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        else:
+            self._back_button.setFocusPolicy(Qt.NoFocus)
+
+        self._style_buttons: list[QPushButton] = []
+        for index in range(4):
+            button = QPushButton("", self)
+            button.setStyleSheet(
+                "QPushButton { background-color: rgba(0,0,0,140); color: white; font-size: 36px; font-weight: 800; "
+                "border: 2px solid rgba(255,255,255,170); border-radius: 14px; text-align: center; }"
+                "QPushButton:pressed { background-color: rgba(0,0,0,210); }"
+            )
+            if hasattr(Qt, "FocusPolicy"):
+                button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            else:
+                button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(lambda _checked=False, idx=index: self._on_style_clicked_by_index(idx))
+            self._style_buttons.append(button)
+
+        self.reload_style_cards()
+        self._layout_widgets()
+
+    def _resolved_style_info(self) -> dict[str, dict[str, Any]]:
+        if hasattr(self.main_window, "get_ai_style_settings"):
+            data = self.main_window.get_ai_style_settings()
+            if isinstance(data, dict) and data:
+                return data
+        return {key: dict(value) for key, value in AI_STYLE_PRESETS.items()}
+
+    def reload_style_cards(self) -> None:
+        style_info_map = self._resolved_style_info()
+        style_items = list(style_info_map.items())
+        enabled_items = [
+            (style_id, info if isinstance(info, dict) else {})
+            for style_id, info in style_items
+            if bool((info if isinstance(info, dict) else {}).get("enabled", True))
+        ]
+        enabled_items.sort(key=lambda item: (int(item[1].get("order", 9999)), item[0]))
+        style_ids = [style_id for style_id, _info in enabled_items]
+        if not style_ids:
+            style_ids = list(DEFAULT_AI_STYLE_PRESETS.keys())
+        self._style_ids = style_ids[:4]
+
+        for index, button in enumerate(self._style_buttons):
+            if index >= len(self._style_ids):
+                button.hide()
+                continue
+            style_id = self._style_ids[index]
+            info = style_info_map.get(style_id, {})
+            ko = str(info.get("label_ko", style_id)).strip() or style_id
+            en = str(info.get("label_en", ko)).strip() or ko
+            button.setText(f"{ko}\n{en}")
+            button.show()
+
+    def _layout_widgets(self) -> None:
+        self._title_label.setGeometry(self.design_rect_to_widget(self.TITLE_RECT))
+        self._back_button.setGeometry(self.design_rect_to_widget(self.BACK_RECT))
+        self._subtitle_label.setGeometry(self.design_rect_to_widget(self.SUBTITLE_RECT))
+
+        for index, button in enumerate(self._style_buttons):
+            if index >= len(self.CARD_RECTS):
+                button.hide()
+                continue
+            if index >= len(self._style_ids):
+                button.hide()
+                continue
+            button.setGeometry(self.design_rect_to_widget(self.CARD_RECTS[index]))
+            button.show()
+            button.raise_()
+
+    def _on_back_clicked(self) -> None:
+        self.main_window.goto_screen("frame_select")
+
+    def _on_style_clicked_by_index(self, index: int) -> None:
+        if index < 0 or index >= len(self._style_ids):
+            return
+        style_id = self._style_ids[index]
+        self.main_window.apply_ai_style_selection(style_id)
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self.reload_style_cards()
+        self._layout_widgets()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_widgets()
+
+
 class SelectPhotoScreen(ImageScreen):
     def __init__(self, main_window: "KioskMainWindow") -> None:
         self._base_dir = ROOT_DIR / "assets" / "ui" / "9_select_photo"
@@ -2992,6 +3302,16 @@ class SelectPhotoScreen(ImageScreen):
             return []
         return [tuple(rect) for rect in RIGHT_HOLES.get(layout_id, [])]
 
+    def _is_ai_mode_4641(self) -> bool:
+        if str(self.layout_id or "").strip() != AI_LAYOUT_ID:
+            return False
+        if not hasattr(self.main_window, "is_ai_mode_active"):
+            return False
+        try:
+            return bool(self.main_window.is_ai_mode_active())
+        except Exception:
+            return False
+
     @staticmethod
     def _bbox_from_rects(rects: list[tuple[int, int, int, int]]) -> Optional[tuple[int, int, int, int]]:
         if not rects:
@@ -3187,9 +3507,18 @@ class SelectPhotoScreen(ImageScreen):
         table_right = self._right_holes_for_layout(self.layout_id)
         right_rects: list[tuple[int, int, int, int]] = []
         if table_right:
-            right_rects = self._sort_design_rects(table_right)
-            if expected_right > 0:
-                right_rects = right_rects[:expected_right]
+            sorted_right = self._sort_design_rects(table_right)
+            if (
+                self._is_ai_mode_4641()
+                and expected_right == AI_SELECT_SLOTS
+                and len(sorted_right) >= 4
+            ):
+                # AI 4641: selected AI photos map to RT(first), LB(second).
+                right_rects = [sorted_right[1], sorted_right[2]]
+            else:
+                right_rects = sorted_right
+                if expected_right > 0:
+                    right_rects = right_rects[:expected_right]
             if len(right_rects) < expected_right:
                 fallback_right = self._fallback_slot_rects(expected_right, "right")
                 right_rects.extend(fallback_right[len(right_rects) : expected_right])
@@ -3504,6 +3833,7 @@ class SelectPhotoScreen(ImageScreen):
 class PreloadSelectPhotoWorker(QThread):
     success = Signal(int, dict)
     failure = Signal(int, str, dict)
+    progress = Signal(int, int, str, str)
 
     def __init__(
         self,
@@ -3516,6 +3846,9 @@ class PreloadSelectPhotoWorker(QThread):
         gif_interval_ms: int = 200,
         gif_max_width: int = 480,
         gif_frames_by_shot: Optional[dict[int, list[bytes]]] = None,
+        ai_mode_4641: bool = False,
+        ai_style_id: str = "",
+        ai_remote_allowed: bool = True,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -3529,6 +3862,20 @@ class PreloadSelectPhotoWorker(QThread):
         self.gif_interval_ms = max(50, int(gif_interval_ms or 200))
         self.gif_max_width = max(64, int(gif_max_width or 480))
         self.gif_frames_by_shot = gif_frames_by_shot or {}
+        self.ai_mode_4641 = bool(ai_mode_4641)
+        self.ai_style_id = str(ai_style_id or "").strip().lower()
+        self.ai_remote_allowed = bool(ai_remote_allowed)
+
+    def _emit_progress(self, percent: int, ko_message: str, en_message: str) -> None:
+        if not self.ai_mode_4641:
+            return
+        safe_percent = max(0, min(100, int(percent)))
+        self.progress.emit(
+            int(self.request_token),
+            safe_percent,
+            str(ko_message or "").strip(),
+            str(en_message or "").strip(),
+        )
 
     @staticmethod
     def _sort_rects(rects: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
@@ -3684,15 +4031,73 @@ class PreloadSelectPhotoWorker(QThread):
                 except Exception:
                     pass
 
+    def _build_ai_candidate_paths(self, payload: dict) -> list[Path]:
+        if not self.ai_mode_4641:
+            return []
+        if self.session_dir is None:
+            return []
+        style_id = self.ai_style_id if self.ai_style_id in AI_STYLE_PRESETS else next(iter(AI_STYLE_PRESETS.keys()))
+        ai_dir = self.session_dir / "ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+
+        results: list[Path] = []
+        total = max(1, len(self.captured_paths))
+        for index, source_path in enumerate(self.captured_paths, start=1):
+            if self.isInterruptionRequested():
+                return results
+            if not source_path.is_file():
+                continue
+            step_begin = 15 + int(((index - 1) / total) * 70)
+            self._emit_progress(
+                step_begin,
+                f"AI 사진 생성중 ({index}/{total})",
+                f"Generating AI photo ({index}/{total})",
+            )
+            out_path = ai_dir / f"ai_pick_{index:02d}_{style_id}.jpg"
+            if out_path.is_file():
+                results.append(out_path)
+                step_done = 15 + int((index / total) * 70)
+                self._emit_progress(
+                    step_done,
+                    f"AI 사진 준비됨 ({index}/{total})",
+                    f"AI photo ready ({index}/{total})",
+                )
+                continue
+            try:
+                with Image.open(source_path) as source:
+                    if self.ai_remote_allowed:
+                        ai_image = _generate_ai_variant_image(source, style_id)
+                    else:
+                        ai_image = _apply_local_ai_style(source, style_id)
+                    ai_image.convert("RGB").save(out_path, format="JPEG", quality=92)
+                    results.append(out_path)
+            except Exception as exc:
+                print(f"[AI_MODE] preload candidate failed shot={source_path.name} err={exc}")
+            step_done = 15 + int((index / total) * 70)
+            self._emit_progress(
+                step_done,
+                f"AI 사진 준비됨 ({index}/{total})",
+                f"AI photo ready ({index}/{total})",
+            )
+        if results:
+            payload["ai_candidate_paths"] = [str(p) for p in results]
+            print(
+                f"[AI_MODE] preload generated style={style_id} count={len(results)} "
+                f"remote={1 if self.ai_remote_allowed else 0}"
+            )
+        return results
+
     def run(self) -> None:
         payload: dict = {
             "bg_path": None,
             "left_rects": [],
             "right_rects": [],
             "thumb_paths": [],
+            "ai_candidate_paths": [],
             "video_gif_path": None,
         }
         try:
+            self._emit_progress(3, "AI 생성 준비중", "Preparing AI generation")
             background_path = self._find_background_path()
             if background_path is not None:
                 payload["bg_path"] = str(background_path)
@@ -3711,13 +4116,22 @@ class PreloadSelectPhotoWorker(QThread):
                     right_rects = self._sort_rects(by_area[: self.print_slots])
                 payload["left_rects"] = left_rects
                 payload["right_rects"] = right_rects
+            self._emit_progress(10, "레이아웃 분석중", "Analyzing layout")
 
             cache_root = self.session_dir if self.session_dir is not None else (ROOT_DIR / "out")
             thumbs_dir = cache_root / "cache" / "thumbs"
             thumbs_dir.mkdir(parents=True, exist_ok=True)
+            ai_candidates = self._build_ai_candidate_paths(payload)
+            thumb_sources: list[Path] = list(self.captured_paths)
+            if self.ai_mode_4641 and len(ai_candidates) >= len(self.captured_paths) and self.captured_paths:
+                thumb_sources = ai_candidates[: len(self.captured_paths)]
+            elif (not self.ai_mode_4641) and len(ai_candidates) >= len(self.captured_paths) and self.captured_paths:
+                thumb_sources = ai_candidates[: len(self.captured_paths)]
 
             left_rects = payload.get("left_rects") or []
-            for index, source_path in enumerate(self.captured_paths, start=1):
+            if self.ai_mode_4641:
+                self._emit_progress(90, "썸네일 준비중", "Preparing thumbnails")
+            for index, source_path in enumerate(thumb_sources, start=1):
                 if self.isInterruptionRequested():
                     return
                 if not source_path.is_file():
@@ -3738,8 +4152,17 @@ class PreloadSelectPhotoWorker(QThread):
                     covered = self._cover_image(source, target_w, target_h)
                 covered.save(thumb_path, format="JPEG", quality=88)
                 payload["thumb_paths"].append(str(thumb_path))
+                if self.ai_mode_4641:
+                    thumb_total = max(1, len(thumb_sources))
+                    thumb_pct = 90 + int((index / thumb_total) * 8)
+                    self._emit_progress(
+                        thumb_pct,
+                        f"썸네일 생성중 ({index}/{thumb_total})",
+                        f"Building thumbnails ({index}/{thumb_total})",
+                    )
 
             self._build_share_gif(payload)
+            self._emit_progress(100, "AI 생성 완료", "AI generation complete")
             self.success.emit(self.request_token, payload)
         except Exception as exc:
             self.failure.emit(self.request_token, str(exc), payload)
@@ -3760,6 +4183,12 @@ class DesignPreviewWorker(QThread):
         qr_enabled: bool,
         qr_value: Optional[str],
         preview_size: tuple[int, int],
+        ai_mode_4641: bool = False,
+        ai_style_id: str = "",
+        ai_source_a: str = "",
+        ai_source_b: str = "",
+        ai_session_dir: str = "",
+        ai_remote_allowed: bool = True,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -3775,6 +4204,12 @@ class DesignPreviewWorker(QThread):
             max(1, int(preview_size[0])),
             max(1, int(preview_size[1])),
         )
+        self.ai_mode_4641 = bool(ai_mode_4641)
+        self.ai_style_id = str(ai_style_id or "").strip().lower()
+        self.ai_source_a = Path(ai_source_a) if str(ai_source_a or "").strip() else None
+        self.ai_source_b = Path(ai_source_b) if str(ai_source_b or "").strip() else None
+        self.ai_session_dir = Path(ai_session_dir) if str(ai_session_dir or "").strip() else None
+        self.ai_remote_allowed = bool(ai_remote_allowed)
 
     @staticmethod
     def _fit_preview(image: Image.Image, preview_size: tuple[int, int]) -> Image.Image:
@@ -3795,13 +4230,60 @@ class DesignPreviewWorker(QThread):
         canvas.paste(resized, (x, y), resized)
         return canvas
 
+    def _build_ai_preview_paths(self) -> list[Path]:
+        style_id = self.ai_style_id if self.ai_style_id in AI_STYLE_PRESETS else next(iter(AI_STYLE_PRESETS.keys()))
+        if self.ai_source_a is None or not self.ai_source_a.is_file():
+            raise RuntimeError("ai preview source_a missing")
+        if self.ai_source_b is None or not self.ai_source_b.is_file():
+            raise RuntimeError("ai preview source_b missing")
+        if self.ai_session_dir is None:
+            raise RuntimeError("ai preview session dir missing")
+
+        ai_dir = self.ai_session_dir / "ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+        out_a = ai_dir / f"ai_preview_01_{style_id}.jpg"
+        out_b = ai_dir / f"ai_preview_02_{style_id}.jpg"
+
+        if out_a.is_file() and out_b.is_file():
+            print(
+                f"[AI_MODE] cache hit purpose=preview style={style_id} "
+                f"a={out_a.name} b={out_b.name}"
+            )
+            return [self.ai_source_a, out_a, out_b, self.ai_source_b]
+
+        with Image.open(self.ai_source_a) as img_a:
+            if self.ai_remote_allowed:
+                ai_a = _generate_ai_variant_image(img_a, style_id)
+            else:
+                ai_a = _apply_local_ai_style(img_a, style_id)
+            ai_a.convert("RGB").save(out_a, format="JPEG", quality=95)
+        with Image.open(self.ai_source_b) as img_b:
+            if self.ai_remote_allowed:
+                ai_b = _generate_ai_variant_image(img_b, style_id)
+            else:
+                ai_b = _apply_local_ai_style(img_b, style_id)
+            ai_b.convert("RGB").save(out_b, format="JPEG", quality=95)
+
+        print(
+            f"[AI_MODE] generated purpose=preview style={style_id} "
+            f"remote={1 if self.ai_remote_allowed else 0} a={out_a.name} b={out_b.name}"
+        )
+        print(
+            "[AI_MODE] preview map 4641 slots=LT:orig1 RT:ai1 LB:ai2 RB:orig2 "
+            f"style={style_id}"
+        )
+        return [self.ai_source_a, out_a, out_b, self.ai_source_b]
+
     def run(self) -> None:
         started_at = time.perf_counter()
         try:
+            selected_paths = list(self.selected_paths)
+            if self.ai_mode_4641:
+                selected_paths = self._build_ai_preview_paths()
             composed, slot_count, preview_frame_path = SelectDesignScreen.build_preview_image_static(
                 layout_id=self.layout_id,
                 frame_index=self.frame_index,
-                selected_paths=self.selected_paths,
+                selected_paths=selected_paths,
                 is_gray=self.is_gray,
                 flip_horizontal=self.flip_horizontal,
                 qr_enabled=self.qr_enabled,
@@ -3813,7 +4295,7 @@ class DesignPreviewWorker(QThread):
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             print(
                 f"[DESIGN] preview build layout={self.layout_id} idx={self.frame_index} "
-                f"slots={slot_count} photos={len(self.selected_paths)} ok"
+                f"slots={slot_count} photos={len(selected_paths)} ok"
             )
             self.preview_ready.emit(self.job_id, buffer.getvalue(), elapsed_ms, str(preview_frame_path))
         except Exception as exc:
@@ -3861,6 +4343,10 @@ class SelectDesignScreen(ImageScreen):
         self._preview_job_id = 0
         self._preview_workers: dict[int, DesignPreviewWorker] = {}
         self._pending_preview_render = False
+        self._ai_loading_active_job: Optional[int] = None
+        self._ai_loading_tick = 0
+        self._ai_loading_is_ai_mode = False
+        self._ai_loading_progress = 0
 
         self._bg_label = QLabel(self)
         self._bg_label.setAlignment(ALIGN_CENTER)
@@ -3893,6 +4379,18 @@ class SelectDesignScreen(ImageScreen):
             "font-size: 42px; font-weight: 700; border: 2px solid rgba(255,255,255,150); }"
         )
         self._notice_label.hide()
+
+        self._ai_loading_overlay = QLabel(self._bg_label)
+        self._ai_loading_overlay.setAlignment(ALIGN_CENTER)
+        self._ai_loading_overlay.setStyleSheet(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 190); "
+            "font-size: 36px; font-weight: 800; border: 2px solid rgba(255,255,255,120); }"
+        )
+        self._ai_loading_overlay.hide()
+
+        self._ai_loading_timer = QTimer(self)
+        self._ai_loading_timer.setInterval(280)
+        self._ai_loading_timer.timeout.connect(self._tick_ai_loading_overlay)
 
         self.state_label = QLabel(self._bg_label)
         self.state_label.setAlignment(ALIGN_CENTER)
@@ -4032,6 +4530,7 @@ class SelectDesignScreen(ImageScreen):
         self.qr_box_label.setGeometry(self.design_rect_to_widget(self.QR_BOX_RECT))
         self.qr_check_label.setGeometry(self.design_rect_to_widget(self.QR_CHECK_RECT))
         self._notice_label.setGeometry(self.design_rect_to_widget((450, 430, 1020, 180)))
+        self._ai_loading_overlay.setGeometry(self.preview_label.geometry())
         self.state_label.raise_()
         self.color_icon_label.raise_()
         self.gray_icon_label.raise_()
@@ -4039,6 +4538,8 @@ class SelectDesignScreen(ImageScreen):
         self.color_swatch.raise_()
         self.qr_box_label.raise_()
         self.qr_check_label.raise_()
+        if self._ai_loading_overlay.isVisible():
+            self._ai_loading_overlay.raise_()
         self._notice_label.raise_()
 
     def _current_preview_area(self) -> tuple[int, int, int, int]:
@@ -4168,6 +4669,62 @@ class SelectDesignScreen(ImageScreen):
     def _hide_notice(self) -> None:
         self._notice_label.hide()
 
+    def _tick_ai_loading_overlay(self) -> None:
+        if self._ai_loading_active_job is None or not self._ai_loading_overlay.isVisible():
+            return
+        self._ai_loading_tick = (self._ai_loading_tick + 1) % 4
+        dots = "." * self._ai_loading_tick
+        if self._ai_loading_is_ai_mode:
+            self._ai_loading_progress = min(97, max(0, int(self._ai_loading_progress)) + 2)
+            self._ai_loading_overlay.setText(
+                f"AI 생성중 {self._ai_loading_progress}%{dots}\n"
+                f"Generating AI Photos {self._ai_loading_progress}%{dots}\n"
+                "잠시만 기다려주세요 / Please wait"
+            )
+        else:
+            self._ai_loading_progress = min(95, max(0, int(self._ai_loading_progress)) + 3)
+            self._ai_loading_overlay.setText(
+                f"미리보기 합성중 {self._ai_loading_progress}%{dots}\n"
+                f"Composing Preview {self._ai_loading_progress}%{dots}"
+            )
+
+    def _show_ai_loading_overlay(self, job_id: int, ai_mode: bool = False) -> None:
+        self._ai_loading_active_job = int(job_id)
+        self._ai_loading_tick = 0
+        self._ai_loading_is_ai_mode = bool(ai_mode)
+        self._ai_loading_progress = 8 if self._ai_loading_is_ai_mode else 12
+        if self._ai_loading_is_ai_mode:
+            self._ai_loading_overlay.setText(
+                f"AI 생성중 {self._ai_loading_progress}%\n"
+                f"Generating AI Photos {self._ai_loading_progress}%\n"
+                "잠시만 기다려주세요 / Please wait"
+            )
+            print(f"[AI_MODE] preview loading start job={job_id}")
+        else:
+            self._ai_loading_overlay.setText(
+                f"미리보기 합성중 {self._ai_loading_progress}%\n"
+                f"Composing Preview {self._ai_loading_progress}%"
+            )
+            print(f"[SELECT_DESIGN] preview loading start job={job_id}")
+        self._ai_loading_overlay.show()
+        self._ai_loading_overlay.raise_()
+        if not self._ai_loading_timer.isActive():
+            self._ai_loading_timer.start()
+
+    def _hide_ai_loading_overlay(self, job_id: Optional[int] = None) -> None:
+        if job_id is not None and self._ai_loading_active_job != int(job_id):
+            return
+        if self._ai_loading_active_job is not None:
+            if self._ai_loading_is_ai_mode:
+                print(f"[AI_MODE] preview loading done job={self._ai_loading_active_job}")
+            else:
+                print(f"[SELECT_DESIGN] preview loading done job={self._ai_loading_active_job}")
+        self._ai_loading_active_job = None
+        self._ai_loading_is_ai_mode = False
+        self._ai_loading_progress = 0
+        self._ai_loading_timer.stop()
+        self._ai_loading_overlay.hide()
+
     def show_notice(self, message: str, duration_ms: int = 1000) -> None:
         self._notice_label.setText(message)
         self._notice_label.show()
@@ -4212,15 +4769,53 @@ class SelectDesignScreen(ImageScreen):
         if not self.layout_id:
             self.preview_label.setText("layout missing")
             self.preview_label.setPixmap(QPixmap())
+            self._hide_ai_loading_overlay()
             return
-        if not self.selected_print_paths:
+        selected_paths_for_preview: list[Path] = list(self.selected_print_paths)
+        ai_mode_4641 = False
+        ai_style_id = ""
+        ai_source_a = ""
+        ai_source_b = ""
+        ai_session_dir = ""
+        if self._is_ai_mode_4641():
+            try:
+                selected_pair = self._resolve_ai_selected_pair()
+                if (
+                    selected_pair is not None
+                    and self._is_ai_generated_path(selected_pair[0])
+                    and self._is_ai_generated_path(selected_pair[1])
+                ):
+                    orig_a, orig_b = self._resolve_ai_original_pair()
+                    selected_paths_for_preview = [orig_a, selected_pair[0], selected_pair[1], orig_b]
+                    ai_mode_4641 = False
+                    print(
+                        "[AI_MODE] preview reuse selected slots=LT:orig1 RT:selected1 LB:selected2 RB:orig2 "
+                        f"s1={selected_pair[0].name} s2={selected_pair[1].name}"
+                    )
+                else:
+                    style_id = self._resolve_ai_style_id()
+                    source_a, source_b = self._resolve_ai_source_pair()
+                    session = self.main_window.get_active_session() if hasattr(self.main_window, "get_active_session") else None
+                    if session is not None and hasattr(session, "session_dir"):
+                        ai_mode_4641 = True
+                        ai_style_id = style_id
+                        ai_source_a = str(source_a)
+                        ai_source_b = str(source_b)
+                        ai_session_dir = str(session.session_dir)
+                    else:
+                        print("[AI_MODE] preview fallback: session missing")
+            except Exception as exc:
+                print(f"[AI_MODE] preview fallback to selected paths err={exc}")
+        if not selected_paths_for_preview:
             self.preview_label.setText("selected photos missing")
             self.preview_label.setPixmap(QPixmap())
+            self._hide_ai_loading_overlay()
             return
         assets = resolve_design_asset_paths(self.layout_id, self.frame_index)
         if assets.get("preview_frame_path") is None and assets.get("frame2_path") is None:
             self.preview_label.setText("frame missing")
             self.preview_label.setPixmap(QPixmap())
+            self._hide_ai_loading_overlay()
             print(f"[SELECT_DESIGN] frame missing layout={self.layout_id} frame={self.frame_index}")
             return
 
@@ -4237,19 +4832,26 @@ class SelectDesignScreen(ImageScreen):
         worker = DesignPreviewWorker(
             job_id=job_id,
             layout_id=self.layout_id,
-            selected_paths=self.selected_print_paths,
+            selected_paths=selected_paths_for_preview,
             frame_index=self.frame_index,
             is_gray=self.is_gray,
             flip_horizontal=self.flip_horizontal,
             qr_enabled=self.qr_enabled,
             qr_value=self._resolve_print_qr_url(persist_session=False),
             preview_size=preview_size,
+            ai_mode_4641=ai_mode_4641,
+            ai_style_id=ai_style_id,
+            ai_source_a=ai_source_a,
+            ai_source_b=ai_source_b,
+            ai_session_dir=ai_session_dir,
+            ai_remote_allowed=True,
             parent=self,
         )
         worker.preview_ready.connect(self._on_preview_ready)
         worker.preview_error.connect(self._on_preview_error)
         worker.finished.connect(lambda current_job=job_id: self._on_preview_finished(current_job))
         self._preview_workers[job_id] = worker
+        self._show_ai_loading_overlay(job_id, ai_mode=ai_mode_4641)
         worker.start()
 
     def _on_preview_ready(self, job_id: int, png_bytes: bytes, elapsed_ms: int, frame_path: str) -> None:
@@ -4269,6 +4871,7 @@ class SelectDesignScreen(ImageScreen):
         else:
             scaled = pixmap.scaled(target_size, KEEP_ASPECT, SMOOTH_TRANSFORM)
             self.preview_label.setPixmap(scaled)
+        self._hide_ai_loading_overlay(job_id)
         print(
             f"[SELECT_DESIGN] preview updated frame={self.frame_index} "
             f"gray={1 if self.is_gray else 0} flip={1 if self.flip_horizontal else 0} "
@@ -4280,12 +4883,14 @@ class SelectDesignScreen(ImageScreen):
             return
         self.preview_label.setPixmap(QPixmap())
         self.preview_label.setText("preview failed")
+        self._hide_ai_loading_overlay(job_id)
         print(f"[SELECT_DESIGN] preview failed job={job_id}: {error_message}")
 
     def _on_preview_finished(self, job_id: int) -> None:
         worker = self._preview_workers.pop(int(job_id), None)
         if worker is not None:
             worker.deleteLater()
+        self._hide_ai_loading_overlay(job_id)
 
     def get_frame_path(self) -> Optional[Path]:
         if not self.layout_id:
@@ -4538,9 +5143,251 @@ class SelectDesignScreen(ImageScreen):
             log_prefix="[QR_PRINT]",
         )
 
-    def build_final_print(self) -> tuple[Image.Image, Path, int, int]:
+    @staticmethod
+    def _emit_compose_progress(
+        progress_cb: Optional[Callable[[int, str, str], None]],
+        percent: int,
+        ko: str,
+        en: str,
+    ) -> None:
+        if not callable(progress_cb):
+            return
+        safe_percent = max(0, min(100, int(percent)))
+        try:
+            progress_cb(safe_percent, str(ko or "").strip(), str(en or "").strip())
+        except Exception:
+            pass
+
+    def _is_ai_mode_4641(self) -> bool:
+        mode = ""
+        if hasattr(self.main_window, "compose_mode"):
+            mode = str(getattr(self.main_window, "compose_mode", "")).strip().lower()
+        return mode == "ai" and str(self.layout_id or "").strip() == AI_LAYOUT_ID
+
+    def _resolve_ai_style_id(self) -> str:
+        raw = str(getattr(self.main_window, "ai_style_id", "") or "").strip().lower()
+        if raw in AI_STYLE_PRESETS:
+            return raw
+        return next(iter(AI_STYLE_PRESETS.keys()))
+
+    def _resolve_ai_source_pair(self) -> tuple[Path, Path]:
+        candidates: list[Path] = []
+        for path in self.selected_print_paths:
+            if not isinstance(path, Path) or not path.is_file():
+                continue
+            if path in candidates:
+                continue
+            candidates.append(path)
+            if len(candidates) >= AI_SELECT_SLOTS:
+                break
+        current_captured = list(getattr(self.main_window, "current_captured_paths", []) or [])
+        for raw in current_captured:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            path = Path(raw)
+            if path.is_file():
+                if path in candidates:
+                    continue
+                candidates.append(path)
+            if len(candidates) >= AI_SELECT_SLOTS:
+                break
+        if len(candidates) < AI_SELECT_SLOTS:
+            for path in self.selected_print_paths:
+                if not path.is_file():
+                    continue
+                if path in candidates:
+                    continue
+                candidates.append(path)
+                if len(candidates) >= AI_SELECT_SLOTS:
+                    break
+        if not candidates:
+            raise RuntimeError("ai source images missing")
+        first = candidates[0]
+        second = candidates[1] if len(candidates) > 1 else candidates[0]
+        return first, second
+
+    @staticmethod
+    def _is_ai_generated_path(path: Path) -> bool:
+        try:
+            text = str(path).replace("\\", "/").lower()
+            name = path.name.lower()
+            return "/ai/" in text or name.startswith("ai_") or "ai_pick_" in name
+        except Exception:
+            return False
+
+    def _resolve_ai_selected_pair(self) -> Optional[tuple[Path, Path]]:
+        selected: list[Path] = []
+        for path in self.selected_print_paths:
+            if not isinstance(path, Path) or not path.is_file():
+                continue
+            selected.append(path)
+            if len(selected) >= AI_SELECT_SLOTS:
+                break
+        if len(selected) < AI_SELECT_SLOTS:
+            return None
+        return selected[0], selected[1]
+
+    def _resolve_ai_original_pair(self) -> tuple[Path, Path]:
+        originals: list[Path] = []
+        current_captured = list(getattr(self.main_window, "current_captured_paths", []) or [])
+        for raw in current_captured:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            path = Path(raw)
+            if path.is_file():
+                originals.append(path)
+            if len(originals) >= AI_SELECT_SLOTS:
+                break
+        if len(originals) < AI_SELECT_SLOTS:
+            selected_pair = self._resolve_ai_selected_pair()
+            if selected_pair is not None:
+                originals = [selected_pair[0], selected_pair[1]]
+        if not originals:
+            raise RuntimeError("ai original images missing")
+        first = originals[0]
+        second = originals[1] if len(originals) > 1 else originals[0]
+        return first, second
+
+    def _generate_ai_variants(
+        self,
+        source_a: Path,
+        source_b: Path,
+        style_id: str,
+        purpose: str = "final",
+        remote_allowed: bool = True,
+        progress_cb: Optional[Callable[[int, str, str], None]] = None,
+    ) -> tuple[Path, Path]:
+        session = None
+        if hasattr(self.main_window, "get_active_session"):
+            session = self.main_window.get_active_session()
+        if session is None:
+            raise RuntimeError("session missing for ai generation")
+
+        ai_dir = session.session_dir / "ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+        purpose_key = str(purpose or "final").strip().lower() or "final"
+        out_a = ai_dir / f"ai_{purpose_key}_01_{style_id}.jpg"
+        out_b = ai_dir / f"ai_{purpose_key}_02_{style_id}.jpg"
+
+        if out_a.is_file() and out_b.is_file():
+            self._emit_compose_progress(progress_cb, 70, "AI 캐시 불러오는 중", "Loading AI cache")
+            print(
+                f"[AI_MODE] cache hit purpose={purpose_key} style={style_id} "
+                f"a={out_a.name} b={out_b.name}"
+            )
+            return out_a, out_b
+
+        self._emit_compose_progress(progress_cb, 28, "AI 변환 시작", "Starting AI transform")
+        with Image.open(source_a) as img_a:
+            self._emit_compose_progress(progress_cb, 40, "AI 사진 1/2 생성중", "Generating AI photo 1/2")
+            if remote_allowed:
+                ai_a = _generate_ai_variant_image(img_a, style_id)
+            else:
+                ai_a = _apply_local_ai_style(img_a, style_id)
+            ai_a.convert("RGB").save(out_a, format="JPEG", quality=95)
+        self._emit_compose_progress(progress_cb, 58, "AI 사진 1/2 완료", "AI photo 1/2 ready")
+        with Image.open(source_b) as img_b:
+            self._emit_compose_progress(progress_cb, 72, "AI 사진 2/2 생성중", "Generating AI photo 2/2")
+            if remote_allowed:
+                ai_b = _generate_ai_variant_image(img_b, style_id)
+            else:
+                ai_b = _apply_local_ai_style(img_b, style_id)
+            ai_b.convert("RGB").save(out_b, format="JPEG", quality=95)
+        self._emit_compose_progress(progress_cb, 82, "AI 변환 완료", "AI transform complete")
+
+        print(
+            f"[AI_MODE] generated purpose={purpose_key} style={style_id} "
+            f"remote={1 if remote_allowed else 0} a={out_a.name} b={out_b.name}"
+        )
+        return out_a, out_b
+
+    def _build_preview_paths_ai_4641(self) -> list[Path]:
+        selected_pair = self._resolve_ai_selected_pair()
+        if (
+            selected_pair is not None
+            and self._is_ai_generated_path(selected_pair[0])
+            and self._is_ai_generated_path(selected_pair[1])
+        ):
+            source_a, source_b = self._resolve_ai_original_pair()
+            print(
+                "[AI_MODE] preview map 4641 slots=LT:orig1 RT:selected1 LB:selected2 RB:orig2 "
+                f"s1={selected_pair[0].name} s2={selected_pair[1].name}"
+            )
+            return [source_a, selected_pair[0], selected_pair[1], source_b]
+
+        style_id = self._resolve_ai_style_id()
+        source_a, source_b = self._resolve_ai_source_pair()
+        ai_a, ai_b = self._generate_ai_variants(
+            source_a=source_a,
+            source_b=source_b,
+            style_id=style_id,
+            purpose="preview",
+            remote_allowed=True,
+        )
+        print(
+            "[AI_MODE] preview map 4641 slots=LT:orig1 RT:ai1 LB:ai2 RB:orig2 "
+            f"style={style_id}"
+        )
+        return [source_a, ai_a, ai_b, source_b]
+
+    def _build_final_print_ai_4641(
+        self,
+        progress_cb: Optional[Callable[[int, str, str], None]] = None,
+    ) -> tuple[Image.Image, Path, int, int]:
+        self._emit_compose_progress(progress_cb, 8, "AI 합성 준비중", "Preparing AI composition")
+        style_id = self._resolve_ai_style_id()
+        selected_pair = self._resolve_ai_selected_pair()
+        if (
+            selected_pair is not None
+            and self._is_ai_generated_path(selected_pair[0])
+            and self._is_ai_generated_path(selected_pair[1])
+        ):
+            source_a, source_b = self._resolve_ai_original_pair()
+            ai_a, ai_b = selected_pair
+            self._emit_compose_progress(progress_cb, 74, "선택 AI 반영중", "Applying selected AI photos")
+            print(
+                "[AI_MODE] reuse selected ai purpose=final "
+                f"style={style_id} ai1={ai_a.name} ai2={ai_b.name}"
+            )
+        else:
+            source_a, source_b = self._resolve_ai_source_pair()
+            ai_a, ai_b = self._generate_ai_variants(
+                source_a=source_a,
+                source_b=source_b,
+                style_id=style_id,
+                purpose="final",
+                remote_allowed=True,
+                progress_cb=progress_cb,
+            )
+
+        self._emit_compose_progress(progress_cb, 88, "프레임 합성중", "Composing frame")
+        mapped_paths = [source_a, ai_a, ai_b, source_b]
+        composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
+            layout_id=self.layout_id or AI_LAYOUT_ID,
+            frame_index=self.frame_index,
+            selected_paths=mapped_paths,
+            is_gray=self.is_gray,
+            flip_horizontal=self.flip_horizontal,
+        )
+        print(
+            "[AI_MODE] compose 4641 slots=LT:orig1 RT:ai1 LB:ai2 RB:orig2 "
+            f"style={style_id} source_a={source_a.name} source_b={source_b.name}"
+        )
+        if self.qr_enabled:
+            self._emit_compose_progress(progress_cb, 95, "QR 배치중", "Applying QR")
+            composed = self._apply_qr_overlay_to_print(composed, used_slots)
+        self._emit_compose_progress(progress_cb, 99, "합성 마무리", "Finalizing composition")
+        return composed, frame2_path, slot_count, copies_per_page
+
+    def build_final_print(
+        self,
+        progress_cb: Optional[Callable[[int, str, str], None]] = None,
+    ) -> tuple[Image.Image, Path, int, int]:
         if not self.layout_id:
             raise RuntimeError("layout_id missing")
+        if self._is_ai_mode_4641():
+            return self._build_final_print_ai_4641(progress_cb=progress_cb)
+        self._emit_compose_progress(progress_cb, 22, "합성 준비중", "Preparing composition")
         composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
             layout_id=self.layout_id,
             frame_index=self.frame_index,
@@ -4548,13 +5395,16 @@ class SelectDesignScreen(ImageScreen):
             is_gray=self.is_gray,
             flip_horizontal=self.flip_horizontal,
         )
+        self._emit_compose_progress(progress_cb, 82, "프레임 합성 완료", "Frame composition done")
         if self.qr_enabled:
+            self._emit_compose_progress(progress_cb, 92, "QR 배치중", "Applying QR")
             composed = self._apply_qr_overlay_to_print(composed, used_slots)
+        self._emit_compose_progress(progress_cb, 99, "합성 마무리", "Finalizing composition")
         return composed, frame2_path, slot_count, copies_per_page
 
 
 class AppThankYouScreen(ThankYouScreen):
-    AUTO_BACK_MS = 10000
+    AUTO_BACK_MS = 20000
     QR_RECT = (775, 350, 370, 370)
     CANDIDATE_DIR_NAMES = [
         "12_Thank_you",
@@ -6406,7 +7256,7 @@ class AppQrUploadWorker(QObject):
 
 class AppQrGeneratingScreen(ImageScreen):
     FRAME_INTERVAL_MS = 180
-    MIN_HOLD_MS = 10000
+    MIN_HOLD_MS = 20000
     FAIL_NOTICE_MS = 1000
     GIF_RECT = (700, 280, 520, 520)
 
@@ -6679,7 +7529,7 @@ class AppQrGeneratingScreen(ImageScreen):
 
 
 class AppQrCodeScreen(ImageScreen):
-    AUTO_NEXT_MS = 8000
+    AUTO_NEXT_MS = 20000
 
     def __init__(self, main_window: "KioskMainWindow") -> None:
         self._base_dir = ROOT_DIR / "assets" / "ui" / "11_Qrcode"
@@ -6821,6 +7671,32 @@ class MainPrintWorker(QObject):
         self.enabled = bool(enabled)
         self.dry_run = bool(dry_run)
         self.test_mode = bool(test_mode)
+        self.call_timeout_sec = max(10.0, float(os.environ.get("KIOSK_PRINT_CALL_TIMEOUT_SEC", "45") or 45))
+
+    def _run_single_print_call(self, image_path: Path) -> None:
+        error_box: dict[str, Exception] = {}
+
+        def _target() -> None:
+            try:
+                win_print_image(
+                    self.printer_name,
+                    str(image_path),
+                    copies=1,
+                    form_name=self.form_name,
+                )
+            except Exception as exc:
+                error_box["error"] = exc
+
+        thread = threading.Thread(target=_target, name="print_call", daemon=True)
+        thread.start()
+        thread.join(self.call_timeout_sec)
+        if thread.is_alive():
+            raise TimeoutError(
+                f"print call timeout after {self.call_timeout_sec:.0f}s "
+                f"(printer={self.printer_name})"
+            )
+        if "error" in error_box:
+            raise error_box["error"]
 
     def run(self) -> None:
         try:
@@ -6864,26 +7740,15 @@ class MainPrintWorker(QObject):
                 part_a, part_b = _split_print_image_for_2x6(self.image_path)
                 for _set_index in range(self.strip_sets):
                     print("[PRINT] strip part A -> 2x6")
-                    win_print_image(
-                        self.printer_name,
-                        str(part_a),
-                        copies=1,
-                        form_name=self.form_name,
-                    )
+                    self._run_single_print_call(part_a)
                     print("[PRINT] strip part B -> 2x6")
-                    win_print_image(
-                        self.printer_name,
-                        str(part_b),
-                        copies=1,
-                        form_name=self.form_name,
-                    )
+                    self._run_single_print_call(part_b)
             else:
-                win_print_image(
-                    self.printer_name,
-                    str(self.image_path),
-                    copies=self.copies,
-                    form_name=self.form_name,
-                )
+                for copy_index in range(max(1, int(self.copies))):
+                    print(
+                        f"[PRINT] fullsheet copy {copy_index + 1}/{max(1, int(self.copies))} -> 4x6"
+                    )
+                    self._run_single_print_call(self.image_path)
             print(
                 f"[PRINT] sent to spooler ok printer=\"{self.printer_name}\" "
                 f"copies={self.copies}"
@@ -7109,7 +7974,7 @@ class AdminScreen(QWidget):
         self._status_timer.timeout.connect(self._clear_status)
 
         self.setStyleSheet(
-            "QWidget { background: #f5f5f5; color: #111; font-size: 18px; } "
+            "QWidget { background: #f5f5f5; color: #111; } "
             "QPushButton { min-height: 42px; padding: 6px 14px; } "
             "QLabel#title { font-size: 30px; font-weight: 700; } "
             "QLabel#status { color: #0a6; font-size: 16px; } "
@@ -7163,6 +8028,47 @@ class AdminScreen(QWidget):
         self.payment_coupon_cb = QCheckBox(self)
         self.mode_celebrity_cb = QCheckBox(self)
         self.mode_ai_cb = QCheckBox(self)
+        self.ai_style_ids: list[str] = list(DEFAULT_AI_STYLE_PRESETS.keys())[:4]
+        self.ai_style_enabled_inputs: dict[str, QCheckBox] = {}
+        self.ai_style_order_inputs: dict[str, QSpinBox] = {}
+        self.ai_style_name_ko_inputs: dict[str, QLineEdit] = {}
+        self.ai_style_name_en_inputs: dict[str, QLineEdit] = {}
+        self.ai_style_prompt_inputs: dict[str, QTextEdit] = {}
+        self.ai_style_widget = QWidget(self)
+        self.ai_style_grid = QGridLayout(self.ai_style_widget)
+        self.ai_style_grid.setContentsMargins(0, 0, 0, 0)
+        self.ai_style_grid.setHorizontalSpacing(10)
+        self.ai_style_grid.setVerticalSpacing(8)
+        self.ai_style_grid.addWidget(QLabel("Style ID", self.ai_style_widget), 0, 0)
+        self.ai_style_grid.addWidget(QLabel("활성", self.ai_style_widget), 0, 1)
+        self.ai_style_grid.addWidget(QLabel("순서", self.ai_style_widget), 0, 2)
+        self.ai_style_grid.addWidget(QLabel("표시명(한글)", self.ai_style_widget), 0, 3)
+        self.ai_style_grid.addWidget(QLabel("Display (EN)", self.ai_style_widget), 0, 4)
+        self.ai_style_grid.addWidget(QLabel("Prompt", self.ai_style_widget), 0, 5)
+        for row, style_id in enumerate(self.ai_style_ids, start=1):
+            id_label = QLabel(style_id, self.ai_style_widget)
+            enabled_input = QCheckBox(self.ai_style_widget)
+            enabled_input.setChecked(True)
+            order_input = QSpinBox(self.ai_style_widget)
+            order_input.setRange(1, 99)
+            order_input.setValue(row)
+            ko_input = QLineEdit(self.ai_style_widget)
+            en_input = QLineEdit(self.ai_style_widget)
+            prompt_input = QTextEdit(self.ai_style_widget)
+            prompt_input.setAcceptRichText(False)
+            prompt_input.setMinimumHeight(72)
+            prompt_input.setMaximumHeight(110)
+            self.ai_style_enabled_inputs[style_id] = enabled_input
+            self.ai_style_order_inputs[style_id] = order_input
+            self.ai_style_name_ko_inputs[style_id] = ko_input
+            self.ai_style_name_en_inputs[style_id] = en_input
+            self.ai_style_prompt_inputs[style_id] = prompt_input
+            self.ai_style_grid.addWidget(id_label, row, 0)
+            self.ai_style_grid.addWidget(enabled_input, row, 1)
+            self.ai_style_grid.addWidget(order_input, row, 2)
+            self.ai_style_grid.addWidget(ko_input, row, 3)
+            self.ai_style_grid.addWidget(en_input, row, 4)
+            self.ai_style_grid.addWidget(prompt_input, row, 5)
         self.bill_enabled_cb = QCheckBox(self)
         self.bill_profile_combo = QComboBox(self)
         self.bill_port_combo = QComboBox(self)
@@ -7244,6 +8150,7 @@ class AdminScreen(QWidget):
         form.addRow("pay_coupon", self.payment_coupon_cb)
         form.addRow("mode_celebrity_enabled", self.mode_celebrity_cb)
         form.addRow("mode_ai_enabled", self.mode_ai_cb)
+        form.addRow("ai_styles", self.ai_style_widget)
         form.addRow("bill_enabled", self.bill_enabled_cb)
         form.addRow("bill_profile", self.bill_profile_combo)
         form.addRow("bill_port", self.bill_port_combo)
@@ -7338,6 +8245,7 @@ class AdminScreen(QWidget):
         settings: dict,
         payment_methods: Optional[dict] = None,
         modes: Optional[dict] = None,
+        ai_styles: Optional[dict] = None,
         bill_acceptor: Optional[dict] = None,
         pricing: Optional[dict] = None,
         layout_ids: Optional[list[str]] = None,
@@ -7379,6 +8287,7 @@ class AdminScreen(QWidget):
             mode_settings["ai_enabled"] = bool(modes.get("ai_enabled", mode_settings["ai_enabled"]))
         self.mode_celebrity_cb.setChecked(bool(mode_settings["celebrity_enabled"]))
         self.mode_ai_cb.setChecked(bool(mode_settings["ai_enabled"]))
+        self._load_ai_style_controls(ai_styles)
         self._load_printing_controls(printing, printer_names)
         self._load_pricing_controls(pricing, layout_ids)
         self._load_bill_acceptor_controls(bill_acceptor)
@@ -7415,6 +8324,74 @@ class AdminScreen(QWidget):
             "celebrity_enabled": self.mode_celebrity_cb.isChecked(),
             "ai_enabled": self.mode_ai_cb.isChecked(),
         }
+
+    def _load_ai_style_controls(self, ai_styles: Optional[dict]) -> None:
+        defaults = DEFAULT_AI_STYLE_PRESETS
+        incoming = ai_styles if isinstance(ai_styles, dict) else {}
+        for row, style_id in enumerate(self.ai_style_ids, start=1):
+            style_defaults = defaults.get(style_id, {})
+            style_current = incoming.get(style_id) if isinstance(incoming, dict) else {}
+            style_current = style_current if isinstance(style_current, dict) else {}
+            ko = str(style_current.get("label_ko", style_defaults.get("label_ko", style_id))).strip()
+            en = str(style_current.get("label_en", style_defaults.get("label_en", ko or style_id))).strip()
+            prompt = str(style_current.get("prompt", style_defaults.get("prompt", ""))).strip()
+            enabled = bool(style_current.get("enabled", True))
+            try:
+                order = int(style_current.get("order", row))
+            except Exception:
+                order = row
+
+            enabled_input = self.ai_style_enabled_inputs.get(style_id)
+            order_input = self.ai_style_order_inputs.get(style_id)
+            ko_input = self.ai_style_name_ko_inputs.get(style_id)
+            en_input = self.ai_style_name_en_inputs.get(style_id)
+            prompt_input = self.ai_style_prompt_inputs.get(style_id)
+            if isinstance(enabled_input, QCheckBox):
+                enabled_input.setChecked(enabled)
+            if isinstance(order_input, QSpinBox):
+                order_input.setValue(max(1, min(99, order)))
+            if isinstance(ko_input, QLineEdit):
+                ko_input.setText(ko or style_id)
+            if isinstance(en_input, QLineEdit):
+                en_input.setText(en or ko or style_id)
+            if isinstance(prompt_input, QTextEdit):
+                prompt_input.setPlainText(prompt)
+
+    def _collect_ai_style_settings(self) -> dict:
+        result: dict[str, dict[str, Any]] = {}
+        for style_id in self.ai_style_ids:
+            defaults = DEFAULT_AI_STYLE_PRESETS.get(style_id, {})
+            enabled_input = self.ai_style_enabled_inputs.get(style_id)
+            order_input = self.ai_style_order_inputs.get(style_id)
+            ko_input = self.ai_style_name_ko_inputs.get(style_id)
+            en_input = self.ai_style_name_en_inputs.get(style_id)
+            prompt_input = self.ai_style_prompt_inputs.get(style_id)
+
+            enabled = enabled_input.isChecked() if isinstance(enabled_input, QCheckBox) else True
+            order = int(order_input.value()) if isinstance(order_input, QSpinBox) else 1
+            ko = (
+                ko_input.text().strip()
+                if isinstance(ko_input, QLineEdit)
+                else str(defaults.get("label_ko", style_id))
+            )
+            en = (
+                en_input.text().strip()
+                if isinstance(en_input, QLineEdit)
+                else str(defaults.get("label_en", ko or style_id))
+            )
+            prompt = (
+                prompt_input.toPlainText().strip()
+                if isinstance(prompt_input, QTextEdit)
+                else str(defaults.get("prompt", ""))
+            )
+            result[style_id] = {
+                "label_ko": ko or str(defaults.get("label_ko", style_id)) or style_id,
+                "label_en": en or str(defaults.get("label_en", ko or style_id)) or ko or style_id,
+                "prompt": prompt or str(defaults.get("prompt", "Stylized portrait")) or "Stylized portrait",
+                "enabled": bool(enabled),
+                "order": max(1, int(order)),
+            }
+        return result
 
     @staticmethod
     def _set_combo_items(combo: QComboBox, names: list[str], selected: str = "") -> None:
@@ -7696,6 +8673,7 @@ class AdminScreen(QWidget):
             self._collect_settings(),
             payment_methods=self._collect_payment_methods(),
             modes=self._collect_modes_settings(),
+            ai_styles=self._collect_ai_style_settings(),
             bill_acceptor=self._collect_bill_acceptor_settings(),
             pricing=self._collect_pricing_settings(),
             printing=self._collect_printing_settings(),
@@ -7704,6 +8682,7 @@ class AdminScreen(QWidget):
             self.main_window.admin_settings,
             self.main_window.get_payment_methods(),
             self.main_window.get_modes_settings(),
+            self.main_window.get_ai_style_settings(),
             self.main_window.get_bill_acceptor_settings(),
             self.main_window.get_payment_pricing_settings(),
             self.main_window.available_layout_ids,
@@ -9078,7 +10057,7 @@ class CameraScreen(ImageScreen):
     LIVEVIEW_RECT_BY_LAYOUT: Dict[str, tuple[int, int, int, int]] = {
         "2641": (480, 140, 960, 800),
         "6241": (700, 190, 500, 700),
-        "4641": (380, 140, 840, 780),
+        "4641": (540, 140, 840, 780),
         "4661": (300, 140, 620, 760),
         "4681": (430, 140, 1060, 800),
     }
@@ -10092,6 +11071,48 @@ class CameraScreen(ImageScreen):
         new_x = safe_left + max(0, (safe_width - new_w) // 2)
         return (int(new_x), y, int(new_w), h)
 
+    @staticmethod
+    def _pick_ai_mode_capture_rects(
+        rects: list[tuple[int, int, int, int]],
+        required: int = AI_CAPTURE_SLOTS,
+    ) -> list[tuple[int, int, int, int]]:
+        normalized = [
+            tuple(int(v) for v in rect)
+            for rect in rects
+            if isinstance(rect, (list, tuple)) and len(rect) == 4 and int(rect[2]) > 0 and int(rect[3]) > 0
+        ]
+        if len(normalized) < required:
+            return []
+
+        centers = sorted(
+            [((x + (w / 2.0)), idx) for idx, (x, _y, w, _h) in enumerate(normalized)],
+            key=lambda item: item[0],
+        )
+        if len(centers) < 2:
+            return []
+
+        best_gap = -1.0
+        split_idx = -1
+        for i in range(len(centers) - 1):
+            gap = centers[i + 1][0] - centers[i][0]
+            if gap > best_gap:
+                best_gap = gap
+                split_idx = i
+        if split_idx < 0:
+            return []
+
+        left_ids = {idx for _cx, idx in centers[: split_idx + 1]}
+        right_ids = {idx for _cx, idx in centers[split_idx + 1 :]}
+        if len(left_ids) < 2 or len(right_ids) < 2:
+            return []
+
+        left_rects = sorted((normalized[idx] for idx in left_ids), key=lambda r: (r[1], r[0]))
+        right_rects = sorted((normalized[idx] for idx in right_ids), key=lambda r: (r[1], r[0]))
+        chosen = left_rects[:2] + right_rects[:2]  # left 2 + right 2
+        if len(chosen) < required:
+            return []
+        return [tuple(int(v) for v in rect) for rect in chosen[:required]]
+
     def set_layout(self, layout_id: str) -> None:
         self.layout_id = layout_id
         self._overlay_pixmap_cache = {}
@@ -10113,6 +11134,22 @@ class CameraScreen(ImageScreen):
                 elif len(self.slot_rects) > self.capture_slots:
                     self.slot_rects = self.slot_rects[: self.capture_slots]
                 slot_source = f"admin_override:{self.capture_slots}"
+        try:
+            if (
+                hasattr(self.main_window, "is_ai_mode_active")
+                and bool(self.main_window.is_ai_mode_active())
+                and str(layout_id or "").strip() == AI_LAYOUT_ID
+            ):
+                self.print_slots = AI_SELECT_SLOTS
+                self.capture_slots = AI_CAPTURE_SLOTS
+                ai_rects = self._pick_ai_mode_capture_rects(self.slot_rects, self.capture_slots)
+                if len(ai_rects) >= self.capture_slots:
+                    self.slot_rects = ai_rects[: self.capture_slots]
+                else:
+                    self.slot_rects = self._fallback_grid_slots(self.capture_slots)
+                slot_source = f"ai_mode:{self.capture_slots}"
+        except Exception:
+            pass
         self._liveview_design_rect = self._compute_liveview_design_rect(layout_id)
         self._auto_next_pending = False
         self.shot_paths = []
@@ -10423,6 +11460,16 @@ class CameraScreen(ImageScreen):
         if not self.slot_rects:
             return
 
+        try:
+            if (
+                hasattr(self.main_window, "is_ai_mode_active")
+                and bool(self.main_window.is_ai_mode_active())
+                and str(self.layout_id or "").strip() == AI_LAYOUT_ID
+            ):
+                return
+        except Exception:
+            pass
+
         for idx, rect in enumerate(self.slot_rects):
             target = self.design_rect_to_widget(rect)
 
@@ -10648,6 +11695,8 @@ class KioskMainWindow(QMainWindow):
         self.thank_you_settings = self._resolve_thank_you_settings()
         self.payment_methods = self._resolve_payment_methods()
         self.mode_settings = self._resolve_modes_settings()
+        self.ai_style_settings = self._resolve_ai_styles_settings()
+        self._apply_ai_style_settings(self.ai_style_settings, emit_log=False)
         self.celebrity_settings = self._resolve_celebrity_settings()
         self.layout_settings = self._resolve_layout_settings()
 
@@ -10682,6 +11731,7 @@ class KioskMainWindow(QMainWindow):
         self.compose_mode: str = "normal"
         self.celebrity_template_dir: Optional[str] = None
         self.celebrity_template_name: Optional[str] = None
+        self.ai_style_id: Optional[str] = None
         self.pending_coupon_code: Optional[str] = None
         self.print_thread: Optional[QThread] = None
         self.print_worker = None
@@ -10692,6 +11742,7 @@ class KioskMainWindow(QMainWindow):
         self._after_loading_started_at: float = 0.0
         self._after_loading_token: int = 0
         self._after_loading_handled_token: int = -1
+        self._after_loading_progress_percent: int = -1
         self.design_key_buffer = ""
         self.design_key_timer = QTimer(self)
         self.design_key_timer.setSingleShot(True)
@@ -10789,6 +11840,7 @@ class KioskMainWindow(QMainWindow):
                 / "please_select_a_frame.png",
             ),
             "celebrity_template_select": CelebrityTemplateSelectScreen(self),
+            "ai_style_select": AiStyleSelectScreen(self),
             "how_many_prints": AppHowManyPrintsScreen(self),
             "payment_method": AppPaymentMethodScreen(self),
             "pay_cash": PayCashScreen(self),
@@ -10834,6 +11886,7 @@ class KioskMainWindow(QMainWindow):
         self._apply_admin_settings(self.admin_settings, emit_log=False)
         self._apply_payment_methods(self.payment_methods, emit_log=False)
         self._apply_mode_settings(self.mode_settings, emit_log=False)
+        self._apply_ai_style_settings(self.ai_style_settings, emit_log=False)
         self._init_offline_license_state()
         self._init_film_remaining_state()
         pending_events = self._offline_queue_count()
@@ -10991,6 +12044,7 @@ class KioskMainWindow(QMainWindow):
         self.compose_mode = "normal"
         self.celebrity_template_dir = None
         self.celebrity_template_name = None
+        self.ai_style_id = None
         self.pending_coupon_code = None
         self.current_bill_total_amount = 0
         self.design_key_buffer = ""
@@ -11054,6 +12108,7 @@ class KioskMainWindow(QMainWindow):
         self.compose_mode = "normal"
         self.celebrity_template_dir = None
         self.celebrity_template_name = None
+        self.ai_style_id = None
         self.pending_coupon_code = None
         print("[STATE] reset ok")
 
@@ -11107,6 +12162,7 @@ class KioskMainWindow(QMainWindow):
             setattr(camera_screen.session, "compose_mode", str(self.compose_mode or "normal"))
             setattr(camera_screen.session, "celebrity_template_dir", self.celebrity_template_dir)
             setattr(camera_screen.session, "celebrity_template_name", self.celebrity_template_name)
+            setattr(camera_screen.session, "ai_style_id", self.ai_style_id)
             print(
                 "[SESSION] payment_method="
                 f"{self.current_payment_method} coupon_code={coupon_code} "
@@ -11118,12 +12174,70 @@ class KioskMainWindow(QMainWindow):
     def _prepare_select_photo_screen(self) -> None:
         screen = self.screens.get("select_photo")
         if isinstance(screen, SelectPhotoScreen):
+            captured_for_screen = list(self.current_captured_paths or [])
+            if self.is_ai_mode_active():
+                ai_candidate_raw = self.prepared_select_photo.get("ai_candidate_paths", [])
+                ai_candidates: list[str] = []
+                if isinstance(ai_candidate_raw, list):
+                    for item in ai_candidate_raw:
+                        if isinstance(item, str) and item.strip() and Path(item).is_file():
+                            ai_candidates.append(item)
+                if len(ai_candidates) >= AI_CAPTURE_SLOTS:
+                    captured_for_screen = ai_candidates
+                    print(f"[AI_MODE] select_photo source=ai_candidates count={len(ai_candidates)}")
             screen.set_context(
                 self.current_layout_id,
-                self.current_captured_paths,
+                captured_for_screen,
                 self.current_print_slots,
                 prepared=self.prepared_select_photo,
             )
+
+    def _prepare_ai_selected_paths_from_captures(
+        self,
+        preferred_paths: Optional[list[Path]] = None,
+    ) -> bool:
+        captured: list[Path] = []
+        if isinstance(preferred_paths, list):
+            for path in preferred_paths:
+                if isinstance(path, Path) and path.is_file():
+                    captured.append(path)
+                if len(captured) >= AI_SELECT_SLOTS:
+                    break
+        if len(captured) >= AI_SELECT_SLOTS:
+            source_a = captured[0]
+            source_b = captured[1]
+            self.selected_print_paths = [str(source_a), str(source_b)]
+            self.current_print_slots = AI_SELECT_SLOTS
+            self.print_slots = AI_SELECT_SLOTS
+            print(
+                "[AI_MODE] selected ai shots "
+                f"src_a={source_a.name} src_b={source_b.name} slots={len(self.selected_print_paths)}"
+            )
+            return True
+        if len(captured) < AI_SELECT_SLOTS:
+            raw_paths = list(self.current_captured_paths or [])
+            for raw in raw_paths:
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                path = Path(raw)
+                if path.is_file():
+                    captured.append(path)
+                if len(captured) >= AI_SELECT_SLOTS:
+                    break
+        if len(captured) < AI_SELECT_SLOTS:
+            print("[AI_MODE] selection blocked: not enough source shots")
+            return False
+
+        source_a = captured[0]
+        source_b = captured[1]
+        self.selected_print_paths = [str(source_a), str(source_b)]
+        self.current_print_slots = AI_SELECT_SLOTS
+        self.print_slots = AI_SELECT_SLOTS
+        print(
+            "[AI_MODE] selected source shots "
+            f"src_a={source_a.name} src_b={source_b.name} slots={len(self.selected_print_paths)}"
+        )
+        return True
 
     def _stop_select_photo_preload_worker(self, wait: bool = False) -> None:
         worker = self._select_photo_preload_worker
@@ -11143,6 +12257,7 @@ class KioskMainWindow(QMainWindow):
         self._after_loading_token += 1
         token = self._after_loading_token
         self._after_loading_handled_token = -1
+        self._after_loading_progress_percent = -1
         self._after_loading_started_at = time.perf_counter()
 
         session = self.get_active_session()
@@ -11152,6 +12267,12 @@ class KioskMainWindow(QMainWindow):
         if isinstance(camera_screen, CameraScreen):
             gif_frames_snapshot = camera_screen.get_gif_frames_snapshot()
         gif_settings = self.get_gif_settings()
+        ai_mode_for_preload = (
+            bool(self.is_ai_mode_active())
+            and str(self.current_layout_id or "").strip() == AI_LAYOUT_ID
+        )
+        ai_style_for_preload = str(self.ai_style_id or "").strip().lower()
+        ai_remote_allowed = True
         worker = PreloadSelectPhotoWorker(
             session_dir=session_dir,
             layout_id=self.current_layout_id,
@@ -11162,20 +12283,52 @@ class KioskMainWindow(QMainWindow):
             gif_interval_ms=int(gif_settings.get("interval_ms", 200)),
             gif_max_width=int(gif_settings.get("max_width", 480)),
             gif_frames_by_shot=gif_frames_snapshot,
+            ai_mode_4641=ai_mode_for_preload,
+            ai_style_id=ai_style_for_preload,
+            ai_remote_allowed=ai_remote_allowed,
             parent=self,
         )
         worker.success.connect(self._on_select_photo_preload_success)
         worker.failure.connect(self._on_select_photo_preload_failure)
+        worker.progress.connect(self._on_select_photo_preload_progress)
         worker.finished.connect(self._on_select_photo_preload_finished)
         worker.finished.connect(worker.deleteLater)
         self._select_photo_preload_worker = worker
 
         print(
             f"[AFTER_LOADING] start layout={self.current_layout_id} "
-            f"shots={len(self.current_captured_paths)} print_slots={self.current_print_slots}"
+            f"shots={len(self.current_captured_paths)} print_slots={self.current_print_slots} "
+            f"ai_preload={1 if ai_mode_for_preload else 0}"
         )
         self.goto_screen("after_camera_loading")
+        after_loading_screen = self.screens.get("after_camera_loading")
+        if isinstance(after_loading_screen, LoadingScreen):
+            if ai_mode_for_preload:
+                after_loading_screen.set_status_message(
+                    "AI 생성중 0%\nGenerating AI Photos 0%\n잠시만 기다려주세요\nPlease wait",
+                    animate=False,
+                )
+            else:
+                after_loading_screen.clear_status_message()
         worker.start()
+
+    def _on_select_photo_preload_progress(self, token: int, percent: int, ko_message: str, en_message: str) -> None:
+        if int(token) != self._after_loading_token:
+            return
+        safe_percent = max(0, min(100, int(percent)))
+        if safe_percent == self._after_loading_progress_percent and not ko_message and not en_message:
+            return
+        self._after_loading_progress_percent = safe_percent
+        after_loading_screen = self.screens.get("after_camera_loading")
+        if not isinstance(after_loading_screen, LoadingScreen):
+            return
+        message = (
+            f"AI 생성중 {safe_percent}%\n"
+            f"Generating AI Photos {safe_percent}%\n"
+            f"{str(ko_message or '잠시만 기다려주세요')}\n"
+            f"{str(en_message or 'Please wait')}"
+        )
+        after_loading_screen.set_status_message(message, animate=False)
 
     def _finalize_after_loading(self, token: int) -> None:
         if token != self._after_loading_token:
@@ -11198,10 +12351,15 @@ class KioskMainWindow(QMainWindow):
         if self._after_loading_handled_token == token:
             return
         self._after_loading_handled_token = token
+        self._after_loading_progress_percent = -1
 
         payload_dict = payload if isinstance(payload, dict) else {}
         if payload_dict:
             self.prepared_select_photo = payload_dict
+
+        after_loading_screen = self.screens.get("after_camera_loading")
+        if isinstance(after_loading_screen, LoadingScreen):
+            after_loading_screen.clear_status_message()
 
         elapsed_ms = int((time.perf_counter() - self._after_loading_started_at) * 1000)
         left_count = len(payload_dict.get("left_rects") or [])
@@ -11245,6 +12403,8 @@ class KioskMainWindow(QMainWindow):
             self._complete_after_loading(token, self.prepared_select_photo, "preload finished without payload")
 
     def _prepare_select_design_screen(self) -> None:
+        if self.is_ai_mode_active() and len(self.selected_print_paths) < AI_SELECT_SLOTS:
+            self._prepare_ai_selected_paths_from_captures()
         screen = self.screens.get("select_design")
         if isinstance(screen, SelectDesignScreen):
             screen.set_context(
@@ -11274,6 +12434,7 @@ class KioskMainWindow(QMainWindow):
                 self.admin_settings,
                 self.get_payment_methods(),
                 self.get_modes_settings(),
+                self.get_ai_style_settings(),
                 self.get_bill_acceptor_settings(),
                 self.get_payment_pricing_settings(),
                 self.available_layout_ids,
@@ -11520,6 +12681,73 @@ class KioskMainWindow(QMainWindow):
         config = self._read_config_dict()
         raw = config.get("modes") if isinstance(config, dict) else None
         return self._normalize_modes_settings(raw)
+
+    @classmethod
+    def _normalize_ai_styles_settings(cls, raw_settings: object) -> dict[str, dict[str, Any]]:
+        normalized: dict[str, dict[str, Any]] = {}
+        raw_map = raw_settings if isinstance(raw_settings, dict) else {}
+        for index, (style_id, defaults) in enumerate(DEFAULT_AI_STYLE_PRESETS.items(), start=1):
+            raw_item = raw_map.get(style_id) if isinstance(raw_map, dict) else None
+            item = raw_item if isinstance(raw_item, dict) else {}
+            label_ko_default = str(defaults.get("label_ko", style_id)).strip() or style_id
+            label_en_default = str(defaults.get("label_en", style_id)).strip() or label_ko_default
+            prompt_default = str(defaults.get("prompt", "Stylized portrait")).strip() or "Stylized portrait"
+
+            label_ko = str(item.get("label_ko", label_ko_default)).strip() or label_ko_default
+            label_en = str(item.get("label_en", label_en_default)).strip() or label_en_default
+            prompt = str(item.get("prompt", prompt_default)).strip() or prompt_default
+            enabled = cls._as_bool(item.get("enabled"), True)
+            try:
+                order = int(item.get("order", index))
+            except Exception:
+                order = index
+            normalized[style_id] = {
+                "label_ko": label_ko,
+                "label_en": label_en,
+                "prompt": prompt,
+                "enabled": bool(enabled),
+                "order": max(1, int(order)),
+            }
+        return normalized
+
+    def _resolve_ai_styles_settings(self) -> dict[str, dict[str, Any]]:
+        config = self._read_config_dict()
+        raw = config.get("ai_styles") if isinstance(config, dict) else None
+        return self._normalize_ai_styles_settings(raw)
+
+    def _apply_ai_style_settings(self, ai_styles: dict, emit_log: bool = True) -> None:
+        normalized = self._normalize_ai_styles_settings(ai_styles)
+        enabled_items = [
+            (style_id, info)
+            for style_id, info in normalized.items()
+            if bool(info.get("enabled", True))
+        ]
+        enabled_items.sort(key=lambda item: (int(item[1].get("order", 9999)), item[0]))
+        if not enabled_items:
+            first_key = next(iter(DEFAULT_AI_STYLE_PRESETS.keys()))
+            normalized[first_key]["enabled"] = True
+            normalized[first_key]["order"] = 1
+            enabled_items = [(first_key, normalized[first_key])]
+        self.ai_style_settings = normalized
+
+        AI_STYLE_PRESETS.clear()
+        for style_id, style_info in enabled_items:
+            AI_STYLE_PRESETS[style_id] = {
+                "label_ko": str(style_info.get("label_ko", style_id)),
+                "label_en": str(style_info.get("label_en", style_info.get("label_ko", style_id))),
+                "prompt": str(style_info.get("prompt", "Stylized portrait")),
+            }
+
+        screen = getattr(self, "screens", {}).get("ai_style_select") if hasattr(self, "screens") else None
+        if isinstance(screen, AiStyleSelectScreen):
+            screen.reload_style_cards()
+
+        if emit_log:
+            style_summary = ", ".join(
+                f"{style_id}=\"{style_info.get('label_ko', style_id)}\"(enabled={1 if bool(style_info.get('enabled', True)) else 0},order={int(style_info.get('order', 0) or 0)})"
+                for style_id, style_info in normalized.items()
+            )
+            print(f"[ADMIN] ai_styles {style_summary}")
 
     @classmethod
     def _normalize_celebrity_settings(cls, raw_settings: object) -> dict[str, str]:
@@ -11961,8 +13189,8 @@ class KioskMainWindow(QMainWindow):
         if not bool(self.mode_settings.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"])):
             self._show_runtime_notice("AI 합성모드는 비활성화되었습니다", duration_ms=1000)
             return
-        print("[MODE] click ai -> coming soon")
-        self._show_runtime_notice("AI 합성모드는 준비중입니다", duration_ms=1000)
+        print("[MODE] click ai -> goto ai_style_select")
+        self.goto_screen("ai_style_select")
 
     def _apply_mode_settings(self, modes: dict, emit_log: bool = True) -> None:
         self.mode_settings = self._normalize_modes_settings(modes)
@@ -12893,6 +14121,9 @@ class KioskMainWindow(QMainWindow):
     def get_modes_settings(self) -> dict[str, bool]:
         return dict(self.mode_settings)
 
+    def get_ai_style_settings(self) -> dict[str, dict[str, Any]]:
+        return {style_id: dict(info) for style_id, info in dict(self.ai_style_settings).items()}
+
     def get_celebrity_settings(self) -> dict[str, str]:
         return dict(self.celebrity_settings)
 
@@ -12990,6 +14221,7 @@ class KioskMainWindow(QMainWindow):
         settings: dict,
         payment_methods: Optional[dict] = None,
         modes: Optional[dict] = None,
+        ai_styles: Optional[dict] = None,
         bill_acceptor: Optional[dict] = None,
         celebrity: Optional[dict] = None,
         pricing: Optional[dict] = None,
@@ -13005,6 +14237,9 @@ class KioskMainWindow(QMainWindow):
         source_modes = modes if modes is not None else config.get("modes")
         normalized_modes = self._normalize_modes_settings(source_modes)
         config["modes"] = normalized_modes
+        source_ai_styles = ai_styles if ai_styles is not None else config.get("ai_styles")
+        normalized_ai_styles = self._normalize_ai_styles_settings(source_ai_styles)
+        config["ai_styles"] = normalized_ai_styles
         source_bill = bill_acceptor if bill_acceptor is not None else config.get("bill_acceptor")
         normalized_bill = self._normalize_bill_acceptor_settings(source_bill)
         config["bill_acceptor"] = normalized_bill
@@ -13041,6 +14276,7 @@ class KioskMainWindow(QMainWindow):
         self._apply_admin_settings(normalized, emit_log=False)
         self._apply_payment_methods(normalized_payment, emit_log=False)
         self._apply_mode_settings(normalized_modes, emit_log=False)
+        self._apply_ai_style_settings(normalized_ai_styles, emit_log=False)
         self.bill_acceptor_settings = normalized_bill
         self.celebrity_settings = normalized_celebrity
         self.payment_pricing_settings = normalized_pricing
@@ -13063,6 +14299,13 @@ class KioskMainWindow(QMainWindow):
             "[ADMIN] modes "
             f"celebrity_enabled={1 if normalized_modes['celebrity_enabled'] else 0} "
             f"ai_enabled={1 if normalized_modes['ai_enabled'] else 0}"
+        )
+        print(
+            "[ADMIN] ai_styles "
+            + ", ".join(
+                f"{sid}=\"{info.get('label_ko', sid)}\"(enabled={1 if bool(info.get('enabled', True)) else 0},order={int(info.get('order', 0) or 0)})"
+                for sid, info in normalized_ai_styles.items()
+            )
         )
         print(
             f"[ADMIN] pricing prefix={normalized_pricing.get('currency_prefix', '')} "
@@ -13480,6 +14723,18 @@ class KioskMainWindow(QMainWindow):
         if not isinstance(select_photo_screen, SelectPhotoScreen):
             print("[SELECT_PHOTO] next blocked: select_photo screen missing")
             return False
+        if self.is_ai_mode_active():
+            selected_paths = [p for p in select_photo_screen.get_selected_paths() if isinstance(p, Path) and p.is_file()]
+            if len(selected_paths) < AI_SELECT_SLOTS:
+                print(f"[SELECT_PHOTO] ai_mode blocked: incomplete {len(selected_paths)}/{AI_SELECT_SLOTS}")
+                select_photo_screen.show_notice("사진 2장을 선택해주세요", duration_ms=1000)
+                return False
+            if not self._prepare_ai_selected_paths_from_captures(selected_paths):
+                select_photo_screen.show_notice("촬영 원본이 부족합니다", duration_ms=1000)
+                return False
+            print("[SELECT_PHOTO] ai_mode -> select_design (2 selected)")
+            self.goto_screen("select_design")
+            return True
 
         selected_paths = select_photo_screen.get_selected_paths()
         total_slots = len(selected_paths)
@@ -13645,16 +14900,52 @@ class KioskMainWindow(QMainWindow):
             print("[SELECT_DESIGN] next blocked: session missing")
             return False
 
+        loading_screen = self.screens.get("loading")
+        if isinstance(loading_screen, LoadingScreen):
+            loading_screen.set_status_message(
+                "합성중 0%\nComposing 0%\n잠시만 기다려주세요\nPlease wait",
+                animate=False,
+            )
+        self.goto_screen("loading")
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        except Exception:
+            pass
+
         out_print = session.print_dir / "print.jpg"
         try:
-            composed, frame_path, slot_count, copies_per_page = select_design_screen.build_final_print()
+            def _on_compose_progress(percent: int, ko: str, en: str) -> None:
+                safe = max(0, min(100, int(percent)))
+                if isinstance(loading_screen, LoadingScreen):
+                    loading_screen.set_status_message(
+                        f"{str(ko or '합성중')} {safe}%\n"
+                        f"{str(en or 'Composing')} {safe}%\n"
+                        "잠시만 기다려주세요\nPlease wait",
+                        animate=False,
+                    )
+                try:
+                    inner_app = QApplication.instance()
+                    if inner_app is not None:
+                        inner_app.processEvents()
+                except Exception:
+                    pass
+
+            composed, frame_path, slot_count, copies_per_page = select_design_screen.build_final_print(
+                progress_cb=_on_compose_progress
+            )
             print_path = session.save_print(composed, filename="print.jpg")
+            _on_compose_progress(100, "합성 완료", "Composition complete")
             print(
                 f"[DESIGN] confirm built print.jpg w={composed.width} h={composed.height} "
                 f"slots={slot_count} copies_per_page={copies_per_page}"
             )
         except Exception as exc:
             print(f"[SELECT_DESIGN] confirm FAILED {exc}")
+            if isinstance(loading_screen, LoadingScreen):
+                loading_screen.clear_status_message()
+            self.goto_screen("select_design")
             select_design_screen.show_notice("합성 실패", duration_ms=1000)
             return False
 
@@ -13722,7 +15013,13 @@ class KioskMainWindow(QMainWindow):
             f"share_print={share_files.get('print')} share_frame={share_files.get('frame')}"
         )
         print("[NAV] select_design -> loading")
-        return self._start_print_pipeline()
+        started = self._start_print_pipeline()
+        if not started:
+            if isinstance(loading_screen, LoadingScreen):
+                loading_screen.clear_status_message()
+            self.goto_screen("select_design")
+            select_design_screen.show_notice("인쇄 준비 실패", duration_ms=1000)
+        return started
 
     def handle_payment_complete_success(self) -> None:
         if self._prepare_camera_entry():
@@ -13860,6 +15157,9 @@ class KioskMainWindow(QMainWindow):
                     f"msg=\"{p_msg}\""
                 )
                 return False
+        loading_screen = self.screens.get("loading")
+        if isinstance(loading_screen, LoadingScreen):
+            loading_screen.set_status_message("PRINTING\n인쇄중", animate=True)
         self.goto_screen("loading")
         self._start_print_worker(
             printer_name,
@@ -14174,12 +15474,16 @@ class KioskMainWindow(QMainWindow):
         if method == "card":
             return "CARD"
         if method == "coupon":
-            if coupon_value == required:
+            if required > 0 and coupon_value >= required:
                 return "COUPON"
             if 0 < coupon_value < required:
                 return "COUPON_CASH"
-            return "CASH"
+            # Coupon flow selected but value was not resolved yet.
+            # Keep coupon method so server can resolve authoritative amount.
+            return "COUPON"
         if method == "cash":
+            if required > 0 and coupon_value >= required:
+                return "COUPON"
             if 0 < coupon_value < required:
                 return "COUPON_CASH"
             return "CASH"
@@ -14204,11 +15508,31 @@ class KioskMainWindow(QMainWindow):
 
         coupon_value = max(0, self._safe_int(getattr(session, "coupon_value", self.current_coupon_value), 0))
         payment_method = self._resolve_sale_payment_method(required, coupon_value)
-        coupon_code = str(getattr(session, "coupon_code", self.current_coupon_code) or "").strip()
+        coupon_code = str(
+            getattr(session, "coupon_code", self.current_coupon_code)
+            or self.current_coupon_code
+            or self.pending_coupon_code
+            or ""
+        ).strip()
         prints = max(1, self._safe_int(getattr(session, "print_count", self.current_print_count), 2))
         layout_id = str(self.current_layout_id or getattr(session, "layout_id", "") or "").strip()
         if not layout_id:
             layout_id = "unknown"
+
+        # If coupon code exists, resolve authoritative amount from server when possible.
+        # This prevents stale local coupon values from causing USED sync failures.
+        if coupon_code and required > 0:
+            try:
+                server_coupon = self._verify_coupon_with_server(coupon_code, required)
+            except Exception as exc:
+                server_coupon = {"checked": False, "valid": False, "reason": f"EXC:{exc}"}
+            if bool(server_coupon.get("checked", False)) and bool(server_coupon.get("valid", False)):
+                coupon_value = max(0, self._safe_int(server_coupon.get("coupon_amount"), 0))
+                payment_method = self._resolve_sale_payment_method(required, coupon_value)
+                print(
+                    f"[SALES] coupon value restored from server code={coupon_code} "
+                    f"value={coupon_value} method={payment_method}"
+                )
 
         if payment_method in {"CASH", "CARD", "TEST"}:
             amount_coupon = 0
@@ -14249,6 +15573,11 @@ class KioskMainWindow(QMainWindow):
                 "kiosk_inserted_amount": int(self._safe_int(getattr(session, "payment_inserted", self.current_inserted_amount), 0)),
             },
         }
+        print(
+            f"[SALES] payload session={session_id} method={payment_method} "
+            f"required={required} cash={amount_cash} coupon={amount_coupon} "
+            f"coupon_code={coupon_code or '-'}"
+        )
         return payload
 
     def _is_sale_already_reported(self, session_id: str) -> bool:
@@ -14937,6 +16266,9 @@ class KioskMainWindow(QMainWindow):
             self._consume_film_remaining(model, used_units)
         print("[PRINT] success")
         self._report_sale_complete_async()
+        loading_screen = self.screens.get("loading")
+        if isinstance(loading_screen, LoadingScreen):
+            loading_screen.clear_status_message()
         preview_screen = self.screens.get("preview")
         if isinstance(preview_screen, PreviewScreen):
             preview_screen.set_confirm_locked(False)
@@ -14971,7 +16303,9 @@ class KioskMainWindow(QMainWindow):
         if reason == "tap":
             print("[THANKYOU] tap -> start")
         elif reason == "auto":
-            print("[NAV] thank_you -> start (10s)")
+            auto_ms = getattr(AppThankYouScreen, "AUTO_BACK_MS", 0)
+            auto_sec = max(1, int(auto_ms // 1000)) if isinstance(auto_ms, int) else 20
+            print(f"[NAV] thank_you -> start ({auto_sec}s)")
         self.goto_screen("start")
 
     def on_upload_success(self, share_url: str) -> None:
@@ -14996,6 +16330,9 @@ class KioskMainWindow(QMainWindow):
     def _on_print_failure(self, error_message: str) -> None:
         self._active_print_context = {}
         print(f"[PRINT] failure: {error_message}")
+        loading_screen = self.screens.get("loading")
+        if isinstance(loading_screen, LoadingScreen):
+            loading_screen.clear_status_message()
         preview_screen = self.screens.get("preview")
         if isinstance(preview_screen, PreviewScreen):
             preview_screen.set_confirm_locked(False)
@@ -15071,11 +16408,41 @@ class KioskMainWindow(QMainWindow):
         )
         self.goto_screen("how_many_prints")
 
+    def apply_ai_style_selection(self, style_id: str) -> None:
+        style_key = str(style_id or "").strip().lower()
+        if style_key not in AI_STYLE_PRESETS:
+            style_key = next(iter(AI_STYLE_PRESETS.keys()), next(iter(DEFAULT_AI_STYLE_PRESETS.keys())))
+        style_info = AI_STYLE_PRESETS.get(style_key) or {}
+        label_ko = str(style_info.get("label_ko", style_key))
+
+        self.compose_mode = "ai"
+        self.celebrity_template_dir = None
+        self.celebrity_template_name = None
+        self.ai_style_id = style_key
+        self.current_layout_id = AI_LAYOUT_ID
+        self.layout_id = AI_LAYOUT_ID
+        self.current_design_index = None
+        self.current_design_path = None
+        self.design_index = 1
+        self.design_path = None
+
+        base_price = self._price_per_set_for_layout(AI_LAYOUT_ID)
+        print(
+            f"[AI_MODE] selected style={style_key} label={label_ko} "
+            f"layout={AI_LAYOUT_ID} capture={AI_CAPTURE_SLOTS} price={base_price}"
+        )
+        self.goto_screen("how_many_prints")
+
+    def is_ai_mode_active(self) -> bool:
+        mode = str(self.compose_mode or "").strip().lower()
+        return mode == "ai" and str(self.current_layout_id or "").strip() == AI_LAYOUT_ID
+
     def select_layout(self, layout_id: str) -> None:
         self.current_layout_id = layout_id
         self.compose_mode = "normal"
         self.celebrity_template_dir = None
         self.celebrity_template_name = None
+        self.ai_style_id = None
         self.current_design_index = None
         self.current_design_path = None
         self.design_key_buffer = ""
