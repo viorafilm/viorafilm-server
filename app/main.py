@@ -561,6 +561,7 @@ AI_LAYOUT_ID = "4641"
 AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
+AI_CAMERA_OVERLAY_PATH = ROOT_DIR / "assets" / "ui" / "14_ai_mode" / "4641_AImode.png"
 
 DEFAULT_AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
     "kpop_idol": {
@@ -11120,6 +11121,22 @@ class CameraScreen(ImageScreen):
         overlay_path, capture_rects, capture_slots, slot_source = self._select_overlay_for_layout(
             layout_id
         )
+        try:
+            if (
+                hasattr(self.main_window, "is_ai_mode_active")
+                and bool(self.main_window.is_ai_mode_active())
+                and str(layout_id or "").strip() == AI_LAYOUT_ID
+                and AI_CAMERA_OVERLAY_PATH.is_file()
+            ):
+                ai_rects = self._detect_overlay_slots(AI_CAMERA_OVERLAY_PATH)
+                if ai_rects:
+                    overlay_path = AI_CAMERA_OVERLAY_PATH
+                    capture_rects = ai_rects
+                    capture_slots = len(ai_rects)
+                    slot_source = "ai_overlay"
+                    print(f"[AI_MODE] camera overlay applied path={AI_CAMERA_OVERLAY_PATH} slots={capture_slots}")
+        except Exception as exc:
+            print(f"[AI_MODE] camera overlay apply failed: {exc}")
         self._background = QPixmap(str(overlay_path))
         if self._background.isNull():
             print(f"[WARN] Camera overlay image not found: {overlay_path}")
@@ -15537,7 +15554,10 @@ class KioskMainWindow(QMainWindow):
         if payment_method in {"CASH", "CARD", "TEST"}:
             amount_coupon = 0
             amount_cash = required
-            coupon_code = ""
+            # Keep coupon_code on CASH so server can reconcile coupon usage
+            # when kiosk-side coupon amount is stale/missing.
+            if payment_method in {"CARD", "TEST"}:
+                coupon_code = ""
         elif payment_method == "COUPON":
             if not coupon_code:
                 print("[SALES] skip: coupon_code missing for COUPON")

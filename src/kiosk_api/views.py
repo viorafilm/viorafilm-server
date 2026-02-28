@@ -540,7 +540,11 @@ class SaleCompleteView(APIView):
         amount_cash = int(data.get("amount_cash", 0))
         amount_coupon = int(data.get("amount_coupon", 0))
         coupon_code = (data.get("coupon_code") or "").strip()
-        coupon_method_requested = method in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH)
+        coupon_method_requested = (
+            method in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH)
+            or bool(coupon_code)
+            or int(amount_coupon) > 0
+        )
         if (not coupon_method_requested) and (amount_cash + amount_coupon != price_total):
             return Response({"ok": False, "reason": "AMOUNT_SUM_MISMATCH"}, status=400)
 

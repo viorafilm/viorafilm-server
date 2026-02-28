@@ -654,6 +654,19 @@ def sales_view(request):
     sales = list(sales_qs[:300])
     total_amount = int(sales_qs.aggregate(v=Sum("price_total")).get("v") or 0)
     total_count = int(sales_qs.count())
+
+    mode_counts = {"normal": 0, "ai": 0, "celebrity": 0}
+    mode_amounts = {"normal": 0, "ai": 0, "celebrity": 0}
+    for price_total, meta in sales_qs.values_list("price_total", "meta"):
+        mode = "normal"
+        if isinstance(meta, dict):
+            raw_mode = str(meta.get("compose_mode", "")).strip().lower()
+            if raw_mode in {"ai", "celebrity"}:
+                mode = raw_mode
+        amount = int(price_total or 0)
+        mode_counts[mode] += 1
+        mode_amounts[mode] += amount
+
     chart_payload = _build_sales_chart_payload(sales_qs)
     return render(
         request,
@@ -668,6 +681,8 @@ def sales_view(request):
             "chart_labels": chart_payload["labels"],
             "chart_totals": chart_payload["totals"],
             "chart_counts": chart_payload["counts"],
+            "mode_counts": mode_counts,
+            "mode_amounts": mode_amounts,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
@@ -686,6 +701,10 @@ def sales_export_view(request):
 
     rows = []
     for s in sales_qs.order_by("-created_at").iterator():
+        meta = s.meta if isinstance(s.meta, dict) else {}
+        compose_mode = str(meta.get("compose_mode", "normal")).strip().lower() or "normal"
+        if compose_mode not in {"normal", "ai", "celebrity"}:
+            compose_mode = "normal"
         rows.append(
             [
                 timezone.localtime(s.created_at).strftime("%Y-%m-%d %H:%M:%S"),
@@ -701,6 +720,7 @@ def sales_export_view(request):
                 s.amount_cash,
                 s.amount_coupon,
                 s.coupon.formatted_code if s.coupon else "",
+                compose_mode,
             ]
         )
 
@@ -721,6 +741,7 @@ def sales_export_view(request):
             "amount_cash",
             "amount_coupon",
             "coupon_code",
+            "compose_mode",
         ],
         rows=rows,
     )

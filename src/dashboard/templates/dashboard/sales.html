@@ -68,6 +68,27 @@
       </div>
     </div>
 
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3">
+          <div class="text-muted small">일반 모드</div>
+          <div class="fw-semibold">건수 {{ mode_counts.normal }} / KRW {{ mode_amounts.normal }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3">
+          <div class="text-muted small">AI 모드</div>
+          <div class="fw-semibold">건수 {{ mode_counts.ai }} / KRW {{ mode_amounts.ai }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3">
+          <div class="text-muted small">유명인 합성 모드</div>
+          <div class="fw-semibold">건수 {{ mode_counts.celebrity }} / KRW {{ mode_amounts.celebrity }}</div>
+        </div>
+      </div>
+    </div>
+
     <div class="card card-soft mb-3">
       <div class="card-body">
         <h6 class="mb-3">매출 그래프</h6>
@@ -83,6 +104,7 @@
             <th>장치</th>
             <th>세션</th>
             <th>레이아웃</th>
+            <th>모드</th>
             <th>총액</th>
             <th>결제수단</th>
             <th>현금</th>
@@ -97,6 +119,11 @@
             <td>{{ s.device.device_code }}</td>
             <td><code>{{ s.session_id }}</code></td>
             <td>{{ s.layout_id }}</td>
+            <td>
+              {% with m=s.meta.compose_mode|default:"normal" %}
+                {% if m == "ai" %}AI{% elif m == "celebrity" %}CELEBRITY{% else %}NORMAL{% endif %}
+              {% endwith %}
+            </td>
             <td>{{ s.currency }} {{ s.price_total }}</td>
             <td>{{ s.payment_method }}</td>
             <td>{{ s.amount_cash }}</td>
@@ -104,7 +131,7 @@
             <td>{% if s.coupon %}{{ s.coupon.formatted_code }}{% else %}-{% endif %}</td>
           </tr>
           {% empty %}
-          <tr><td colspan="9" class="text-center text-muted py-4">매출 데이터가 없습니다.</td></tr>
+          <tr><td colspan="10" class="text-center text-muted py-4">매출 데이터가 없습니다.</td></tr>
           {% endfor %}
         </tbody>
       </table>
