@@ -3497,14 +3497,32 @@ class SelectPhotoScreen(ImageScreen):
         panel_x, panel_y, panel_w, panel_h = self.AI_ORIGINAL_PANEL_RECT
         gap = int(self.AI_ORIGINAL_GRID_GAP)
         cols, rows = (2, 2)
+        # Keep original preview tiles visually aligned with AI tiles size.
+        # If right slots are known, mirror that size; otherwise fallback to panel fit.
         cell_w = max(1, int((panel_w - gap * (cols - 1)) / cols))
         cell_h = max(1, int((panel_h - gap * (rows - 1)) / rows))
+        if self.right_rects:
+            avg_w = int(round(sum(max(1, int(r[2])) for r in self.right_rects) / len(self.right_rects)))
+            avg_h = int(round(sum(max(1, int(r[3])) for r in self.right_rects) / len(self.right_rects)))
+            target_w = max(1, avg_w)
+            target_h = max(1, avg_h)
+            need_w = target_w * cols + gap * (cols - 1)
+            need_h = target_h * rows + gap * (rows - 1)
+            if need_w > panel_w or need_h > panel_h:
+                scale = min(float(panel_w) / float(need_w), float(panel_h) / float(need_h))
+                target_w = max(1, int(target_w * scale))
+                target_h = max(1, int(target_h * scale))
+            cell_w, cell_h = target_w, target_h
+        grid_w = cell_w * cols + gap * (cols - 1)
+        grid_h = cell_h * rows + gap * (rows - 1)
+        start_x = panel_x + max(0, int((panel_w - grid_w) / 2))
+        start_y = panel_y + max(0, int((panel_h - grid_h) / 2))
         rects: list[tuple[int, int, int, int]] = []
         for idx in range(4):
             row = idx // cols
             col = idx % cols
-            x = panel_x + col * (cell_w + gap)
-            y = panel_y + row * (cell_h + gap)
+            x = start_x + col * (cell_w + gap)
+            y = start_y + row * (cell_h + gap)
             rects.append((x, y, cell_w, cell_h))
         return rects
 
@@ -3648,19 +3666,27 @@ class SelectPhotoScreen(ImageScreen):
         self.right_rects = right_rects
         if not self.right_rects and expected_right > 0:
             self.right_rects = self._fallback_slot_rects(expected_right, "right")
-        prepared_left = list(self.prepared_left_rects)
-        if len(prepared_left) >= expected_left:
-            left_rects = self._sort_design_rects(prepared_left[:expected_left])
+        if self._is_ai_mode_4641():
+            # AI select screen: force normalized left grid so original shots are
+            # rendered with stable, consistent size against right-side AI slots.
+            left_rects = self._build_left_grid_rects(self.layout_id, expected_left, self.right_rects)
+            if len(left_rects) < expected_left:
+                left_rects.extend(self._fallback_slot_rects(expected_left, "left")[len(left_rects) : expected_left])
+            left_rects = left_rects[:expected_left]
         else:
-            detected_left, _detected_right = self._detect_rect_groups(expected_left, expected_right)
-            combined_left = self._sort_design_rects(prepared_left + detected_left)
-            if combined_left:
-                left_rects = self._fit_rect_count(combined_left, expected_left, "left")
+            prepared_left = list(self.prepared_left_rects)
+            if len(prepared_left) >= expected_left:
+                left_rects = self._sort_design_rects(prepared_left[:expected_left])
             else:
-                left_rects = self._build_left_grid_rects(self.layout_id, expected_left, self.right_rects)
-                if len(left_rects) < expected_left:
-                    left_rects.extend(self._fallback_slot_rects(expected_left, "left")[len(left_rects) : expected_left])
-                left_rects = left_rects[:expected_left]
+                detected_left, _detected_right = self._detect_rect_groups(expected_left, expected_right)
+                combined_left = self._sort_design_rects(prepared_left + detected_left)
+                if combined_left:
+                    left_rects = self._fit_rect_count(combined_left, expected_left, "left")
+                else:
+                    left_rects = self._build_left_grid_rects(self.layout_id, expected_left, self.right_rects)
+                    if len(left_rects) < expected_left:
+                        left_rects.extend(self._fallback_slot_rects(expected_left, "left")[len(left_rects) : expected_left])
+                    left_rects = left_rects[:expected_left]
         self.left_rects = left_rects
         self._ai_compare_rects = ai_compare_rects if self._is_ai_mode_4641() else []
         self._ai_original_rects = self._build_ai_original_rects() if self._is_ai_mode_4641() else []
@@ -15879,6 +15905,10 @@ class KioskMainWindow(QMainWindow):
 
         method = str(self.current_payment_method or "").strip().lower()
         if method == "card":
+            if required > 0 and coupon_value >= required:
+                return "COUPON"
+            if 0 < coupon_value < required:
+                return "COUPON_CASH"
             return "CARD"
         if method == "coupon":
             if required > 0 and coupon_value >= required:
@@ -15921,6 +15951,7 @@ class KioskMainWindow(QMainWindow):
             or self.pending_coupon_code
             or ""
         ).strip()
+        original_coupon_code = coupon_code
         prints = max(1, self._safe_int(getattr(session, "print_count", self.current_print_count), 2))
         layout_id = str(self.current_layout_id or getattr(session, "layout_id", "") or "").strip()
         if not layout_id:
@@ -15946,7 +15977,7 @@ class KioskMainWindow(QMainWindow):
             amount_cash = required
             # Keep coupon_code on CASH so server can reconcile coupon usage
             # when kiosk-side coupon amount is stale/missing.
-            if payment_method in {"CARD", "TEST"}:
+            if payment_method in {"TEST"}:
                 coupon_code = ""
         elif payment_method == "COUPON":
             if not coupon_code:
@@ -15984,6 +16015,7 @@ class KioskMainWindow(QMainWindow):
                 else "",
                 "kiosk_required_amount": int(required),
                 "kiosk_coupon_value": int(coupon_value),
+                "kiosk_coupon_code": str(original_coupon_code or ""),
                 "kiosk_inserted_amount": int(self._safe_int(getattr(session, "payment_inserted", self.current_inserted_amount), 0)),
             },
         }

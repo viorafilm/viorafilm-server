@@ -2,9 +2,11 @@ import secrets
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from audit.service import log_event
+from sales.models import SaleTransaction
 
 from .models import Coupon, CouponBatch
 
@@ -187,3 +189,96 @@ def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_exp
         ip=None,
     )
     return coupon
+
+
+def recover_coupon_usage_from_sales(*, actor_user=None, org_id=None, branch_id=None, ip=None):
+    """
+    Best-effort recovery for legacy rows where sale was saved but coupon linkage/used flag was missing.
+    Scope can be restricted by org/branch.
+    """
+    qs = SaleTransaction.objects.select_related("device", "coupon").filter(
+        Q(payment_method__in=[SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH])
+        | Q(amount_coupon__gt=0)
+    )
+    if org_id is not None:
+        qs = qs.filter(org_id=org_id)
+    if branch_id is not None:
+        qs = qs.filter(branch_id=branch_id)
+
+    stats = {
+        "scanned": 0,
+        "linked_sales": 0,
+        "coupon_marked_used": 0,
+        "skipped_no_code": 0,
+        "skipped_invalid_code": 0,
+        "skipped_not_found": 0,
+        "skipped_conflict": 0,
+    }
+
+    for sale in qs.order_by("created_at").iterator():
+        stats["scanned"] += 1
+        if sale.coupon_id:
+            coupon = sale.coupon
+            if coupon and not coupon.used_at:
+                coupon.used_at = sale.created_at or timezone.now()
+                coupon.used_by_device = sale.device
+                coupon.used_session_id = sale.session_id
+                coupon.save(update_fields=["used_at", "used_by_device", "used_session_id"])
+                stats["coupon_marked_used"] += 1
+            continue
+
+        meta = sale.meta if isinstance(sale.meta, dict) else {}
+        raw_code = str(meta.get("kiosk_coupon_code") or meta.get("coupon_code") or "").strip()
+        if not raw_code:
+            stats["skipped_no_code"] += 1
+            continue
+        try:
+            normalized = normalize_coupon_code(raw_code)
+        except ValueError:
+            stats["skipped_invalid_code"] += 1
+            continue
+
+        with transaction.atomic():
+            coupon = Coupon.objects.select_for_update().filter(code=normalized).first()
+            if not coupon:
+                stats["skipped_not_found"] += 1
+                continue
+            if coupon.used_at and not (
+                coupon.used_session_id == sale.session_id and coupon.used_by_device_id == sale.device_id
+            ):
+                stats["skipped_conflict"] += 1
+                continue
+
+            if not coupon.used_at:
+                coupon.used_at = sale.created_at or timezone.now()
+                coupon.used_by_device = sale.device
+                coupon.used_session_id = sale.session_id
+                coupon.save(update_fields=["used_at", "used_by_device", "used_session_id"])
+                stats["coupon_marked_used"] += 1
+
+            sale.coupon = coupon
+            if int(sale.amount_coupon or 0) <= 0:
+                sale.amount_coupon = min(int(sale.price_total or 0), int(coupon.amount or 0))
+            if int(sale.amount_cash or 0) < 0:
+                sale.amount_cash = 0
+            if sale.payment_method not in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH):
+                sale.payment_method = (
+                    SaleTransaction.METHOD_COUPON
+                    if int(sale.amount_cash or 0) <= 0
+                    else SaleTransaction.METHOD_COUPON_CASH
+                )
+            sale.save(update_fields=["coupon", "amount_coupon", "amount_cash", "payment_method"])
+            stats["linked_sales"] += 1
+
+    log_event(
+        actor_user=actor_user,
+        actor_device=None,
+        action="coupon.recover_usage",
+        target_type="SaleTransaction",
+        target_id="bulk",
+        before=None,
+        after=stats,
+        meta={"org_id": org_id, "branch_id": branch_id},
+        ip=ip,
+    )
+    return stats

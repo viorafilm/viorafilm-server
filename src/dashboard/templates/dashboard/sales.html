@@ -6,7 +6,7 @@
       <h5 class="mb-0">매출 관리</h5>
       <a
         class="btn btn-success btn-sm"
-        href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}"
+        href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}&billing_month={{ billing_month_value|default:'' }}"
       >
         엑셀 다운로드(CSV)
       </a>
@@ -38,6 +38,10 @@
           <option value="month" {% if period == 'month' %}selected{% endif %}>1달</option>
           <option value="custom" {% if period == 'custom' %}selected{% endif %}>특정 기간</option>
         </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">AI 청구 월</label>
+        <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value|default:'' }}">
       </div>
       <div class="col-12 col-md-4 col-lg-2">
         <label class="form-label mb-1">시작일</label>
@@ -97,6 +101,64 @@
           <div class="text-muted small">
             AI 이용량과 운영 기준을 반영한 예상 금액입니다.
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-soft mb-3">
+      <div class="card-body">
+        <h6 class="mb-2">AI 월별 청구 예상액 (브랜치별)</h6>
+        <div class="text-muted small mb-3">
+          기준 월: {{ billing_month_value }} / 집계 기간: {{ billing_start_date }} ~ {{ billing_end_date }}
+          {% if billing_end_date != billing_month_last %}(현재 월 실시간 누적){% endif %}
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-12 col-md-4">
+            <div class="border rounded-3 p-2 bg-light-subtle">
+              <div class="text-muted small">AI 거래 건수</div>
+              <div class="fw-semibold">{{ ai_branch_sales_count }}</div>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="border rounded-3 p-2 bg-light-subtle">
+              <div class="text-muted small">AI 생성 이미지</div>
+              <div class="fw-semibold">{{ ai_branch_images_count }}</div>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="border rounded-3 p-2 bg-light-subtle">
+              <div class="text-muted small">월 청구 예상 합계</div>
+              <div class="fw-semibold">KRW {{ ai_branch_billing_total }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th>조직</th>
+                <th>지점코드</th>
+                <th>지점명</th>
+                <th>AI 거래</th>
+                <th>AI 이미지</th>
+                <th>청구 예상액</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in ai_branch_rows %}
+              <tr>
+                <td>{{ row.org_code }}</td>
+                <td>{{ row.branch_code }}</td>
+                <td>{{ row.branch_name }}</td>
+                <td>{{ row.ai_sales }}</td>
+                <td>{{ row.ai_images }}</td>
+                <td>KRW {{ row.billing_amount }}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="6" class="text-center text-muted py-3">해당 월 AI 사용 내역이 없습니다.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

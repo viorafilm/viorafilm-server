@@ -539,7 +539,12 @@ class SaleCompleteView(APIView):
         price_total = int(data["price_total"])
         amount_cash = int(data.get("amount_cash", 0))
         amount_coupon = int(data.get("amount_coupon", 0))
+        meta_obj = data.get("meta")
+        if not isinstance(meta_obj, dict):
+            meta_obj = {}
         coupon_code = (data.get("coupon_code") or "").strip()
+        if not coupon_code:
+            coupon_code = str(meta_obj.get("kiosk_coupon_code") or meta_obj.get("coupon_code") or "").strip()
         coupon_method_requested = (
             method in (SaleTransaction.METHOD_COUPON, SaleTransaction.METHOD_COUPON_CASH)
             or bool(coupon_code)
@@ -579,7 +584,7 @@ class SaleCompleteView(APIView):
                         existing.currency = str(data.get("currency", existing.currency or "KRW"))
                         existing.layout_id = str(data.get("layout_id", existing.layout_id))
                         existing.prints = int(data.get("prints", existing.prints or 2))
-                        existing.meta = data.get("meta", existing.meta or {})
+                        existing.meta = meta_obj or (existing.meta or {})
                         existing.save(
                             update_fields=[
                                 "coupon",
@@ -670,7 +675,7 @@ class SaleCompleteView(APIView):
                         "amount_cash": amount_cash,
                         "amount_coupon": amount_coupon,
                         "coupon": coupon_obj,
-                        "meta": data.get("meta", {}),
+                        "meta": meta_obj,
                     },
                 )
         except IntegrityError:

@@ -6,6 +6,7 @@ from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
+from django.core.paginator import Paginator
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
@@ -24,6 +25,7 @@ from coupons.service import (
     MAX_COUPON_BATCH_COUNT,
     MAX_TOTAL_COUPONS,
     create_batch_and_coupons,
+    recover_coupon_usage_from_sales,
     resolve_expires_hours,
 )
 from mediahub.models import ShareSession
@@ -36,6 +38,7 @@ AI_EST_KRW_PER_USD = 1400.0
 AI_EST_DEFAULT_IMAGES_PER_SALE = 2
 AI_EST_SERVER_COST_MULTIPLIER = 10.0
 AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
+COUPON_PER_PAGE_OPTIONS = (10, 30, 50, 100)
 
 
 def _is_super(user):
@@ -386,6 +389,76 @@ def _build_sales_chart_payload(sales_qs):
     }
 
 
+def _resolve_billing_month(request):
+    raw = str(request.GET.get("billing_month") or "").strip()
+    today = timezone.localdate()
+    default_month = today.replace(day=1)
+    if not raw:
+        return default_month
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m").date()
+        return parsed.replace(day=1)
+    except Exception:
+        return default_month
+
+
+def _billing_month_range(month_first):
+    next_month = (month_first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    month_last = next_month - timedelta(days=1)
+    today = timezone.localdate()
+    end_date = month_last
+    if month_first.year == today.year and month_first.month == today.month:
+        end_date = today
+    return month_first, end_date, month_last
+
+
+def _build_ai_branch_billing(sales_qs, start_date, end_date):
+    scoped = sales_qs.filter(created_at__date__gte=start_date, created_at__date__lte=end_date).select_related("org", "branch")
+    branch_map = {}
+    total_ai_sales = 0
+    total_ai_images = 0
+
+    for sale in scoped.iterator():
+        meta = sale.meta if isinstance(sale.meta, dict) else {}
+        mode = str(meta.get("compose_mode", "normal")).strip().lower() or "normal"
+        if mode != "ai":
+            continue
+
+        try:
+            ai_images = int(meta.get("ai_generated_count", AI_EST_DEFAULT_IMAGES_PER_SALE) or 0)
+        except Exception:
+            ai_images = AI_EST_DEFAULT_IMAGES_PER_SALE
+        if ai_images <= 0:
+            ai_images = AI_EST_DEFAULT_IMAGES_PER_SALE
+
+        total_ai_sales += 1
+        total_ai_images += ai_images
+
+        key = int(sale.branch_id or 0)
+        row = branch_map.get(key)
+        if row is None:
+            row = {
+                "org_code": getattr(sale.org, "code", "-"),
+                "branch_code": getattr(sale.branch, "code", "-"),
+                "branch_name": getattr(sale.branch, "name", "-"),
+                "ai_sales": 0,
+                "ai_images": 0,
+                "billing_amount": 0,
+            }
+            branch_map[key] = row
+        row["ai_sales"] += 1
+        row["ai_images"] += ai_images
+
+    rows = []
+    for row in branch_map.values():
+        row["billing_amount"] = int(round(row["ai_images"] * AI_EST_KRW_PER_IMAGE * AI_EST_SERVER_COST_MULTIPLIER))
+        rows.append(row)
+    rows.sort(key=lambda r: (str(r["org_code"]), str(r["branch_code"])))
+
+    total_billing = int(round(total_ai_images * AI_EST_KRW_PER_IMAGE * AI_EST_SERVER_COST_MULTIPLIER))
+    return rows, total_ai_sales, total_ai_images, total_billing
+
+
 def _csv_response(filename, headers, rows):
     response = HttpResponse(content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
@@ -691,6 +764,13 @@ def sales_view(request):
 
     ai_estimated_server_cost = int(ai_generated_images * AI_EST_KRW_PER_IMAGE)
     ai_estimated_billing_server_cost = int(round(ai_estimated_server_cost * AI_EST_SERVER_COST_MULTIPLIER))
+    billing_month = _resolve_billing_month(request)
+    billing_start_date, billing_end_date, billing_month_last = _billing_month_range(billing_month)
+    ai_branch_rows, ai_branch_sales_count, ai_branch_images_count, ai_branch_billing_total = _build_ai_branch_billing(
+        sales_base_qs,
+        billing_start_date,
+        billing_end_date,
+    )
 
     chart_payload = _build_sales_chart_payload(sales_qs)
     return render(
@@ -712,6 +792,14 @@ def sales_view(request):
             "ai_estimated_billing_server_cost": ai_estimated_billing_server_cost,
             "ai_est_krw_per_image": AI_EST_KRW_PER_IMAGE,
             "ai_est_server_cost_multiplier": AI_EST_SERVER_COST_MULTIPLIER,
+            "billing_month_value": billing_month.strftime("%Y-%m"),
+            "billing_start_date": billing_start_date.isoformat(),
+            "billing_end_date": billing_end_date.isoformat(),
+            "billing_month_last": billing_month_last.isoformat(),
+            "ai_branch_rows": ai_branch_rows,
+            "ai_branch_sales_count": ai_branch_sales_count,
+            "ai_branch_images_count": ai_branch_images_count,
+            "ai_branch_billing_total": ai_branch_billing_total,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
@@ -790,6 +878,18 @@ def coupons_view(request):
     )
     coupon_total_count = int(Coupon.objects.count())
     coupon_remaining_capacity = max(0, int(MAX_TOTAL_COUPONS - coupon_total_count))
+    per_page_raw = request.GET.get("per_page") or request.POST.get("per_page") or 30
+    try:
+        per_page = int(per_page_raw)
+    except Exception:
+        per_page = 30
+    if per_page not in COUPON_PER_PAGE_OPTIONS:
+        per_page = 30
+    page_raw = request.GET.get("page") or request.POST.get("page") or 1
+    try:
+        current_page = int(page_raw)
+    except Exception:
+        current_page = 1
 
     if request.method == "POST":
         if not can_edit:
@@ -834,7 +934,7 @@ def coupons_view(request):
                         created_by=user,
                         title=title,
                     )
-                    messages.success(request, f"Coupon batch issued: #{batch.id}")
+                    messages.success(request, f"쿠폰 묶음 발행 완료 (Batch #{batch.id})")
                 except ValueError as exc:
                     messages.error(request, str(exc))
 
@@ -895,17 +995,47 @@ def coupons_view(request):
                     ip=request.META.get("REMOTE_ADDR"),
                 )
             messages.success(request, f"Deleted expired coupons: {count}")
+        elif action == "recover_missing_usage":
+            stats = recover_coupon_usage_from_sales(
+                actor_user=user,
+                org_id=filters.get("org_id"),
+                branch_id=filters.get("branch_id"),
+                ip=request.META.get("REMOTE_ADDR"),
+            )
+            messages.success(
+                request,
+                "누락 사용 복구 완료 "
+                f"(검사 {stats['scanned']} / 연결 {stats['linked_sales']} / 사용처리 {stats['coupon_marked_used']} / "
+                f"코드없음 {stats['skipped_no_code']} / 미존재 {stats['skipped_not_found']} / 충돌 {stats['skipped_conflict']})",
+            )
 
-        params = _query_params_from_filters(filters)
+        params = _query_params_from_filters(
+            filters,
+            extra={
+                "per_page": per_page,
+                "page": current_page,
+            },
+        )
         if params:
             return redirect(f"/dashboard/coupons?{urlencode(params)}")
         return redirect("dashboard_coupons")
+
+    paginator = Paginator(coupons, per_page)
+    page_obj = paginator.get_page(current_page)
+    page_numbers = [
+        num
+        for num in range(max(1, page_obj.number - 2), min(paginator.num_pages, page_obj.number + 2) + 1)
+    ]
 
     return render(
         request,
         "dashboard/coupons.html",
         {
-            "coupons": coupons[:500],
+            "coupons": page_obj.object_list,
+            "page_obj": page_obj,
+            "page_numbers": page_numbers,
+            "per_page": per_page,
+            "per_page_options": COUPON_PER_PAGE_OPTIONS,
             "orgs": _available_orgs(user),
             "branches": _available_branches(user),
             "can_edit": can_edit,
