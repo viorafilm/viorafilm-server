@@ -188,6 +188,7 @@ try:
         QLabel,
         QLineEdit,
         QMainWindow,
+        QMessageBox,
         QPushButton,
         QScrollArea,
         QSpinBox,
@@ -211,6 +212,7 @@ except ImportError:
             QLabel,
             QLineEdit,
             QMainWindow,
+            QMessageBox,
             QPushButton,
             QScrollArea,
             QSpinBox,
@@ -234,6 +236,7 @@ except ImportError:
                 QLabel,
                 QLineEdit,
                 QMainWindow,
+                QMessageBox,
                 QPushButton,
                 QScrollArea,
                 QSpinBox,
@@ -607,6 +610,11 @@ _TRANSPARENT_SLOT_CACHE: dict[
 _USED_SLOT_CACHE: dict[
     tuple[str, str, int, int, int, int],
     tuple[tuple[int, int, int, int], ...],
+] = {}
+_FRAME_SELECT_BOTTOM_Y_CACHE: dict[tuple[str, str, int, int, int, int], Optional[int]] = {}
+_FRAME_SELECT_BOUNDS_CACHE: dict[
+    tuple[str, str, int, int, int, int],
+    Optional[tuple[int, int, int]],
 ] = {}
 
 
@@ -2641,7 +2649,7 @@ class ImageScreen(QWidget):
 
 class CelebrityTemplateSelectScreen(ImageScreen):
     TITLE_RECT = (0, 62, 1920, 74)
-    BACK_RECT = (42, 36, 150, 70)
+    BACK_RECT = (77, 939, 100, 100)
     PREV_RECT = (118, 942, 120, 90)
     NEXT_RECT = (1682, 942, 120, 90)
     PAGE_RECT = (820, 952, 280, 64)
@@ -2665,18 +2673,19 @@ class CelebrityTemplateSelectScreen(ImageScreen):
         self.page_index: int = 0
         self._slot_template_indices: list[Optional[int]] = [None, None, None]
 
-        self._title_label = QLabel("유명인 템플릿 선택", self)
+        self._title_label = QLabel("", self)
         self._title_label.setAlignment(ALIGN_CENTER)
         self._title_label.setStyleSheet(
             "QLabel { color: white; font-size: 44px; font-weight: 800; background-color: rgba(0,0,0,115); }"
         )
         self._title_label.setAttribute(WA_TRANSPARENT, True)
+        self._title_label.hide()
 
-        self._back_button = QPushButton("뒤로", self)
+        self._back_button = QPushButton("◀", self)
         self._back_button.setStyleSheet(
-            "QPushButton { background-color: rgba(0,0,0,160); color: white; font-size: 28px; font-weight: 700; "
-            "border: 2px solid rgba(255,255,255,160); border-radius: 10px; }"
-            "QPushButton:pressed { background-color: rgba(0,0,0,210); }"
+            "QPushButton { background-color: rgba(0,0,0,170); color: white; font-size: 42px; font-weight: 800; "
+            "border: 4px solid rgba(255,255,255,180); border-radius: 50px; }"
+            "QPushButton:pressed { background-color: rgba(0,0,0,220); }"
         )
         self._back_button.clicked.connect(self._on_back_clicked)
         if hasattr(Qt, "FocusPolicy"):
@@ -2706,6 +2715,9 @@ class CelebrityTemplateSelectScreen(ImageScreen):
             "border-radius: 8px; }"
         )
         self._page_label.setAttribute(WA_TRANSPARENT, True)
+        self._prev_button.hide()
+        self._next_button.hide()
+        self._page_label.hide()
 
         self._card_buttons: list[QToolButton] = []
         self._card_name_labels: list[QLabel] = []
@@ -2805,11 +2817,7 @@ class CelebrityTemplateSelectScreen(ImageScreen):
         print(f"[CELEB] templates found N={len(self.templates)}")
 
     def _layout_widgets(self) -> None:
-        self._title_label.setGeometry(self.design_rect_to_widget(self.TITLE_RECT))
         self._back_button.setGeometry(self.design_rect_to_widget(self.BACK_RECT))
-        self._prev_button.setGeometry(self.design_rect_to_widget(self.PREV_RECT))
-        self._next_button.setGeometry(self.design_rect_to_widget(self.NEXT_RECT))
-        self._page_label.setGeometry(self.design_rect_to_widget(self.PAGE_RECT))
 
         for slot, rect in enumerate(self.CARD_RECTS):
             x, y, w, h = rect
@@ -2834,8 +2842,6 @@ class CelebrityTemplateSelectScreen(ImageScreen):
         self.page_index = max(0, min(self.page_index, total_pages - 1))
         page_text = f"page {self.page_index + 1} / {total_pages}"
         self._page_label.setText(page_text)
-        self._prev_button.setEnabled(self.page_index > 0)
-        self._next_button.setEnabled(self.page_index < total_pages - 1)
 
         price_text, _amount, _layout_id = self._resolve_layout_price()
         start = self.page_index * 3
@@ -2913,7 +2919,7 @@ class CelebrityTemplateSelectScreen(ImageScreen):
 
 class AiStyleSelectScreen(ImageScreen):
     TITLE_RECT = (0, 62, 1920, 74)
-    BACK_RECT = (42, 36, 150, 70)
+    BACK_RECT = (77, 939, 100, 100)
     CARD_RECTS = [
         (260, 230, 620, 250),
         (1040, 230, 620, 250),
@@ -2923,33 +2929,34 @@ class AiStyleSelectScreen(ImageScreen):
     SUBTITLE_RECT = (260, 860, 1400, 90)
 
     def __init__(self, main_window: "KioskMainWindow") -> None:
-        background_path = ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "please_select_a_frame.png"
+        background_path = ROOT_DIR / "assets" / "ui" / "14_ai_mode" / "main.png"
+        if not background_path.is_file():
+            background_path = ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "please_select_a_frame.png"
         super().__init__(main_window, "ai_style_select", background_path)
         self._style_ids: list[str] = list(DEFAULT_AI_STYLE_PRESETS.keys())[:4]
 
-        self._title_label = QLabel("AI 스타일 선택 / Select AI Style", self)
+        self._title_label = QLabel("", self)
         self._title_label.setAlignment(ALIGN_CENTER)
         self._title_label.setStyleSheet(
             "QLabel { color: white; font-size: 44px; font-weight: 800; background-color: rgba(0,0,0,115); }"
         )
         self._title_label.setAttribute(WA_TRANSPARENT, True)
+        self._title_label.hide()
 
-        self._subtitle_label = QLabel(
-            "4641 AI MODE: 촬영 4장 -> AI 처리 4장 중 2장 선택",
-            self,
-        )
+        self._subtitle_label = QLabel("", self)
         self._subtitle_label.setAlignment(ALIGN_CENTER)
         self._subtitle_label.setStyleSheet(
             "QLabel { color: #FFE8A8; font-size: 30px; font-weight: 700; background-color: rgba(0,0,0,135); "
             "border-radius: 10px; }"
         )
         self._subtitle_label.setAttribute(WA_TRANSPARENT, True)
+        self._subtitle_label.hide()
 
-        self._back_button = QPushButton("뒤로", self)
+        self._back_button = QPushButton("◀", self)
         self._back_button.setStyleSheet(
-            "QPushButton { background-color: rgba(0,0,0,160); color: white; font-size: 28px; font-weight: 700; "
-            "border: 2px solid rgba(255,255,255,160); border-radius: 10px; }"
-            "QPushButton:pressed { background-color: rgba(0,0,0,210); }"
+            "QPushButton { background-color: rgba(0,0,0,170); color: white; font-size: 42px; font-weight: 800; "
+            "border: 4px solid rgba(255,255,255,180); border-radius: 50px; }"
+            "QPushButton:pressed { background-color: rgba(0,0,0,220); }"
         )
         self._back_button.clicked.connect(self._on_back_clicked)
         if hasattr(Qt, "FocusPolicy"):
@@ -3008,9 +3015,7 @@ class AiStyleSelectScreen(ImageScreen):
             button.show()
 
     def _layout_widgets(self) -> None:
-        self._title_label.setGeometry(self.design_rect_to_widget(self.TITLE_RECT))
         self._back_button.setGeometry(self.design_rect_to_widget(self.BACK_RECT))
-        self._subtitle_label.setGeometry(self.design_rect_to_widget(self.SUBTITLE_RECT))
 
         for index, button in enumerate(self._style_buttons):
             if index >= len(self.CARD_RECTS):
@@ -3023,12 +3028,23 @@ class AiStyleSelectScreen(ImageScreen):
             button.show()
             button.raise_()
 
+    def _play_click_sound(self) -> None:
+        try:
+            if hasattr(self.main_window, "ui_sound"):
+                self.main_window.ui_sound.play("click")
+            if hasattr(self.main_window, "_suppress_nav_sound_until"):
+                self.main_window._suppress_nav_sound_until = time.monotonic() + 0.35
+        except Exception:
+            pass
+
     def _on_back_clicked(self) -> None:
+        self._play_click_sound()
         self.main_window.goto_screen("frame_select")
 
     def _on_style_clicked_by_index(self, index: int) -> None:
         if index < 0 or index >= len(self._style_ids):
             return
+        self._play_click_sound()
         style_id = self._style_ids[index]
         self.main_window.apply_ai_style_selection(style_id)
 
@@ -4674,11 +4690,35 @@ class SelectDesignScreen(ImageScreen):
         )
         self._notice_label.hide()
 
-        self._ai_loading_overlay = QLabel(self._bg_label)
-        self._ai_loading_overlay.setAlignment(ALIGN_CENTER)
+        self._ai_loading_overlay = QWidget(self._bg_label)
         self._ai_loading_overlay.setStyleSheet(
-            "QLabel { color: white; background-color: rgba(0, 0, 0, 190); "
-            "font-size: 36px; font-weight: 800; border: 2px solid rgba(255,255,255,120); }"
+            "QWidget { background-color: rgba(0, 0, 0, 190); border: 2px solid rgba(255,255,255,120); }"
+        )
+        self._ai_loading_title = QLabel("AI 생성중 / Generating AI Photos", self._ai_loading_overlay)
+        self._ai_loading_title.setAlignment(ALIGN_CENTER)
+        self._ai_loading_title.setStyleSheet(
+            "QLabel { color: white; background: transparent; font-size: 30px; font-weight: 800; border: none; }"
+        )
+        self._ai_loading_bar_bg = QWidget(self._ai_loading_overlay)
+        self._ai_loading_bar_bg.setStyleSheet(
+            "QWidget { background-color: rgba(255,255,255,24); border: 1px solid rgba(255,255,255,110); "
+            "border-radius: 8px; }"
+        )
+        self._ai_loading_bar_segments: list[QLabel] = []
+        for _ in range(10):
+            seg = QLabel(self._ai_loading_bar_bg)
+            seg.setStyleSheet("QLabel { background-color: rgba(255,255,255,25); border-radius: 4px; }")
+            self._ai_loading_bar_segments.append(seg)
+        self._ai_loading_percent_label = QLabel("0%", self._ai_loading_overlay)
+        self._ai_loading_percent_label.setAlignment(ALIGN_CENTER)
+        self._ai_loading_percent_label.setStyleSheet(
+            "QLabel { color: white; background: transparent; font-size: 30px; font-weight: 800; border: none; }"
+        )
+        self._ai_loading_hint_label = QLabel("잠시만 기다려주세요 / Please wait", self._ai_loading_overlay)
+        self._ai_loading_hint_label.setAlignment(ALIGN_CENTER)
+        self._ai_loading_hint_label.setStyleSheet(
+            "QLabel { color: rgba(255,255,255,210); background: transparent; font-size: 24px; font-weight: 700; "
+            "border: none; }"
         )
         self._ai_loading_overlay.hide()
 
@@ -4825,6 +4865,7 @@ class SelectDesignScreen(ImageScreen):
         self.qr_check_label.setGeometry(self.design_rect_to_widget(self.QR_CHECK_RECT))
         self._notice_label.setGeometry(self.design_rect_to_widget((450, 430, 1020, 180)))
         self._ai_loading_overlay.setGeometry(self.preview_label.geometry())
+        self._layout_ai_loading_overlay()
         self.state_label.raise_()
         self.color_icon_label.raise_()
         self.gray_icon_label.raise_()
@@ -4835,6 +4876,54 @@ class SelectDesignScreen(ImageScreen):
         if self._ai_loading_overlay.isVisible():
             self._ai_loading_overlay.raise_()
         self._notice_label.raise_()
+
+    def _layout_ai_loading_overlay(self) -> None:
+        if self._ai_loading_overlay.width() <= 0 or self._ai_loading_overlay.height() <= 0:
+            return
+        ow = self._ai_loading_overlay.width()
+        oh = self._ai_loading_overlay.height()
+        pad_x = max(16, int(ow * 0.06))
+        title_h = max(40, int(oh * 0.18))
+        bar_h = max(30, int(oh * 0.16))
+        hint_h = max(34, int(oh * 0.14))
+        y = max(10, int(oh * 0.14))
+        self._ai_loading_title.setGeometry(pad_x, y, max(1, ow - (pad_x * 2)), title_h)
+        y += title_h + max(10, int(oh * 0.08))
+
+        percent_w = max(86, int(ow * 0.16))
+        bar_total_w = max(120, ow - (pad_x * 2))
+        bar_w = max(100, bar_total_w - percent_w - 12)
+        self._ai_loading_bar_bg.setGeometry(pad_x, y, bar_w, bar_h)
+        self._ai_loading_percent_label.setGeometry(pad_x + bar_w + 12, y, percent_w, bar_h)
+
+        seg_pad = 8
+        seg_gap = 6
+        inner_w = max(10, bar_w - (seg_pad * 2))
+        seg_w = max(6, int((inner_w - seg_gap * 9) / 10))
+        seg_h = max(10, bar_h - (seg_pad * 2))
+        cursor_x = seg_pad
+        for seg in self._ai_loading_bar_segments:
+            seg.setGeometry(cursor_x, seg_pad, seg_w, seg_h)
+            cursor_x += seg_w + seg_gap
+
+        y += bar_h + max(8, int(oh * 0.07))
+        self._ai_loading_hint_label.setGeometry(pad_x, y, max(1, ow - (pad_x * 2)), hint_h)
+
+    def _set_ai_loading_progress_visual(self, progress: int, ai_mode: bool = False) -> None:
+        safe = max(0, min(100, int(progress)))
+        self._ai_loading_percent_label.setText(f"{safe}%")
+        filled = max(0, min(10, int((safe + 9) / 10)))
+        for idx, seg in enumerate(self._ai_loading_bar_segments):
+            if idx < filled:
+                seg.setStyleSheet("QLabel { background-color: rgba(70, 190, 255, 230); border-radius: 4px; }")
+            else:
+                seg.setStyleSheet("QLabel { background-color: rgba(255,255,255,25); border-radius: 4px; }")
+        if ai_mode:
+            self._ai_loading_title.setText("AI 생성중 / Generating AI Photos")
+            self._ai_loading_hint_label.setText("잠시만 기다려주세요 / Please wait")
+        else:
+            self._ai_loading_title.setText("미리보기 합성중 / Composing Preview")
+            self._ai_loading_hint_label.setText("잠시만 기다려주세요 / Please wait")
 
     def _current_preview_area(self) -> tuple[int, int, int, int]:
         key = str(self.layout_id or "").strip()
@@ -4967,20 +5056,12 @@ class SelectDesignScreen(ImageScreen):
         if self._ai_loading_active_job is None or not self._ai_loading_overlay.isVisible():
             return
         self._ai_loading_tick = (self._ai_loading_tick + 1) % 4
-        dots = "." * self._ai_loading_tick
         if self._ai_loading_is_ai_mode:
             self._ai_loading_progress = min(97, max(0, int(self._ai_loading_progress)) + 2)
-            self._ai_loading_overlay.setText(
-                f"AI 생성중 {self._ai_loading_progress}%{dots}\n"
-                f"Generating AI Photos {self._ai_loading_progress}%{dots}\n"
-                "잠시만 기다려주세요 / Please wait"
-            )
+            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=True)
         else:
             self._ai_loading_progress = min(95, max(0, int(self._ai_loading_progress)) + 3)
-            self._ai_loading_overlay.setText(
-                f"미리보기 합성중 {self._ai_loading_progress}%{dots}\n"
-                f"Composing Preview {self._ai_loading_progress}%{dots}"
-            )
+            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=False)
 
     def _show_ai_loading_overlay(self, job_id: int, ai_mode: bool = False) -> None:
         self._ai_loading_active_job = int(job_id)
@@ -4988,18 +5069,12 @@ class SelectDesignScreen(ImageScreen):
         self._ai_loading_is_ai_mode = bool(ai_mode)
         self._ai_loading_progress = 8 if self._ai_loading_is_ai_mode else 12
         if self._ai_loading_is_ai_mode:
-            self._ai_loading_overlay.setText(
-                f"AI 생성중 {self._ai_loading_progress}%\n"
-                f"Generating AI Photos {self._ai_loading_progress}%\n"
-                "잠시만 기다려주세요 / Please wait"
-            )
+            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=True)
             print(f"[AI_MODE] preview loading start job={job_id}")
         else:
-            self._ai_loading_overlay.setText(
-                f"미리보기 합성중 {self._ai_loading_progress}%\n"
-                f"Composing Preview {self._ai_loading_progress}%"
-            )
+            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=False)
             print(f"[SELECT_DESIGN] preview loading start job={job_id}")
+        self._layout_ai_loading_overlay()
         self._ai_loading_overlay.show()
         self._ai_loading_overlay.raise_()
         if not self._ai_loading_timer.isActive():
@@ -8298,12 +8373,31 @@ class AdminScreen(QWidget):
         self._status_timer.timeout.connect(self._clear_status)
 
         self.setStyleSheet(
-            "QWidget { background: #f5f5f5; color: #111; } "
-            "QPushButton { min-height: 42px; padding: 6px 14px; } "
-            "QLabel#title { font-size: 30px; font-weight: 700; } "
-            "QLabel#status { color: #0a6; font-size: 16px; } "
-            "QScrollBar:vertical { width: 18px; background: #e6e6e6; } "
-            "QScrollBar::handle:vertical { background: #999; min-height: 40px; border-radius: 6px; }"
+            "QWidget { background: #eef2f7; color: #0f172a; font-size: 15px; } "
+            "QLabel#title { font-size: 32px; font-weight: 800; color: #0b1324; } "
+            "QLabel#section { font-size: 17px; font-weight: 800; color: #1e3a8a; "
+            "padding: 8px 12px; border-radius: 8px; background: #e9f0ff; border: 1px solid #cfe0ff; } "
+            "QLabel#status { color: #0a7a55; font-size: 16px; font-weight: 700; padding: 4px 6px; } "
+            "QScrollArea { border: none; background: transparent; } "
+            "QWidget#adminCard { background: #ffffff; border: 1px solid #dbe3ef; border-radius: 14px; } "
+            "QLineEdit, QComboBox, QSpinBox, QTextEdit { background: #ffffff; color: #0f172a; "
+            "border: 1px solid #c4cfdd; border-radius: 8px; padding: 6px 8px; min-height: 34px; } "
+            "QComboBox::drop-down { border: none; width: 24px; } "
+            "QCheckBox { spacing: 8px; } "
+            "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #97a6ba; "
+            "border-radius: 4px; background: #fff; } "
+            "QCheckBox::indicator:checked { background: #2563eb; border-color: #1d4ed8; } "
+            "QPushButton { min-height: 42px; padding: 8px 14px; border-radius: 10px; "
+            "font-weight: 700; background: #1d4ed8; color: #ffffff; border: none; } "
+            "QPushButton:hover { background: #1e40af; } "
+            "QPushButton:pressed { background: #1e3a8a; } "
+            "QPushButton#secondaryBtn { background: #334155; } "
+            "QPushButton#secondaryBtn:hover { background: #1f2937; } "
+            "QPushButton#dangerBtn { background: #b91c1c; } "
+            "QPushButton#dangerBtn:hover { background: #991b1b; } "
+            "QScrollBar:vertical { width: 16px; background: #e6edf7; border-radius: 7px; } "
+            "QScrollBar::handle:vertical { background: #8fa2bc; min-height: 36px; border-radius: 7px; } "
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
         )
 
         root_layout = QVBoxLayout(self)
@@ -8325,8 +8419,9 @@ class AdminScreen(QWidget):
             self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_content = QWidget(self._scroll_area)
         self._scroll_layout = QVBoxLayout(self._scroll_content)
-        self._scroll_layout.setContentsMargins(8, 8, 8, 8)
-        self._scroll_layout.setSpacing(14)
+        self._scroll_content.setObjectName("adminCard")
+        self._scroll_layout.setContentsMargins(18, 18, 18, 18)
+        self._scroll_layout.setSpacing(16)
         self._scroll_area.setWidget(self._scroll_content)
         root_layout.addWidget(self._scroll_area, 1)
 
@@ -8369,8 +8464,10 @@ class AdminScreen(QWidget):
         self.ai_style_grid.addWidget(QLabel("표시명(한글)", self.ai_style_widget), 0, 3)
         self.ai_style_grid.addWidget(QLabel("Display (EN)", self.ai_style_widget), 0, 4)
         self.ai_style_grid.addWidget(QLabel("Prompt", self.ai_style_widget), 0, 5)
+        display_names = ["first", "second", "third", "fourth"]
         for row, style_id in enumerate(self.ai_style_ids, start=1):
-            id_label = QLabel(style_id, self.ai_style_widget)
+            display_id = display_names[row - 1] if row - 1 < len(display_names) else f"style-{row}"
+            id_label = QLabel(display_id, self.ai_style_widget)
             enabled_input = QCheckBox(self.ai_style_widget)
             enabled_input.setChecked(True)
             order_input = QSpinBox(self.ai_style_widget)
@@ -8452,6 +8549,7 @@ class AdminScreen(QWidget):
         self.countdown_spin = QSpinBox(self)
         self.countdown_spin.setRange(0, 10)
 
+        form.addRow(self._make_section_label("기본 설정 / Runtime"))
         form.addRow("test_mode", self.test_mode_cb)
         form.addRow("camera_backend", self.camera_backend_combo)
         form.addRow("allow_dummy_when_camera_fail", self.allow_dummy_cb)
@@ -8461,6 +8559,7 @@ class AdminScreen(QWidget):
         form.addRow("print_dry_run", self.print_dry_run_cb)
         form.addRow("upload_dry_run", self.upload_dry_run_cb)
         form.addRow("qr_enabled", self.qr_enabled_cb)
+        form.addRow(self._make_section_label("프린팅 / Printing"))
         form.addRow("printing_enabled", self.printing_enabled_cb)
         form.addRow("printing_dry_run", self.printing_dry_run_cb)
         form.addRow("printer_DS620", self.print_printer_ds620_combo)
@@ -8469,12 +8568,15 @@ class AdminScreen(QWidget):
         form.addRow("printer_RX1HS", self.print_printer_rx1hs_combo)
         form.addRow("RX1HS form_4x6", self.print_form_rx1hs_4x6_combo)
         form.addRow("RX1HS form_2x6", self.print_form_rx1hs_2x6_combo)
+        form.addRow(self._make_section_label("결제/모드 / Payment & Mode"))
         form.addRow("pay_cash", self.payment_cash_cb)
         form.addRow("pay_card", self.payment_card_cb)
         form.addRow("pay_coupon", self.payment_coupon_cb)
         form.addRow("mode_celebrity_enabled", self.mode_celebrity_cb)
         form.addRow("mode_ai_enabled", self.mode_ai_cb)
+        form.addRow(self._make_section_label("AI 스타일 / AI Styles"))
         form.addRow("ai_styles", self.ai_style_widget)
+        form.addRow(self._make_section_label("지폐 인식기 / Bill Acceptor"))
         form.addRow("bill_enabled", self.bill_enabled_cb)
         form.addRow("bill_profile", self.bill_profile_combo)
         form.addRow("bill_port", self.bill_port_combo)
@@ -8486,6 +8588,7 @@ class AdminScreen(QWidget):
             denoms_layout.addWidget(self.bill_denom_cbs[denom])
         denoms_layout.addStretch(1)
         form.addRow("bill_denoms", denoms_row)
+        form.addRow(self._make_section_label("가격 / Pricing"))
         form.addRow("pricing_prefix", self.pricing_prefix_input)
         form.addRow("pricing_layouts", self.pricing_layout_widget)
         print_button_row = QWidget(self)
@@ -8549,14 +8652,26 @@ class AdminScreen(QWidget):
         self.save_button = QPushButton("저장", self)
         self.cancel_button = QPushButton("취소/뒤로", self)
         self.reset_button = QPushButton("상태리셋", self)
+        self.exit_app_button = QPushButton("나가기(프로그램 종료)", self)
         self.save_button.clicked.connect(self._on_save_clicked)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
         self.reset_button.clicked.connect(self._on_reset_clicked)
+        self.exit_app_button.clicked.connect(self._on_exit_app_clicked)
+        self.cancel_button.setObjectName("secondaryBtn")
+        self.reset_button.setObjectName("secondaryBtn")
+        self.exit_app_button.setObjectName("dangerBtn")
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.reset_button)
+        buttons.addWidget(self.exit_app_button)
         self._scroll_layout.addLayout(buttons)
         self._scroll_layout.addStretch(1)
+
+    def _make_section_label(self, text: str) -> QLabel:
+        label = QLabel(str(text), self)
+        label.setObjectName("section")
+        label.setAlignment(ALIGN_CENTER)
+        return label
 
     def set_hotspots(self, hotspots: list[Hotspot]) -> None:
         self.hotspots = hotspots
@@ -9049,6 +9164,31 @@ class AdminScreen(QWidget):
         print("[ADMIN] reset_state")
         self.main_window.reset_state()
         self._show_status("상태가 초기화되었습니다")
+
+    def _on_exit_app_clicked(self) -> None:
+        message = (
+            "키오스크 프로그램을 종료할까요?\n"
+            "Are you sure you want to exit the kiosk app?"
+        )
+        if hasattr(QMessageBox, "StandardButton"):
+            yes_btn = QMessageBox.StandardButton.Yes
+            no_btn = QMessageBox.StandardButton.No
+        else:
+            yes_btn = QMessageBox.Yes
+            no_btn = QMessageBox.No
+        reply = QMessageBox.question(
+            self,
+            "프로그램 종료 / Exit",
+            message,
+            yes_btn | no_btn,
+            no_btn,
+        )
+        if reply != yes_btn:
+            return
+        print("[ADMIN] exit app requested")
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _refresh_bill_test_buttons(self) -> None:
         running = bool(getattr(self.main_window, "is_bill_acceptor_running", lambda: False)())
@@ -12018,11 +12158,32 @@ class OfflineLockScreen(QWidget):
 class KioskMainWindow(QMainWindow):
     offline_guard_signal = Signal(str)
     server_lock_signal = Signal(object)
+    server_mode_permissions_signal = Signal(object)
     ota_state_signal = Signal(object)
     FRAME_SELECT_MODE_RECTS: dict[str, tuple[int, int, int, int]] = {
-        "celebrity": (0, 920, 960, 160),
-        "ai": (960, 920, 960, 160),
+        "celebrity": (260, 820, 620, 86),
+        "ai": (1040, 820, 620, 86),
     }
+    # Price label Y positions for frame cards (design coordinate, 1920x1080).
+    # Used as fallback only when frame-bound detection is unavailable.
+    FRAME_SELECT_PRICE_Y_BY_LAYOUT: dict[str, int] = {
+        "2641": 613,
+        "6241": 503,
+        "4641": 613,
+        "4661": 613,
+        "4681": 614,
+    }
+    FRAME_SELECT_PRICE_X_OFFSET_BY_LAYOUT: dict[str, int] = {
+        # Fine-tune after frame-center anchoring.
+        "4641": 44,
+        "4661": 44,
+    }
+    FRAME_SELECT_PRICE_Y_OFFSET_BY_LAYOUT: dict[str, int] = {
+        "4641": 0,
+        "4661": 0,
+        "4681": 0,
+    }
+    FRAME_SELECT_BG_PATH = ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "please_select_a_frame.png"
 
     def __init__(self) -> None:
         super().__init__()
@@ -12048,6 +12209,7 @@ class KioskMainWindow(QMainWindow):
         self.thank_you_settings = self._resolve_thank_you_settings()
         self.payment_methods = self._resolve_payment_methods()
         self.mode_settings = self._resolve_modes_settings()
+        self._base_mode_settings = dict(self.mode_settings)
         self.ai_style_settings = self._resolve_ai_styles_settings()
         self._apply_ai_style_settings(self.ai_style_settings, emit_log=False)
         self.celebrity_settings = self._resolve_celebrity_settings()
@@ -12118,6 +12280,7 @@ class KioskMainWindow(QMainWindow):
         self.coupon_value = 0
         self._frame_select_price_labels: dict[str, QLabel] = {}
         self._frame_select_mode_buttons: dict[str, QPushButton] = {}
+        self._frame_select_mode_price_labels: dict[str, QLabel] = {}
         self.ui_sound = UiSoundManager(self)
         self._suppress_nav_sound_until: float = 0.0
         self._license_state_lock = threading.Lock()
@@ -12172,6 +12335,7 @@ class KioskMainWindow(QMainWindow):
         self._ota_check_timer.timeout.connect(self._ota_check_tick)
         self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
         self.server_lock_signal.connect(self._on_server_lock_signal)
+        self.server_mode_permissions_signal.connect(self._on_server_mode_permissions_signal)
         self.ota_state_signal.connect(self._on_ota_state_signal)
 
         after_camera_loading_screen = LoadingScreen(self)
@@ -13517,7 +13681,7 @@ class KioskMainWindow(QMainWindow):
                 label.setAlignment(ALIGN_CENTER)
                 label.setStyleSheet(
                     "QLabel { color: white; background-color: rgba(0,0,0,150); "
-                    "font-size: 28px; font-weight: 700; border-radius: 6px; }"
+                    "font-size: 28px; font-weight: 700; border-radius: 4px; }"
                 )
                 label.setAttribute(WA_TRANSPARENT, True)
                 self._frame_select_price_labels[layout_id] = label
@@ -13530,17 +13694,89 @@ class KioskMainWindow(QMainWindow):
             text = format_price(prefix, amount_value)
             label.setText(text)
             x, y, w, h = hotspot.rect
-            label_h = 40
-            label_gap = 0
-            label_y = min(int(y) + int(h) + label_gap, DESIGN_HEIGHT - label_h - 5)
-            widget_rect = screen.design_rect_to_widget((int(x), int(label_y), int(w), int(label_h)))
+            label_h = 30
+            layout_key = str(layout_id).strip()
+            frame_bounds = self._detect_frame_bounds(layout_key, hotspot.rect)
+            if frame_bounds is not None:
+                frame_left, frame_right, frame_bottom = frame_bounds
+                # Keep price top exactly under the visual black frame edge.
+                mapped_y = int(frame_bottom) + 1
+            else:
+                mapped_y = self.FRAME_SELECT_PRICE_Y_BY_LAYOUT.get(layout_key)
+                if mapped_y is None:
+                    mapped_y = int(y) + int(h) - label_h - 6
+            mapped_y += int(self.FRAME_SELECT_PRICE_Y_OFFSET_BY_LAYOUT.get(layout_key, 0))
+            label_y = max(0, min(int(mapped_y), DESIGN_HEIGHT - label_h - 5))
+            metrics = label.fontMetrics()
+            text_w = int(metrics.horizontalAdvance(text))
+            label_w = max(120, min(int(w) - 12, text_w + 54))
+            if frame_bounds is not None:
+                frame_center_x = int((int(frame_left) + int(frame_right)) // 2)
+                label_x = frame_center_x - (label_w // 2)
+            else:
+                label_x = int(x) + max(0, (int(w) - label_w) // 2)
+            label_x += int(self.FRAME_SELECT_PRICE_X_OFFSET_BY_LAYOUT.get(layout_key, 0))
+            label_x = max(0, min(int(label_x), DESIGN_WIDTH - label_w))
+            widget_rect = screen.design_rect_to_widget((int(label_x), int(label_y), int(label_w), int(label_h)))
             label.setGeometry(widget_rect)
             label.show()
             label.raise_()
             print(
                 f"[FRAME_SELECT] price label layout={layout_id} "
-                f"rect={[int(x), int(label_y), int(w), int(label_h)]} text=\"{text}\""
+                f"rect={[int(label_x), int(label_y), int(label_w), int(label_h)]} text=\"{text}\""
             )
+
+    def _detect_frame_bounds(
+        self,
+        layout_id: str,
+        rect: tuple[int, int, int, int],
+    ) -> Optional[tuple[int, int, int]]:
+        bg_path = self.FRAME_SELECT_BG_PATH
+        cache_key = (str(bg_path), str(layout_id or ""), int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        if cache_key in _FRAME_SELECT_BOUNDS_CACHE:
+            return _FRAME_SELECT_BOUNDS_CACHE[cache_key]
+        if not bg_path.is_file():
+            _FRAME_SELECT_BOUNDS_CACHE[cache_key] = None
+            return None
+        try:
+            with Image.open(bg_path) as source:
+                rgb = source.convert("RGB")
+                width, height = rgb.size
+                x, y, w, h = [int(v) for v in rect]
+                left = max(0, min(width - 1, x))
+                top = max(0, min(height - 1, y))
+                right = max(left + 1, min(width, x + w))
+                bottom = max(top + 1, min(height, y + h))
+                crop = rgb.crop((left, top, right, bottom))
+                px = crop.load()
+                cw, ch = crop.size
+                found = 0
+                min_x = cw
+                max_x = -1
+                max_y = -1
+                for yy in range(ch):
+                    for xx in range(cw):
+                        r, g, b = px[xx, yy]
+                        if r < 55 and g < 55 and b < 55:
+                            found += 1
+                            if xx < min_x:
+                                min_x = xx
+                            if xx > max_x:
+                                max_x = xx
+                            if yy > max_y:
+                                max_y = yy
+                if found < 80 or max_y < 0 or max_x < min_x:
+                    _FRAME_SELECT_BOUNDS_CACHE[cache_key] = None
+                    return None
+                detected_left = left + min_x
+                detected_right = left + max_x
+                detected_bottom = top + max_y
+                detected = (int(detected_left), int(detected_right), int(detected_bottom))
+                _FRAME_SELECT_BOUNDS_CACHE[cache_key] = detected
+                return detected
+        except Exception:
+            _FRAME_SELECT_BOUNDS_CACHE[cache_key] = None
+            return None
 
     def _ensure_frame_select_mode_buttons(self) -> None:
         screen = self.screens.get("frame_select")
@@ -13550,12 +13786,12 @@ class KioskMainWindow(QMainWindow):
             self._layout_frame_select_mode_buttons()
             return
 
-        celebrity_btn = QPushButton("유명인 합성모드", screen)
-        ai_btn = QPushButton("AI 합성모드", screen)
+        celebrity_btn = QPushButton("연예인 모드\nCelebrity Mode", screen)
+        ai_btn = QPushButton("AI모드\nAI Mode", screen)
         for btn in (celebrity_btn, ai_btn):
             btn.setStyleSheet(
                 "QPushButton {"
-                "background-color: rgba(0,0,0,150); color: white; font-size: 30px; font-weight: 700; "
+                "background-color: rgba(0,0,0,150); color: white; font-size: 22px; font-weight: 700; "
                 "border: 2px solid rgba(255,255,255,140); border-radius: 10px; }"
                 "QPushButton:pressed { background-color: rgba(0,0,0,200); }"
             )
@@ -13567,7 +13803,30 @@ class KioskMainWindow(QMainWindow):
             "celebrity": celebrity_btn,
             "ai": ai_btn,
         }
+        self._frame_select_mode_price_labels = {}
+        for key in ("celebrity", "ai"):
+            price_label = QLabel(screen)
+            price_label.setAlignment(ALIGN_CENTER)
+            price_label.setAttribute(WA_TRANSPARENT, True)
+            price_label.setStyleSheet(
+                "QLabel { color: white; background-color: rgba(0,0,0,150); "
+                "font-size: 28px; font-weight: 700; border-radius: 4px; }"
+            )
+            self._frame_select_mode_price_labels[key] = price_label
         self._layout_frame_select_mode_buttons()
+
+    def _frame_select_mode_layout_id(self, mode_key: str) -> str:
+        key = str(mode_key or "").strip().lower()
+        if key == "celebrity":
+            celeb_layout = str(DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461")).strip() or "2461"
+            try:
+                celeb_cfg = self.get_celebrity_settings()
+                if isinstance(celeb_cfg, dict):
+                    celeb_layout = str(celeb_cfg.get("layout_id", celeb_layout)).strip() or celeb_layout
+            except Exception:
+                pass
+            return celeb_layout
+        return str(AI_LAYOUT_ID).strip() or "4641"
 
     def _layout_frame_select_mode_buttons(self) -> None:
         screen = self.screens.get("frame_select")
@@ -13579,21 +13838,59 @@ class KioskMainWindow(QMainWindow):
                 continue
             button.setGeometry(screen.design_rect_to_widget(rect))
             button.raise_()
+            price_label = self._frame_select_mode_price_labels.get(key)
+            if price_label is not None:
+                x, y, w, h = rect
+                label_h = 34
+                price_text = str(price_label.text() or "").strip()
+                metrics = price_label.fontMetrics()
+                text_w = int(metrics.horizontalAdvance(price_text)) if price_text else 140
+                label_w = max(120, min(int(w) - 18, text_w + 54))
+                label_x = int(x) + max(0, (int(w) - label_w) // 2)
+                label_y = min(int(y) + int(h) + 2, DESIGN_HEIGHT - label_h - 5)
+                price_label.setGeometry(screen.design_rect_to_widget((label_x, label_y, label_w, label_h)))
+                price_label.raise_()
 
     def _refresh_frame_select_mode_buttons(self) -> None:
         self._ensure_frame_select_mode_buttons()
         self._layout_frame_select_mode_buttons()
+        pricing = self.get_payment_pricing_settings()
+        prefix = str(pricing.get("currency_prefix", ""))
+        default_price = max(0, int(pricing.get("default_price", DEFAULT_PRICING_SETTINGS["default_price"])))
+        layout_price_map = dict(pricing.get("layouts", {}))
         modes = self.get_modes_settings()
         celebrity_enabled = bool(modes.get("celebrity_enabled", DEFAULT_MODE_SETTINGS["celebrity_enabled"]))
         ai_enabled = bool(modes.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"]))
         celebrity_btn = self._frame_select_mode_buttons.get("celebrity")
         ai_btn = self._frame_select_mode_buttons.get("ai")
+        celebrity_price = self._frame_select_mode_price_labels.get("celebrity")
+        ai_price = self._frame_select_mode_price_labels.get("ai")
         if celebrity_btn is not None:
             celebrity_btn.setVisible(celebrity_enabled)
+        if celebrity_price is not None:
+            amount = layout_price_map.get(self._frame_select_mode_layout_id("celebrity"), default_price)
+            try:
+                amount_value = max(0, int(amount))
+            except Exception:
+                amount_value = default_price
+            celebrity_price.setText(format_price(prefix, amount_value))
+            celebrity_price.setVisible(celebrity_enabled)
         if ai_btn is not None:
             ai_btn.setVisible(ai_enabled)
+        if ai_price is not None:
+            amount = layout_price_map.get(self._frame_select_mode_layout_id("ai"), default_price)
+            try:
+                amount_value = max(0, int(amount))
+            except Exception:
+                amount_value = default_price
+            ai_price.setText(format_price(prefix, amount_value))
+            ai_price.setVisible(ai_enabled)
+        # Re-layout after text updates so width fits the current price text.
+        self._layout_frame_select_mode_buttons()
 
     def _on_frame_select_mode_celebrity_clicked(self) -> None:
+        self.ui_sound.play("click")
+        self._suppress_nav_sound_until = time.monotonic() + 0.35
         if not bool(self.mode_settings.get("celebrity_enabled", DEFAULT_MODE_SETTINGS["celebrity_enabled"])):
             self._show_runtime_notice("유명인 합성모드가 비활성화되었습니다", duration_ms=1000)
             return
@@ -13601,14 +13898,23 @@ class KioskMainWindow(QMainWindow):
         self.goto_screen("celebrity_template_select")
 
     def _on_frame_select_mode_ai_clicked(self) -> None:
+        self.ui_sound.play("click")
+        self._suppress_nav_sound_until = time.monotonic() + 0.35
         if not bool(self.mode_settings.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"])):
             self._show_runtime_notice("AI 합성모드는 비활성화되었습니다", duration_ms=1000)
             return
         print("[MODE] click ai -> goto ai_style_select")
         self.goto_screen("ai_style_select")
 
-    def _apply_mode_settings(self, modes: dict, emit_log: bool = True) -> None:
+    def _apply_mode_settings(
+        self,
+        modes: dict,
+        emit_log: bool = True,
+        update_base: bool = True,
+    ) -> None:
         self.mode_settings = self._normalize_modes_settings(modes)
+        if update_base:
+            self._base_mode_settings = dict(self.mode_settings)
         self._refresh_frame_select_mode_buttons()
         if emit_log:
             print(
@@ -14170,6 +14476,32 @@ class KioskMainWindow(QMainWindow):
         trigger = str(payload.get("trigger", "signal")).strip() or "signal"
         message = self._build_server_lock_message(reason, locked_at) if active else ""
         self._set_server_lock(active, message, trigger)
+
+    def _on_server_mode_permissions_signal(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        permissions = payload.get("permissions") if isinstance(payload.get("permissions"), dict) else payload
+        if not isinstance(permissions, dict):
+            return
+        base_modes = self._normalize_modes_settings(
+            self._base_mode_settings if isinstance(getattr(self, "_base_mode_settings", None), dict) else self.mode_settings
+        )
+        allow_celebrity = bool(permissions.get("allow_celebrity_mode", True))
+        allow_ai = bool(permissions.get("allow_ai_mode", True))
+        effective_modes = {
+            "celebrity_enabled": bool(base_modes.get("celebrity_enabled", False)) and allow_celebrity,
+            "ai_enabled": bool(base_modes.get("ai_enabled", False)) and allow_ai,
+        }
+        current_modes = self._normalize_modes_settings(self.mode_settings)
+        if effective_modes == current_modes:
+            return
+        self._apply_mode_settings(effective_modes, emit_log=False, update_base=False)
+        print(
+            "[SERVER_MODES] applied "
+            f"celebrity_enabled={1 if effective_modes.get('celebrity_enabled') else 0} "
+            f"ai_enabled={1 if effective_modes.get('ai_enabled') else 0} "
+            f"(allow_celebrity={1 if allow_celebrity else 0} allow_ai={1 if allow_ai else 0})"
+        )
 
     def _apply_server_lock_payload(self, payload: Any, trigger: str) -> None:
         if not isinstance(payload, dict):
@@ -16568,6 +16900,15 @@ class KioskMainWindow(QMainWindow):
             if not isinstance(data, dict):
                 return False, "invalid json payload"
             self._apply_server_lock_payload(data.get("device_lock"), trigger="config_probe")
+            config_payload = data.get("config") if isinstance(data.get("config"), dict) else {}
+            if isinstance(config_payload, dict):
+                mode_perms = config_payload.get("device_mode_permissions")
+                if isinstance(mode_perms, dict):
+                    event = {"permissions": dict(mode_perms), "trigger": "config_probe"}
+                    if QThread.currentThread() == self.thread():
+                        self._on_server_mode_permissions_signal(event)
+                    else:
+                        self.server_mode_permissions_signal.emit(event)
             return True, "ok"
         except Exception as exc:
             return False, str(exc)
@@ -17365,7 +17706,20 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.aboutToQuit.connect(terminate_edsdk_once)
     window = KioskMainWindow()
-    window.show()
+    force_windowed = str(os.environ.get("KIOSK_WINDOWED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if force_windowed:
+        window.show()
+        print("[BOOT] windowed mode enabled by KIOSK_WINDOWED")
+    else:
+        try:
+            window.showFullScreen()
+            print("[BOOT] fullscreen mode enabled")
+        except Exception as exc:
+            print(f"[BOOT] fullscreen failed: {exc} -> fallback maximized")
+            try:
+                window.showMaximized()
+            except Exception:
+                window.show()
     return app.exec()
 
 

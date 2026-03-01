@@ -23,13 +23,15 @@ class DeviceAdmin(admin.ModelAdmin):
         "branch",
         "org",
         "is_active",
+        "allow_celebrity_mode",
+        "allow_ai_mode",
         "is_locked",
         "locked_at",
         "last_seen_at",
         "last_app_version",
         "token_hint",
     )
-    list_filter = ("org", "branch", "is_active", "is_locked")
+    list_filter = ("org", "branch", "is_active", "allow_celebrity_mode", "allow_ai_mode", "is_locked")
     search_fields = ("device_code", "display_name")
     actions = ["rotate_device_token", "lock_selected_devices", "unlock_selected_devices"]
 

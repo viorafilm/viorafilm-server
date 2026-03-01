@@ -58,6 +58,38 @@
   </td>
   <td>{{ row.offline_last_online_at|default:"-" }}</td>
   <td>
+    <div class="d-flex flex-column gap-1">
+      <div>
+        {% if row.allow_celebrity_mode %}
+        <span class="badge text-bg-primary">연예인 ON</span>
+        {% else %}
+        <span class="badge text-bg-secondary">연예인 OFF</span>
+        {% endif %}
+        {% if row.allow_ai_mode %}
+        <span class="badge text-bg-info">AI ON</span>
+        {% else %}
+        <span class="badge text-bg-secondary">AI OFF</span>
+        {% endif %}
+      </div>
+      {% if can_manage_modes %}
+      <form method="post" class="d-flex align-items-center gap-2 flex-wrap">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="update_device_modes">
+        <input type="hidden" name="device_id" value="{{ row.device.id }}">
+        <label class="small d-flex align-items-center gap-1">
+          <input type="checkbox" name="allow_celebrity_mode" {% if row.allow_celebrity_mode %}checked{% endif %}>
+          연예인
+        </label>
+        <label class="small d-flex align-items-center gap-1">
+          <input type="checkbox" name="allow_ai_mode" {% if row.allow_ai_mode %}checked{% endif %}>
+          AI
+        </label>
+        <button type="submit" class="btn btn-sm btn-outline-primary">저장</button>
+      </form>
+      {% endif %}
+    </div>
+  </td>
+  <td>
     {% if can_manage_locks %}
       {% if row.server_lock_active %}
       <form method="post" class="d-flex gap-1">
@@ -81,5 +113,5 @@
   </td>
 </tr>
 {% empty %}
-<tr><td colspan="14" class="text-center text-muted py-4">No devices found.</td></tr>
+<tr><td colspan="15" class="text-center text-muted py-4">No devices found.</td></tr>
 {% endfor %}

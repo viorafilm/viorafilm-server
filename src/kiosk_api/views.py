@@ -130,6 +130,10 @@ class ConfigView(APIView):
         security_cfg.setdefault("offline_grace_days", int(getattr(settings, "KIOSK_OFFLINE_GRACE_DAYS", 3)))
         security_cfg.setdefault("server_lock_enforced", True)
         config["security"] = security_cfg
+        config["device_mode_permissions"] = {
+            "allow_celebrity_mode": bool(getattr(device, "allow_celebrity_mode", True)),
+            "allow_ai_mode": bool(getattr(device, "allow_ai_mode", True)),
+        }
         return Response({"config_version": version_tag, "config": config, "device_lock": _lock_payload(device)})
 
 
