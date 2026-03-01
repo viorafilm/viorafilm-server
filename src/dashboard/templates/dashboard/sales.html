@@ -90,20 +90,13 @@
     </div>
 
     <div class="row g-3 mb-3">
-      <div class="col-12 col-md-6">
-        <div class="border rounded-3 p-3">
-          <div class="text-muted small">AI 예상 서버료 (원가)</div>
-          <div class="fw-semibold">KRW {{ ai_estimated_server_cost }}</div>
-          <div class="text-muted small">
-            AI 이미지 {{ ai_generated_images }}장 × {{ ai_est_krw_per_image }}원
-          </div>
-        </div>
-      </div>
-      <div class="col-12 col-md-6">
+      <div class="col-12">
         <div class="border rounded-3 p-3">
           <div class="text-muted small">AI 청구 기준 ({{ ai_est_server_cost_multiplier }}배)</div>
-          <div class="fw-semibold">KRW {{ ai_estimated_server_cost_x8 }}</div>
-          <div class="text-muted small">원가 × {{ ai_est_server_cost_multiplier }} 적용</div>
+          <div class="fw-semibold">KRW {{ ai_estimated_billing_server_cost }}</div>
+          <div class="text-muted small">
+            AI 이미지 {{ ai_generated_images }}장 × ({{ ai_est_krw_per_image }}원 × {{ ai_est_server_cost_multiplier }})
+          </div>
         </div>
       </div>
     </div>

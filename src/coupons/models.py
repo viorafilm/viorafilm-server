@@ -14,6 +14,7 @@ class CouponBatch(models.Model):
     title = models.CharField(max_length=200, blank=True, default="")
     amount = models.IntegerField(default=0)
     count = models.IntegerField(default=0)
+    expires_hours = models.PositiveIntegerField(default=24)
     created_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL)
     created_at = models.DateTimeField(default=timezone.now)
 
@@ -66,4 +67,3 @@ class Coupon(models.Model):
 
     def __str__(self):
         return f"{self.formatted_code} ({self.amount} {self.currency})"
-

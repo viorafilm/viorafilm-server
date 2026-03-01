@@ -9,7 +9,7 @@ from .service import issue_coupons_for_batch
 
 @admin.register(CouponBatch)
 class CouponBatchAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "org", "branch", "amount", "count", "created_by", "created_at")
+    list_display = ("id", "title", "org", "branch", "amount", "count", "expires_hours", "created_by", "created_at")
     list_filter = ("org", "branch", "created_at")
     search_fields = ("title", "org__code", "branch__code")
 

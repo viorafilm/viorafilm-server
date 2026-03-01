@@ -28,7 +28,13 @@ def issue_coupons_for_batch(batch: CouponBatch, created_by=None):
     if batch.coupons.exists():
         return
     now = timezone.now()
-    expires_at = now + timedelta(hours=24)
+    try:
+        expires_hours = int(getattr(batch, "expires_hours", 24) or 24)
+    except Exception:
+        expires_hours = 24
+    if expires_hours <= 0:
+        expires_hours = 24
+    expires_at = now + timedelta(hours=expires_hours)
     created = 0
     while created < batch.count:
         code = _generate_unique_code()
@@ -56,6 +62,7 @@ def issue_coupons_for_batch(batch: CouponBatch, created_by=None):
             "batch_id": batch.pk,
             "count": batch.count,
             "amount": batch.amount,
+            "expires_hours": expires_hours,
             "org_id": batch.org_id,
             "branch_id": batch.branch_id,
         },
@@ -64,13 +71,20 @@ def issue_coupons_for_batch(batch: CouponBatch, created_by=None):
     )
 
 
-def create_batch_and_coupons(org, branch, amount, count, created_by, title="") -> CouponBatch:
+def create_batch_and_coupons(org, branch, amount, count, created_by, title="", expires_hours=24) -> CouponBatch:
+    try:
+        safe_expires_hours = int(expires_hours or 24)
+    except Exception:
+        safe_expires_hours = 24
+    if safe_expires_hours <= 0:
+        safe_expires_hours = 24
     with transaction.atomic():
         batch = CouponBatch.objects.create(
             org=org,
             branch=branch,
             amount=int(amount),
             count=int(count),
+            expires_hours=safe_expires_hours,
             created_by=created_by,
             title=title or "",
         )

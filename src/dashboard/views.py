@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 AI_EST_USD_PER_IMAGE = 0.039
 AI_EST_KRW_PER_USD = 1400.0
 AI_EST_DEFAULT_IMAGES_PER_SALE = 2
-AI_EST_SERVER_COST_MULTIPLIER = 8.0
+AI_EST_SERVER_COST_MULTIPLIER = 10.0
 AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
 
 
@@ -685,7 +685,7 @@ def sales_view(request):
             ai_generated_images += sale_ai_images
 
     ai_estimated_server_cost = int(ai_generated_images * AI_EST_KRW_PER_IMAGE)
-    ai_estimated_server_cost_x8 = int(round(ai_estimated_server_cost * AI_EST_SERVER_COST_MULTIPLIER))
+    ai_estimated_billing_server_cost = int(round(ai_estimated_server_cost * AI_EST_SERVER_COST_MULTIPLIER))
 
     chart_payload = _build_sales_chart_payload(sales_qs)
     return render(
@@ -704,8 +704,7 @@ def sales_view(request):
             "mode_counts": mode_counts,
             "mode_amounts": mode_amounts,
             "ai_generated_images": ai_generated_images,
-            "ai_estimated_server_cost": ai_estimated_server_cost,
-            "ai_estimated_server_cost_x8": ai_estimated_server_cost_x8,
+            "ai_estimated_billing_server_cost": ai_estimated_billing_server_cost,
             "ai_est_krw_per_image": AI_EST_KRW_PER_IMAGE,
             "ai_est_server_cost_multiplier": AI_EST_SERVER_COST_MULTIPLIER,
             "filter_org_id": filters["org_id"],
@@ -791,9 +790,19 @@ def coupons_view(request):
         action = (request.POST.get("action") or "").strip()
 
         if action == "issue":
-            amount = int(request.POST.get("amount") or 0)
-            count = int(request.POST.get("count") or 0)
+            try:
+                amount = int(request.POST.get("amount") or 0)
+            except Exception:
+                amount = 0
+            try:
+                count = int(request.POST.get("count") or 0)
+            except Exception:
+                count = 0
             title = (request.POST.get("title") or "").strip()
+            try:
+                expires_hours = int(request.POST.get("expires_hours") or 24)
+            except Exception:
+                expires_hours = 24
             org_id = request.POST.get("org_id")
             branch_id = request.POST.get("branch_id")
 
@@ -807,14 +816,15 @@ def coupons_view(request):
                 org = user.organization
                 branch = user.branch
 
-            if amount <= 0 or count <= 0:
-                messages.error(request, "amount/count must be > 0")
+            if amount <= 0 or count <= 0 or expires_hours <= 0:
+                messages.error(request, "amount/count/expires_hours must be > 0")
             else:
                 batch = create_batch_and_coupons(
                     org=org,
                     branch=branch,
                     amount=amount,
                     count=count,
+                    expires_hours=expires_hours,
                     created_by=user,
                     title=title,
                 )
