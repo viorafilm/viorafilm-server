@@ -23,7 +23,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional, Callable
 from ctypes import wintypes
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
@@ -14651,6 +14651,39 @@ class KioskMainWindow(QMainWindow):
             return fallback
         return safe
 
+    @staticmethod
+    def _ota_filename_from_headers(content_disposition: str, content_type: str) -> str:
+        cd = str(content_disposition or "").strip()
+        ct = str(content_type or "").lower()
+        filename = ""
+
+        # RFC5987: filename*=UTF-8''encoded-name.zip
+        if "filename*=" in cd:
+            try:
+                part = cd.split("filename*=", 1)[1].split(";", 1)[0].strip().strip('"').strip("'")
+                if "''" in part:
+                    part = part.split("''", 1)[1]
+                filename = unquote(part).strip()
+            except Exception:
+                filename = ""
+
+        if not filename and "filename=" in cd:
+            try:
+                part = cd.split("filename=", 1)[1].split(";", 1)[0].strip().strip('"').strip("'")
+                filename = unquote(part).strip()
+            except Exception:
+                filename = ""
+
+        if filename:
+            return filename
+
+        # Content-Type fallback
+        if "application/zip" in ct or "x-zip" in ct:
+            return "update.zip"
+        if "application/x-msdownload" in ct or "application/vnd.microsoft.portable-executable" in ct:
+            return "update.exe"
+        return ""
+
     def _ota_try_auto_download(self, payload: dict[str, Any]) -> None:
         if not self._ota_auto_download_enabled:
             return
@@ -14720,17 +14753,11 @@ class KioskMainWindow(QMainWindow):
             raise RuntimeError("requests module not installed")
         parsed = urlsplit(download_url)
         candidate_name = Path(parsed.path).name if parsed.path else ""
-        safe_name = self._sanitize_ota_filename(candidate_name, "kiosk_update.bin")
-        version_tag = re.sub(r"[^A-Za-z0-9._-]+", "_", str(target_version or "").strip()) or "latest"
-        final_name = f"v{version_tag}_{safe_name}"
-
         out_dir = self._ota_download_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        final_path = out_dir / final_name
-        tmp_path = out_dir / f"{final_name}.part"
 
         timeout = max(15.0, min(180.0, self._sales_request_timeout() * 3))
-        print(f"[OTA] download start url={download_url} out={final_path}")
+        print(f"[OTA] download start url={download_url}")
         req_headers: dict[str, str] = {}
         try:
             req_headers = dict(self._build_kiosk_api_auth_headers())
@@ -14741,6 +14768,26 @@ class KioskMainWindow(QMainWindow):
         if int(response.status_code) >= 400:
             body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
             raise RuntimeError(f"HTTP {response.status_code} {body_text[:180]}")
+
+        header_name = self._ota_filename_from_headers(
+            response.headers.get("Content-Disposition", ""),
+            response.headers.get("Content-Type", ""),
+        )
+        if header_name:
+            candidate_name = header_name
+
+        if not Path(candidate_name).suffix:
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            if "zip" in content_type:
+                candidate_name = f"{candidate_name or 'kiosk_update'}.zip"
+            elif "msdownload" in content_type or "portable-executable" in content_type:
+                candidate_name = f"{candidate_name or 'kiosk_update'}.exe"
+        safe_name = self._sanitize_ota_filename(candidate_name, "kiosk_update.bin")
+        version_tag = re.sub(r"[^A-Za-z0-9._-]+", "_", str(target_version or "").strip()) or "latest"
+        final_name = f"v{version_tag}_{safe_name}"
+        final_path = out_dir / final_name
+        tmp_path = out_dir / f"{final_name}.part"
+        print(f"[OTA] download target out={final_path}")
 
         digest = hashlib.sha256()
         bytes_written = 0
@@ -14809,11 +14856,31 @@ class KioskMainWindow(QMainWindow):
                 print(f"[OTA] auto apply command failed: {exc}")
             return
 
-        # If no explicit command is configured, stay safe and do not execute arbitrary binaries.
-        print(
-            "[OTA] auto apply skipped: set KIOSK_OTA_APPLY_CMD to enable "
-            f"(artifact={path})"
-        )
+        # Built-in default apply path for Windows deployments.
+        script_path = ROOT_DIR / "deploy" / "windows" / "apply_update.ps1"
+        try:
+            if script_path.is_file():
+                cmd_parts = [
+                    "powershell",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script_path),
+                    "-ArtifactPath",
+                    str(path),
+                ]
+                if str(path.suffix).lower() == ".zip":
+                    cmd_parts.extend(["-InstallDir", str(ROOT_DIR)])
+                else:
+                    cmd_parts.append("-Silent")
+                subprocess.Popen(cmd_parts, shell=False)
+                print(f"[OTA] auto apply default started: {' '.join(cmd_parts)}")
+                return
+        except Exception as exc:
+            print(f"[OTA] auto apply default failed: {exc}")
+
+        # If no explicit command is configured and default script path is missing, skip.
+        print(f"[OTA] auto apply skipped: no apply command/script (artifact={path})")
 
     def _probe_ota_state(self) -> dict[str, Any]:
         current_version = str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
