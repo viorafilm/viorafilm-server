@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.utils import timezone
 
 from audit.service import log_event
@@ -17,7 +17,11 @@ class CouponBatchAdmin(admin.ModelAdmin):
         obj.created_by = obj.created_by or request.user
         super().save_model(request, obj, form, change)
         if not change:
-            issue_coupons_for_batch(obj, created_by=request.user)
+            try:
+                issue_coupons_for_batch(obj, created_by=request.user)
+            except ValueError as exc:
+                obj.delete()
+                self.message_user(request, str(exc), level=messages.ERROR)
 
 
 @admin.register(Coupon)

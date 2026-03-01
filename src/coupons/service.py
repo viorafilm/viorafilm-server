@@ -8,6 +8,16 @@ from audit.service import log_event
 
 from .models import Coupon, CouponBatch
 
+MAX_COUPON_BATCH_COUNT = 1000
+MAX_TOTAL_COUPONS = 3000
+
+COUPON_EXPIRE_PRESETS_HOURS = {
+    "1d": 24,
+    "1w": 24 * 7,
+    "1m": 24 * 30,
+    "1y": 24 * 365,
+}
+
 
 def normalize_coupon_code(text) -> str:
     digits = "".join(ch for ch in str(text or "") if ch.isdigit())
@@ -24,32 +34,58 @@ def _generate_unique_code(max_retries: int = 100) -> str:
     raise RuntimeError("Failed to generate unique coupon code")
 
 
+def resolve_expires_hours(expires_period=None, expires_hours=24) -> int:
+    key = str(expires_period or "").strip().lower()
+    if key in COUPON_EXPIRE_PRESETS_HOURS:
+        return int(COUPON_EXPIRE_PRESETS_HOURS[key])
+    try:
+        parsed = int(expires_hours or 24)
+    except Exception:
+        parsed = 24
+    return 24 if parsed <= 0 else parsed
+
+
+def _validate_issue_limits(requested_count: int) -> None:
+    try:
+        count = int(requested_count)
+    except Exception:
+        count = 0
+    if count <= 0:
+        raise ValueError("발행 수량은 1장 이상이어야 합니다.")
+    if count > MAX_COUPON_BATCH_COUNT:
+        raise ValueError(f"1회 발행 최대 수량은 {MAX_COUPON_BATCH_COUNT}장입니다.")
+
+    current_total = int(Coupon.objects.count())
+    remaining = int(MAX_TOTAL_COUPONS - current_total)
+    if count > remaining:
+        raise ValueError(
+            f"전체 쿠폰 한도({MAX_TOTAL_COUPONS}장) 초과입니다. 현재 {current_total}장, 남은 {max(0, remaining)}장"
+        )
+
+
 def issue_coupons_for_batch(batch: CouponBatch, created_by=None):
     if batch.coupons.exists():
         return
+    _validate_issue_limits(int(getattr(batch, "count", 0) or 0))
     now = timezone.now()
-    try:
-        expires_hours = int(getattr(batch, "expires_hours", 24) or 24)
-    except Exception:
-        expires_hours = 24
-    if expires_hours <= 0:
-        expires_hours = 24
+    expires_hours = resolve_expires_hours(expires_hours=getattr(batch, "expires_hours", 24))
     expires_at = now + timedelta(hours=expires_hours)
     created = 0
-    while created < batch.count:
-        code = _generate_unique_code()
-        try:
-            Coupon.objects.create(
-                batch=batch,
-                code=code,
-                amount=batch.amount,
-                currency="KRW",
-                created_at=now,
-                expires_at=expires_at,
-            )
-            created += 1
-        except IntegrityError:
-            continue
+    with transaction.atomic():
+        while created < int(batch.count):
+            code = _generate_unique_code()
+            try:
+                Coupon.objects.create(
+                    batch=batch,
+                    code=code,
+                    amount=batch.amount,
+                    currency="KRW",
+                    created_at=now,
+                    expires_at=expires_at,
+                )
+                created += 1
+            except IntegrityError:
+                continue
 
     log_event(
         actor_user=created_by,
@@ -72,18 +108,15 @@ def issue_coupons_for_batch(batch: CouponBatch, created_by=None):
 
 
 def create_batch_and_coupons(org, branch, amount, count, created_by, title="", expires_hours=24) -> CouponBatch:
-    try:
-        safe_expires_hours = int(expires_hours or 24)
-    except Exception:
-        safe_expires_hours = 24
-    if safe_expires_hours <= 0:
-        safe_expires_hours = 24
+    safe_count = int(count or 0)
+    _validate_issue_limits(safe_count)
+    safe_expires_hours = resolve_expires_hours(expires_hours=expires_hours)
     with transaction.atomic():
         batch = CouponBatch.objects.create(
             org=org,
             branch=branch,
             amount=int(amount),
-            count=int(count),
+            count=safe_count,
             expires_hours=safe_expires_hours,
             created_by=created_by,
             title=title or "",

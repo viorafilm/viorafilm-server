@@ -39,6 +39,10 @@
 <div class="card card-soft mb-3">
   <div class="card-body">
     <h6 class="mb-3">쿠폰 일괄 발행</h6>
+    <div class="text-muted small mb-2">
+      전체 한도 {{ coupon_max_total }}장 / 현재 {{ coupon_total_count }}장 / 남은 {{ coupon_remaining_capacity }}장
+      · 1회 최대 {{ coupon_max_per_issue }}장
+    </div>
     <form method="post" class="row g-2">
       {% csrf_token %}
       <input type="hidden" name="action" value="issue">
@@ -70,12 +74,17 @@
 
       <div class="col-md-2">
         <label class="form-label">수량</label>
-        <input class="form-control" name="count" type="number" min="1" value="10">
+        <input class="form-control" name="count" type="number" min="1" max="{{ coupon_max_per_issue }}" value="10">
       </div>
 
       <div class="col-md-1">
-        <label class="form-label">유효시간(시간)</label>
-        <input class="form-control" name="expires_hours" type="number" min="1" value="24">
+        <label class="form-label">유효기간</label>
+        <select class="form-select" name="expires_period">
+          <option value="1d" selected>1일</option>
+          <option value="1w">1주일</option>
+          <option value="1m">1달</option>
+          <option value="1y">1년</option>
+        </select>
       </div>
 
       <div class="col-md-1">

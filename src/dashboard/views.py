@@ -20,7 +20,12 @@ from alerts.models import ChannelType, NotificationChannel
 from audit.service import log_event
 from core.models import Branch, Device, Organization
 from coupons.models import Coupon
-from coupons.service import create_batch_and_coupons
+from coupons.service import (
+    MAX_COUPON_BATCH_COUNT,
+    MAX_TOTAL_COUPONS,
+    create_batch_and_coupons,
+    resolve_expires_hours,
+)
 from mediahub.models import ShareSession
 from sales.models import SaleTransaction
 from storagehub.service import generate_download_url_from_meta
@@ -783,6 +788,8 @@ def coupons_view(request):
         "batch__branch_id",
         filters,
     )
+    coupon_total_count = int(Coupon.objects.count())
+    coupon_remaining_capacity = max(0, int(MAX_TOTAL_COUPONS - coupon_total_count))
 
     if request.method == "POST":
         if not can_edit:
@@ -799,10 +806,8 @@ def coupons_view(request):
             except Exception:
                 count = 0
             title = (request.POST.get("title") or "").strip()
-            try:
-                expires_hours = int(request.POST.get("expires_hours") or 24)
-            except Exception:
-                expires_hours = 24
+            expires_period = (request.POST.get("expires_period") or "1d").strip().lower()
+            expires_hours = resolve_expires_hours(expires_period=expires_period, expires_hours=24)
             org_id = request.POST.get("org_id")
             branch_id = request.POST.get("branch_id")
 
@@ -819,16 +824,19 @@ def coupons_view(request):
             if amount <= 0 or count <= 0 or expires_hours <= 0:
                 messages.error(request, "amount/count/expires_hours must be > 0")
             else:
-                batch = create_batch_and_coupons(
-                    org=org,
-                    branch=branch,
-                    amount=amount,
-                    count=count,
-                    expires_hours=expires_hours,
-                    created_by=user,
-                    title=title,
-                )
-                messages.success(request, f"Coupon batch issued: #{batch.id}")
+                try:
+                    batch = create_batch_and_coupons(
+                        org=org,
+                        branch=branch,
+                        amount=amount,
+                        count=count,
+                        expires_hours=expires_hours,
+                        created_by=user,
+                        title=title,
+                    )
+                    messages.success(request, f"Coupon batch issued: #{batch.id}")
+                except ValueError as exc:
+                    messages.error(request, str(exc))
 
         elif action == "delete_selected":
             ids = [int(x) for x in request.POST.getlist("coupon_ids") if str(x).isdigit()]
@@ -901,6 +909,10 @@ def coupons_view(request):
             "orgs": _available_orgs(user),
             "branches": _available_branches(user),
             "can_edit": can_edit,
+            "coupon_total_count": coupon_total_count,
+            "coupon_remaining_capacity": coupon_remaining_capacity,
+            "coupon_max_total": int(MAX_TOTAL_COUPONS),
+            "coupon_max_per_issue": int(MAX_COUPON_BATCH_COUNT),
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
