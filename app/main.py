@@ -562,7 +562,11 @@ AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
 AI_CAMERA_OVERLAY_PATH = ROOT_DIR / "assets" / "ui" / "14_ai_mode" / "4641_AImode.png"
-CHEAPEST_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+# Locked model: Nano Banana 2 tier (Gemini 3.1 Flash image preview).
+# Do not allow runtime override to prevent expensive/slow model drift.
+CHEAPEST_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+# 0.5K request budget: downscale source so the longest edge is 512px before API call.
+GEMINI_REQUEST_MAX_EDGE = 512
 
 DEFAULT_AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
     "kpop_idol": {
@@ -2323,15 +2327,22 @@ def _generate_ai_variant_via_gemini(
 
     style_info = AI_STYLE_PRESETS.get(style_id) or {}
     prompt = str(style_info.get("prompt", "")).strip() or "Stylized portrait"
-    requested_model = str(os.environ.get("GEMINI_IMAGE_MODEL", "")).strip()
     model = CHEAPEST_GEMINI_IMAGE_MODEL
+    requested_model = str(os.environ.get("GEMINI_IMAGE_MODEL", "")).strip()
     if requested_model and requested_model != model:
-        print(f"[AI] model override requested={requested_model} -> forced={model}")
+        print(f"[AI] model override ignored requested={requested_model} locked={model}")
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     try:
         buffer = io.BytesIO()
-        source.convert("RGB").save(buffer, format="JPEG", quality=94)
+        send_image = source.convert("RGB")
+        max_edge = int(GEMINI_REQUEST_MAX_EDGE)
+        if max(send_image.width, send_image.height) > max_edge:
+            ratio = float(max_edge) / float(max(send_image.width, send_image.height))
+            target_w = max(1, int(round(send_image.width * ratio)))
+            target_h = max(1, int(round(send_image.height * ratio)))
+            send_image = send_image.resize((target_w, target_h), Image.LANCZOS)
+        send_image.save(buffer, format="JPEG", quality=92)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     except Exception as exc:
         print(f"[AI] encode failed style={style_id} err={exc}")
@@ -2359,7 +2370,10 @@ def _generate_ai_variant_via_gemini(
         if image is None:
             print(f"[AI] gemini no image style={style_id}")
             return None
-        print(f"[AI] gemini ok model={model} style={style_id}")
+        print(
+            f"[AI] gemini ok model={model} style={style_id} "
+            f"req={send_image.width}x{send_image.height} max_edge={GEMINI_REQUEST_MAX_EDGE}"
+        )
         return image
     except Exception as exc:
         print(f"[AI] gemini exception style={style_id} err={exc}")
@@ -8795,7 +8809,7 @@ class AdminScreen(QWidget):
 
         row = 0
         for layout_id in self.pricing_layout_ids:
-            name_label = QLabel(layout_id, self.pricing_layout_widget)
+            name_label = QLabel(self._pricing_layout_label(layout_id), self.pricing_layout_widget)
             price_input = QLineEdit(self.pricing_layout_widget)
             price_input.setValidator(QIntValidator(0, 999999, price_input))
             value = self.pricing_default_price
@@ -8809,6 +8823,29 @@ class AdminScreen(QWidget):
             self.pricing_layout_grid.addWidget(name_label, row, 0)
             self.pricing_layout_grid.addWidget(price_input, row, 1)
             row += 1
+
+    def _pricing_layout_label(self, layout_id: str) -> str:
+        layout_key = str(layout_id or "").strip()
+        if not layout_key:
+            return ""
+        tags: list[str] = []
+        celeb_layout = str(DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461")).strip() or "2461"
+        if hasattr(self.main_window, "get_celebrity_settings"):
+            try:
+                celeb_cfg = self.main_window.get_celebrity_settings()
+                if isinstance(celeb_cfg, dict):
+                    celeb_layout = str(
+                        celeb_cfg.get("layout_id", DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461"))
+                    ).strip() or celeb_layout
+            except Exception:
+                pass
+        if layout_key == celeb_layout:
+            tags.append("유명인모드")
+        if layout_key == AI_LAYOUT_ID:
+            tags.append("AI모드")
+        if not tags:
+            return layout_key
+        return f"{layout_key} ({' / '.join(tags)})"
 
     def _collect_pricing_settings(self) -> dict:
         prefix = self.pricing_prefix_input.text().strip()
@@ -8935,7 +8972,7 @@ class AdminScreen(QWidget):
             self.main_window.get_ai_style_settings(),
             self.main_window.get_bill_acceptor_settings(),
             self.main_window.get_payment_pricing_settings(),
-            self.main_window.available_layout_ids,
+            self.main_window.get_pricing_layout_ids(),
             self.main_window.get_printing_settings(),
             self.main_window.list_windows_printers(),
         )
@@ -12729,7 +12766,7 @@ class KioskMainWindow(QMainWindow):
                 self.get_ai_style_settings(),
                 self.get_bill_acceptor_settings(),
                 self.get_payment_pricing_settings(),
-                self.available_layout_ids,
+                self.get_pricing_layout_ids(),
                 self.get_printing_settings(),
                 printer_names,
             )
@@ -12877,6 +12914,31 @@ class KioskMainWindow(QMainWindow):
             print(f"[PRICING] layouts detected: {','.join(layouts)}")
         return layouts
 
+    def _pricing_layout_ids_with_modes(
+        self,
+        base_layout_ids: Optional[list[str]] = None,
+        celebrity_layout_id: Optional[str] = None,
+    ) -> list[str]:
+        merged: set[str] = set()
+        for layout_id in list(base_layout_ids or []):
+            key = str(layout_id or "").strip()
+            if key:
+                merged.add(key)
+        celeb_layout = str(celebrity_layout_id or "").strip()
+        if not celeb_layout:
+            celeb_cfg = getattr(self, "celebrity_settings", {})
+            if isinstance(celeb_cfg, dict):
+                celeb_layout = str(
+                    celeb_cfg.get("layout_id", DEFAULT_CELEBRITY_SETTINGS["layout_id"])
+                ).strip()
+        celeb_layout = celeb_layout or str(DEFAULT_CELEBRITY_SETTINGS["layout_id"]).strip() or "2461"
+        merged.add(celeb_layout)
+        merged.add(str(AI_LAYOUT_ID).strip())
+        return sorted(merged)
+
+    def get_pricing_layout_ids(self) -> list[str]:
+        return self._pricing_layout_ids_with_modes(self.available_layout_ids)
+
     def _sync_pricing_layout_defaults(self, persist: bool = False) -> bool:
         detected = self._detect_layout_ids_from_loaded_hotspots()
         if not detected:
@@ -12885,12 +12947,13 @@ class KioskMainWindow(QMainWindow):
             settings = self.get_payment_pricing_settings()
             detected = sorted(settings.get("layouts", {}).keys())
         self.available_layout_ids = list(detected)
+        pricing_layout_ids = self._pricing_layout_ids_with_modes(detected)
 
         settings = self.get_payment_pricing_settings()
         default_price = max(0, int(settings.get("default_price", DEFAULT_PRICING_SETTINGS["default_price"])))
         layouts = dict(settings.get("layouts", {}))
         changed = False
-        for layout_id in detected:
+        for layout_id in pricing_layout_ids:
             if layout_id not in layouts:
                 layouts[layout_id] = default_price
                 changed = True
@@ -12909,7 +12972,7 @@ class KioskMainWindow(QMainWindow):
                 if not isinstance(raw_layouts, dict):
                     should_persist = True
                 else:
-                    for layout_id in detected:
+                    for layout_id in pricing_layout_ids:
                         if layout_id not in raw_layouts:
                             should_persist = True
                             break
@@ -13654,7 +13717,7 @@ class KioskMainWindow(QMainWindow):
 
         detected = list(layout_ids or [])
         if not detected:
-            detected = list(self.available_layout_ids)
+            detected = self._pricing_layout_ids_with_modes(self.available_layout_ids)
         for layout_id in detected:
             if layout_id not in layouts:
                 layouts[layout_id] = int(result["default_price"])
@@ -13666,7 +13729,17 @@ class KioskMainWindow(QMainWindow):
         config = self._read_config_dict()
         raw = config.get("pricing") if isinstance(config, dict) else None
         legacy = config.get("payment_pricing") if isinstance(config, dict) else None
-        return self._normalize_pricing_settings(raw, legacy, layout_ids=self.available_layout_ids)
+        raw_celebrity = config.get("celebrity") if isinstance(config, dict) else None
+        celebrity_layout = ""
+        if isinstance(raw_celebrity, dict):
+            celebrity_layout = str(
+                raw_celebrity.get("layout_id", DEFAULT_CELEBRITY_SETTINGS["layout_id"])
+            ).strip()
+        layout_ids = self._pricing_layout_ids_with_modes(
+            self.available_layout_ids,
+            celebrity_layout_id=celebrity_layout,
+        )
+        return self._normalize_pricing_settings(raw, legacy, layout_ids=layout_ids)
 
     def _resolve_coupon_value_settings(self) -> dict:
         config = self._read_config_dict()
@@ -14542,7 +14615,12 @@ class KioskMainWindow(QMainWindow):
         normalized_pricing = self._normalize_pricing_settings(
             source_pricing,
             legacy_settings=config.get("payment_pricing"),
-            layout_ids=self.available_layout_ids,
+            layout_ids=self._pricing_layout_ids_with_modes(
+                self.available_layout_ids,
+                celebrity_layout_id=str(
+                    normalized_celebrity.get("layout_id", DEFAULT_CELEBRITY_SETTINGS["layout_id"])
+                ).strip(),
+            ),
         )
         config["pricing"] = normalized_pricing
         # Backward-compatible mirror.
