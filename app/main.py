@@ -12333,8 +12333,17 @@ class KioskMainWindow(QMainWindow):
         self._ota_last_state_signature = ""
         self._ota_auto_download_enabled = self._env_bool(os.environ.get("KIOSK_OTA_AUTO_DOWNLOAD", "0"), False)
         self._ota_auto_apply_enabled = self._env_bool(os.environ.get("KIOSK_OTA_AUTO_APPLY", "0"), False)
+        self._ota_auto_restart_enabled = self._env_bool(os.environ.get("KIOSK_OTA_AUTO_RESTART", "0"), False)
+        self._ota_restart_scheduled = False
+        try:
+            restart_delay = float(str(os.environ.get("KIOSK_OTA_RESTART_DELAY_SEC", "8")).strip())
+        except Exception:
+            restart_delay = 8.0
+        self._ota_restart_delay_sec = max(2.0, min(60.0, restart_delay))
         self._ota_apply_cmd_template = str(os.environ.get("KIOSK_OTA_APPLY_CMD", "")).strip()
         self._ota_download_dir = self._resolve_ota_download_dir()
+        self._ota_state_path = self._resolve_ota_state_path()
+        self._kiosk_app_version = self._load_kiosk_app_version()
         self._ota_download_lock = threading.Lock()
         self._ota_download_inflight = False
         self._ota_last_download_signature = ""
@@ -14640,6 +14649,52 @@ class KioskMainWindow(QMainWindow):
             path = (ROOT_DIR / path).resolve()
         return path
 
+    def _resolve_ota_state_path(self) -> Path:
+        raw = str(os.environ.get("KIOSK_OTA_STATE_PATH", "")).strip()
+        if not raw:
+            return ROOT_DIR / "out" / "ota_state.json"
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (ROOT_DIR / path).resolve()
+        return path
+
+    def _load_kiosk_app_version(self) -> str:
+        env_version = str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
+        path = Path(self._ota_state_path)
+        if not path.is_file():
+            return env_version
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return env_version
+        if not isinstance(payload, dict):
+            return env_version
+        persisted = str(payload.get("current_version", "")).strip()
+        if persisted:
+            return persisted
+        return env_version
+
+    def _persist_kiosk_app_version(self, version: str, source: str = "ota") -> None:
+        ver = str(version or "").strip()
+        if not ver:
+            return
+        self._kiosk_app_version = ver
+        payload = {
+            "current_version": ver,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "source": str(source or "ota"),
+        }
+        path = Path(self._ota_state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, payload)
+        print(f"[OTA] version state updated current={ver} source={source}")
+
+    def _current_kiosk_app_version(self) -> str:
+        version = str(getattr(self, "_kiosk_app_version", "") or "").strip()
+        if version:
+            return version
+        return str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
+
     @staticmethod
     def _sanitize_ota_filename(name: str, fallback: str = "kiosk_update.bin") -> str:
         text = str(name or "").strip()
@@ -14846,12 +14901,15 @@ class KioskMainWindow(QMainWindow):
         if not path.is_file():
             print(f"[OTA] auto apply skipped: file missing ({path})")
             return
+        suffix = str(path.suffix).lower()
         cmd_tpl = str(self._ota_apply_cmd_template or "").strip()
         if cmd_tpl:
             cmd = cmd_tpl.format(artifact=str(path), version=str(target_version or ""))
             try:
                 subprocess.Popen(cmd, shell=True)
                 print(f"[OTA] auto apply command started: {cmd}")
+                if self._ota_auto_restart_enabled and suffix == ".zip":
+                    self._schedule_ota_restart(reason="custom_cmd_zip")
             except Exception as exc:
                 print(f"[OTA] auto apply command failed: {exc}")
             return
@@ -14869,12 +14927,23 @@ class KioskMainWindow(QMainWindow):
                     "-ArtifactPath",
                     str(path),
                 ]
-                if str(path.suffix).lower() == ".zip":
-                    cmd_parts.extend(["-InstallDir", str(ROOT_DIR)])
+                if suffix == ".zip":
+                    cmd_parts.extend(
+                        [
+                            "-InstallDir",
+                            str(ROOT_DIR),
+                            "-TargetVersion",
+                            str(target_version or ""),
+                            "-StateFile",
+                            str(self._ota_state_path),
+                        ]
+                    )
                 else:
                     cmd_parts.append("-Silent")
                 subprocess.Popen(cmd_parts, shell=False)
                 print(f"[OTA] auto apply default started: {' '.join(cmd_parts)}")
+                if self._ota_auto_restart_enabled and suffix == ".zip":
+                    self._schedule_ota_restart(reason="default_zip")
                 return
         except Exception as exc:
             print(f"[OTA] auto apply default failed: {exc}")
@@ -14882,8 +14951,49 @@ class KioskMainWindow(QMainWindow):
         # If no explicit command is configured and default script path is missing, skip.
         print(f"[OTA] auto apply skipped: no apply command/script (artifact={path})")
 
+    def _build_self_restart_command(self) -> list[str]:
+        if getattr(sys, "frozen", False):
+            args = list(sys.argv[1:]) if len(sys.argv) > 1 else []
+            return [str(sys.executable), *[str(x) for x in args]]
+
+        argv = [str(x) for x in list(sys.argv or [])]
+        if not argv:
+            return [str(sys.executable), str((ROOT_DIR / "app" / "main.py").resolve())]
+        return [str(sys.executable), *argv]
+
+    def _schedule_ota_restart(self, reason: str) -> None:
+        if self._ota_restart_scheduled:
+            return
+        self._ota_restart_scheduled = True
+        delay_sec = float(self._ota_restart_delay_sec)
+        cmd = self._build_self_restart_command()
+        cmd_json = json.dumps(cmd)
+        cwd_json = json.dumps(str(ROOT_DIR))
+        launcher_code = (
+            "import subprocess,time; "
+            f"time.sleep({max(1.0, delay_sec):.2f}); "
+            f"subprocess.Popen({cmd_json}, cwd={cwd_json}, close_fds=True)"
+        )
+        try:
+            subprocess.Popen([str(sys.executable), "-c", launcher_code], close_fds=True)
+            print(
+                f"[OTA] restart scheduled reason={reason} delay={delay_sec:.1f}s "
+                f"cmd={' '.join(cmd)}"
+            )
+        except Exception as exc:
+            self._ota_restart_scheduled = False
+            print(f"[OTA] restart scheduling failed: {exc}")
+            return
+
+        app_inst = QApplication.instance()
+        if app_inst is None:
+            print("[OTA] restart warning: QApplication instance missing, skip auto-quit")
+            return
+        quit_delay_ms = int(max(1200.0, min(10000.0, delay_sec * 500.0)))
+        QTimer.singleShot(quit_delay_ms, app_inst.quit)
+
     def _probe_ota_state(self) -> dict[str, Any]:
-        current_version = str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
+        current_version = self._current_kiosk_app_version()
         result: dict[str, Any] = {
             "active": False,
             "message": "",
@@ -17172,7 +17282,7 @@ class KioskMainWindow(QMainWindow):
         printer_ok = bool(ds620_ok or rx1hs_ok)
 
         payload: dict[str, Any] = {
-            "app_version": str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")),
+            "app_version": self._current_kiosk_app_version(),
             "internet_ok": bool(internet_ok),
             "camera_ok": True,
             "printer_ok": bool(printer_ok),
