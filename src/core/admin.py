@@ -31,9 +31,18 @@ class DeviceAdmin(admin.ModelAdmin):
         "last_app_version",
         "token_hint",
     )
+    list_editable = ("allow_celebrity_mode", "allow_ai_mode")
     list_filter = ("org", "branch", "is_active", "allow_celebrity_mode", "allow_ai_mode", "is_locked")
     search_fields = ("device_code", "display_name")
-    actions = ["rotate_device_token", "lock_selected_devices", "unlock_selected_devices"]
+    actions = [
+        "rotate_device_token",
+        "lock_selected_devices",
+        "unlock_selected_devices",
+        "enable_celebrity_mode",
+        "disable_celebrity_mode",
+        "enable_ai_mode",
+        "disable_ai_mode",
+    ]
 
     @admin.action(description="Rotate device token (shows new token once)")
     def rotate_device_token(self, request, queryset):
@@ -70,3 +79,23 @@ class DeviceAdmin(admin.ModelAdmin):
             device.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
             count += 1
         self.message_user(request, f"Unlocked devices: {count}", level=messages.INFO)
+
+    @admin.action(description="Enable celebrity mode for selected devices")
+    def enable_celebrity_mode(self, request, queryset):
+        count = queryset.update(allow_celebrity_mode=True)
+        self.message_user(request, f"Celebrity mode enabled: {count}", level=messages.INFO)
+
+    @admin.action(description="Disable celebrity mode for selected devices")
+    def disable_celebrity_mode(self, request, queryset):
+        count = queryset.update(allow_celebrity_mode=False)
+        self.message_user(request, f"Celebrity mode disabled: {count}", level=messages.INFO)
+
+    @admin.action(description="Enable AI mode for selected devices")
+    def enable_ai_mode(self, request, queryset):
+        count = queryset.update(allow_ai_mode=True)
+        self.message_user(request, f"AI mode enabled: {count}", level=messages.INFO)
+
+    @admin.action(description="Disable AI mode for selected devices")
+    def disable_ai_mode(self, request, queryset):
+        count = queryset.update(allow_ai_mode=False)
+        self.message_user(request, f"AI mode disabled: {count}", level=messages.INFO)

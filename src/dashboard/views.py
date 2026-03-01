@@ -584,7 +584,6 @@ def devices_view(request):
     filters = _resolve_scope_filters(user, request)
     can_edit_notifications = not _is_viewer(user)
     can_manage_locks = not _is_viewer(user)
-    can_manage_modes = not _is_viewer(user)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
 
     if request.method == "POST":
@@ -630,7 +629,7 @@ def devices_view(request):
                 messages.success(request, f"테스트 메일 발송 완료: 성공 {sent}, 실패 {failed}")
             else:
                 messages.error(request, f"테스트 메일 발송 실패: 성공 {sent}, 실패 {failed}")
-        elif action in ("lock_device", "unlock_device", "update_device_modes"):
+        elif action in ("lock_device", "unlock_device"):
             device_id_raw = (request.POST.get("device_id") or "").strip()
             if not device_id_raw.isdigit():
                 messages.error(request, "잘못된 장치 ID 입니다.")
@@ -640,40 +639,10 @@ def devices_view(request):
             if not target:
                 messages.error(request, "해당 장치를 찾을 수 없습니다.")
                 return redirect("dashboard_devices")
-            if action in ("lock_device", "unlock_device") and not can_manage_locks:
-                return HttpResponseForbidden("Viewer is read-only")
-            if action == "update_device_modes" and not can_manage_modes:
+            if not can_manage_locks:
                 return HttpResponseForbidden("Viewer is read-only")
 
-            if action == "update_device_modes":
-                before = {
-                    "allow_celebrity_mode": bool(target.allow_celebrity_mode),
-                    "allow_ai_mode": bool(target.allow_ai_mode),
-                }
-                target.allow_celebrity_mode = bool(request.POST.get("allow_celebrity_mode"))
-                target.allow_ai_mode = bool(request.POST.get("allow_ai_mode"))
-                target.save(update_fields=["allow_celebrity_mode", "allow_ai_mode", "updated_at"])
-                after = {
-                    "allow_celebrity_mode": bool(target.allow_celebrity_mode),
-                    "allow_ai_mode": bool(target.allow_ai_mode),
-                }
-                log_event(
-                    actor_user=user,
-                    actor_device=None,
-                    action="device.mode_permissions.update",
-                    target_type="Device",
-                    target_id=str(target.id),
-                    before=before,
-                    after=after,
-                    meta={"device_code": target.device_code},
-                    ip=request.META.get("REMOTE_ADDR"),
-                )
-                messages.success(
-                    request,
-                    f"장치 모드 권한 저장 완료: {target.device_code} "
-                    f"(연예인={1 if target.allow_celebrity_mode else 0}, AI={1 if target.allow_ai_mode else 0})",
-                )
-            elif action == "lock_device":
+            if action == "lock_device":
                 reason = (request.POST.get("lock_reason") or "").strip()
                 target.is_locked = True
                 target.lock_reason = reason[:255]
@@ -725,7 +694,6 @@ def devices_view(request):
             "only_locked": only_locked,
             "can_edit_notifications": can_edit_notifications,
             "can_manage_locks": can_manage_locks,
-            "can_manage_modes": can_manage_modes,
             "alert_emails_text": ", ".join(_get_scope_email_targets(user)),
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
@@ -744,13 +712,11 @@ def devices_live_view(request):
     filtered_devices = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
     rows = _build_device_rows(user, only_locked=only_locked, devices_qs=filtered_devices)
     can_manage_locks = not _is_viewer(user)
-    can_manage_modes = not _is_viewer(user)
     tbody_html = render_to_string(
         "dashboard/_devices_tbody.html",
         {
             "rows": rows,
             "can_manage_locks": can_manage_locks,
-            "can_manage_modes": can_manage_modes,
         },
         request=request,
     )
