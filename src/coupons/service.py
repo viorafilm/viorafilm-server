@@ -163,8 +163,8 @@ def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_exp
                 expected_value = 0
             if expected_value > 0 and int(coupon.amount) != expected_value:
                 raise ValueError("COUPON_AMOUNT_MISMATCH")
-        if int(amount_due) < int(coupon.amount):
-            raise ValueError("COUPON_EXCEEDS_DUE")
+        if int(amount_due) <= 0:
+            raise ValueError("INVALID_AMOUNT_DUE")
 
         coupon.used_at = timezone.now()
         coupon.used_by_device = device

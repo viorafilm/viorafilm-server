@@ -3008,6 +3008,9 @@ class AiStyleSelectScreen(ImageScreen):
 
 
 class SelectPhotoScreen(ImageScreen):
+    AI_ORIGINAL_PANEL_RECT = (120, 205, 520, 730)
+    AI_ORIGINAL_GRID_GAP = 18
+
     def __init__(self, main_window: "KioskMainWindow") -> None:
         self._base_dir = ROOT_DIR / "assets" / "ui" / "9_select_photo"
         super().__init__(main_window, "select_photo", self._base_dir / "main_2641.png")
@@ -3028,6 +3031,14 @@ class SelectPhotoScreen(ImageScreen):
         self._left_buttons: list[QToolButton] = []
         self._right_labels: list[QLabel] = []
         self._right_buttons: list[QToolButton] = []
+        self._ai_original_labels: list[QLabel] = []
+        self._ai_original_rects: list[tuple[int, int, int, int]] = []
+        self._ai_original_paths: list[Optional[Path]] = []
+        self._ai_compare_labels: list[QLabel] = []
+        self._ai_compare_rects: list[tuple[int, int, int, int]] = []
+        self.selected_source_keys: list[Optional[str]] = []
+        self._ai_candidate_by_source_key: dict[str, Path] = {}
+        self._source_key_by_ai_candidate: dict[str, str] = {}
         self.prepared_bg_path: Optional[Path] = None
         self.prepared_left_rects: list[tuple[int, int, int, int]] = []
         self.prepared_right_rects: list[tuple[int, int, int, int]] = []
@@ -3117,7 +3128,10 @@ class SelectPhotoScreen(ImageScreen):
             self._left_thumb_paths = []
             self._left_shot_index_by_key = {}
             self.selected_paths = []
+            self.selected_source_keys = []
             self.shot_to_slot = {}
+            self._ai_candidate_by_source_key = {}
+            self._source_key_by_ai_candidate = {}
             self.prepared_bg_path = None
             self.prepared_left_rects = []
             self.prepared_right_rects = []
@@ -3139,6 +3153,7 @@ class SelectPhotoScreen(ImageScreen):
         self.layout_id = layout_id
         self.captured_paths = resolved_captured
         self.print_slots = resolved_print_slots
+        self._apply_ai_candidate_mapping(prepared_dict, self.captured_paths)
 
         self._apply_background(layout_id)
         self._rebuild_slot_rects()
@@ -3146,6 +3161,7 @@ class SelectPhotoScreen(ImageScreen):
 
         if state_changed or len(self.selected_paths) != len(self.right_rects):
             self.selected_paths = [None] * len(self.right_rects)
+            self.selected_source_keys = [None] * len(self.right_rects)
             self.shot_to_slot = {}
         else:
             self._reconcile_selection()
@@ -3200,6 +3216,43 @@ class SelectPhotoScreen(ImageScreen):
             rects.append((x, y, w, h))
         rects.sort(key=lambda r: (r[1], r[0]))
         return rects
+
+    def _apply_ai_candidate_mapping(
+        self,
+        prepared_dict: dict,
+        resolved_captured: list[Path],
+    ) -> None:
+        self._ai_candidate_by_source_key = {}
+        self._source_key_by_ai_candidate = {}
+        if not self._is_ai_mode_4641():
+            return
+
+        candidate_paths = self._normalize_prepared_paths(prepared_dict.get("ai_candidate_paths"))
+        raw_map = prepared_dict.get("ai_candidate_map")
+        if isinstance(raw_map, dict):
+            for raw_source, raw_candidate in raw_map.items():
+                if not isinstance(raw_source, str) or not raw_source.strip():
+                    continue
+                if not isinstance(raw_candidate, str) or not raw_candidate.strip():
+                    continue
+                source_path = Path(raw_source)
+                candidate_path = Path(raw_candidate)
+                if not source_path.is_file() or not candidate_path.is_file():
+                    continue
+                source_key = str(source_path)
+                self._ai_candidate_by_source_key[source_key] = candidate_path
+                self._source_key_by_ai_candidate[str(candidate_path)] = source_key
+
+        if resolved_captured and candidate_paths:
+            for idx, source_path in enumerate(resolved_captured):
+                if idx >= len(candidate_paths):
+                    break
+                source_key = str(source_path)
+                if source_key in self._ai_candidate_by_source_key:
+                    continue
+                candidate_path = candidate_paths[idx]
+                self._ai_candidate_by_source_key[source_key] = candidate_path
+                self._source_key_by_ai_candidate[str(candidate_path)] = source_key
 
     def _resolve_captured_paths(self, captured_paths: list[str]) -> list[Path]:
         paths = [Path(p) for p in captured_paths if p]
@@ -3405,6 +3458,21 @@ class SelectPhotoScreen(ImageScreen):
             rects.append((x, y, hole_w, hole_h))
         return rects
 
+    def _build_ai_original_rects(self) -> list[tuple[int, int, int, int]]:
+        panel_x, panel_y, panel_w, panel_h = self.AI_ORIGINAL_PANEL_RECT
+        gap = int(self.AI_ORIGINAL_GRID_GAP)
+        cols, rows = (2, 2)
+        cell_w = max(1, int((panel_w - gap * (cols - 1)) / cols))
+        cell_h = max(1, int((panel_h - gap * (rows - 1)) / rows))
+        rects: list[tuple[int, int, int, int]] = []
+        for idx in range(4):
+            row = idx // cols
+            col = idx % cols
+            x = panel_x + col * (cell_w + gap)
+            y = panel_y + row * (cell_h + gap)
+            rects.append((x, y, cell_w, cell_h))
+        return rects
+
     def _fallback_slot_rects(self, slot_count: int, side: str) -> list[tuple[int, int, int, int]]:
         if slot_count <= 0:
             return []
@@ -3510,6 +3578,7 @@ class SelectPhotoScreen(ImageScreen):
         expected_right = self.print_slots
 
         table_right = self._right_holes_for_layout(self.layout_id)
+        ai_compare_rects: list[tuple[int, int, int, int]] = []
         right_rects: list[tuple[int, int, int, int]] = []
         if table_right:
             sorted_right = self._sort_design_rects(table_right)
@@ -3520,6 +3589,8 @@ class SelectPhotoScreen(ImageScreen):
             ):
                 # AI 4641: selected AI photos map to RT(first), LB(second).
                 right_rects = [sorted_right[1], sorted_right[2]]
+                # Comparison original photos map to LT(first), RB(second).
+                ai_compare_rects = [sorted_right[0], sorted_right[3]]
             else:
                 right_rects = sorted_right
                 if expected_right > 0:
@@ -3542,16 +3613,28 @@ class SelectPhotoScreen(ImageScreen):
         self.right_rects = right_rects
         if not self.right_rects and expected_right > 0:
             self.right_rects = self._fallback_slot_rects(expected_right, "right")
-
-        left_rects = self._build_left_grid_rects(self.layout_id, expected_left, self.right_rects)
-        if len(left_rects) < expected_left:
-            left_rects.extend(self._fallback_slot_rects(expected_left, "left")[len(left_rects) : expected_left])
-        self.left_rects = left_rects[:expected_left]
+        prepared_left = list(self.prepared_left_rects)
+        if len(prepared_left) >= expected_left:
+            left_rects = self._sort_design_rects(prepared_left[:expected_left])
+        else:
+            detected_left, _detected_right = self._detect_rect_groups(expected_left, expected_right)
+            combined_left = self._sort_design_rects(prepared_left + detected_left)
+            if combined_left:
+                left_rects = self._fit_rect_count(combined_left, expected_left, "left")
+            else:
+                left_rects = self._build_left_grid_rects(self.layout_id, expected_left, self.right_rects)
+                if len(left_rects) < expected_left:
+                    left_rects.extend(self._fallback_slot_rects(expected_left, "left")[len(left_rects) : expected_left])
+                left_rects = left_rects[:expected_left]
+        self.left_rects = left_rects
+        self._ai_compare_rects = ai_compare_rects if self._is_ai_mode_4641() else []
+        self._ai_original_rects = self._build_ai_original_rects() if self._is_ai_mode_4641() else []
 
     def _rebuild_left_sources(self) -> None:
         self._left_source_paths = []
         self._left_thumb_paths = []
         self._left_shot_index_by_key = {}
+        self._ai_original_paths = []
         for index in range(len(self.left_rects)):
             source = self.captured_paths[index] if index < len(self.captured_paths) else None
             thumb = self.prepared_thumb_paths[index] if index < len(self.prepared_thumb_paths) else None
@@ -3563,6 +3646,10 @@ class SelectPhotoScreen(ImageScreen):
             self._left_thumb_paths.append(thumb)
             if source is not None:
                 self._left_shot_index_by_key[str(source)] = index
+        if self._is_ai_mode_4641():
+            for index in range(len(self._ai_original_rects)):
+                source = self.captured_paths[index] if index < len(self.captured_paths) else None
+                self._ai_original_paths.append(source)
 
     def _clear_slot_widgets(self) -> None:
         for widget in self._left_labels:
@@ -3573,10 +3660,16 @@ class SelectPhotoScreen(ImageScreen):
             widget.deleteLater()
         for widget in self._right_buttons:
             widget.deleteLater()
+        for widget in self._ai_original_labels:
+            widget.deleteLater()
+        for widget in self._ai_compare_labels:
+            widget.deleteLater()
         self._left_labels = []
         self._left_buttons = []
         self._right_labels = []
         self._right_buttons = []
+        self._ai_original_labels = []
+        self._ai_compare_labels = []
 
     def _rebuild_slot_widgets(self) -> None:
         self._clear_slot_widgets()
@@ -3602,9 +3695,29 @@ class SelectPhotoScreen(ImageScreen):
             self._right_labels.append(label)
             self._right_buttons.append(button)
 
+        for _idx, _rect in enumerate(self._ai_original_rects):
+            label = QLabel("", self)
+            label.setAlignment(ALIGN_CENTER)
+            label.setScaledContents(False)
+            label.setAttribute(WA_TRANSPARENT, True)
+            self._ai_original_labels.append(label)
+
+        for _idx, _rect in enumerate(self._ai_compare_rects):
+            label = QLabel("", self)
+            label.setAlignment(ALIGN_CENTER)
+            label.setScaledContents(False)
+            label.setAttribute(WA_TRANSPARENT, True)
+            self._ai_compare_labels.append(label)
+
     def _layout_select_photo_ui(self) -> None:
         self._bg_label.setGeometry(self.design_rect_to_widget((0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)))
         self._bg_label.lower()
+        for index, rect in enumerate(self._ai_original_rects):
+            if index >= len(self._ai_original_labels):
+                break
+            widget_rect = self.design_rect_to_widget(rect)
+            self._ai_original_labels[index].setGeometry(widget_rect)
+            self._ai_original_labels[index].raise_()
         for index, rect in enumerate(self.left_rects):
             if index >= len(self._left_labels):
                 break
@@ -3619,6 +3732,12 @@ class SelectPhotoScreen(ImageScreen):
             self._right_labels[index].setGeometry(widget_rect)
             self._right_buttons[index].setGeometry(widget_rect)
             self._right_buttons[index].raise_()
+        for index, rect in enumerate(self._ai_compare_rects):
+            if index >= len(self._ai_compare_labels):
+                break
+            widget_rect = self.design_rect_to_widget(rect)
+            self._ai_compare_labels[index].setGeometry(widget_rect)
+            self._ai_compare_labels[index].raise_()
         hint_rect = self.design_rect_to_widget(
             (
                 self._next_hint_rect.x(),
@@ -3669,19 +3788,38 @@ class SelectPhotoScreen(ImageScreen):
 
     def _reconcile_selection(self) -> None:
         valid_keys = {str(path) for path in self._left_source_paths if path is not None}
+        if len(self.selected_source_keys) != len(self.selected_paths):
+            self.selected_source_keys = list(self.selected_source_keys[: len(self.selected_paths)])
+            while len(self.selected_source_keys) < len(self.selected_paths):
+                self.selected_source_keys.append(None)
         if len(self.selected_paths) != len(self.right_rects):
             self.selected_paths = list(self.selected_paths[: len(self.right_rects)])
+            self.selected_source_keys = list(self.selected_source_keys[: len(self.right_rects)])
             while len(self.selected_paths) < len(self.right_rects):
                 self.selected_paths.append(None)
+            while len(self.selected_source_keys) < len(self.right_rects):
+                self.selected_source_keys.append(None)
         next_map: dict[str, int] = {}
         for index, shot_path in enumerate(self.selected_paths):
             if shot_path is None:
+                if index < len(self.selected_source_keys):
+                    self.selected_source_keys[index] = None
                 continue
-            key = str(shot_path)
-            if key not in valid_keys or key in next_map:
+            source_key = self.selected_source_keys[index] if index < len(self.selected_source_keys) else None
+            if source_key is None:
+                raw_key = str(shot_path)
+                if raw_key in valid_keys:
+                    source_key = raw_key
+                else:
+                    source_key = self._source_key_by_ai_candidate.get(raw_key)
+            if source_key is None or source_key not in valid_keys or source_key in next_map:
                 self.selected_paths[index] = None
+                if index < len(self.selected_source_keys):
+                    self.selected_source_keys[index] = None
                 continue
-            next_map[key] = index
+            if index < len(self.selected_source_keys):
+                self.selected_source_keys[index] = source_key
+            next_map[source_key] = index
         self.shot_to_slot = next_map
 
     def _refresh_left_views(self) -> None:
@@ -3709,6 +3847,52 @@ class SelectPhotoScreen(ImageScreen):
                     "border: 2px solid rgba(255,255,255,170); }"
                 )
 
+    def _refresh_ai_original_views(self) -> None:
+        if not self._is_ai_mode_4641():
+            for label in self._ai_original_labels:
+                label.hide()
+            return
+        for idx, label in enumerate(self._ai_original_labels):
+            source = self._ai_original_paths[idx] if idx < len(self._ai_original_paths) else None
+            self._set_label_cover(label, source, str(idx + 1))
+            if source is None:
+                label.setStyleSheet(
+                    "QLabel { color: rgba(255,255,255,180); background-color: rgba(0,0,0,60); "
+                    "border: 2px dashed rgba(255,255,255,120); }"
+                )
+            else:
+                label.setStyleSheet(
+                    "QLabel { color: white; background-color: rgba(0,0,0,24); "
+                    "border: 2px solid rgba(0,0,0,120); }"
+                )
+            label.show()
+
+    def _refresh_ai_compare_views(self) -> None:
+        if not self._is_ai_mode_4641():
+            for label in self._ai_compare_labels:
+                label.hide()
+            return
+        for idx, label in enumerate(self._ai_compare_labels):
+            source_path: Optional[Path] = None
+            if idx < len(self.selected_source_keys):
+                source_key = self.selected_source_keys[idx]
+                if source_key:
+                    source = Path(source_key)
+                    if source.is_file():
+                        source_path = source
+            self._set_label_cover(label, source_path, str(idx + 1))
+            if source_path is None:
+                label.setStyleSheet(
+                    "QLabel { color: rgba(0,0,0,220); background-color: rgba(255,255,255,65); "
+                    "border: 2px dashed rgba(0,0,0,140); }"
+                )
+            else:
+                label.setStyleSheet(
+                    "QLabel { color: white; background-color: rgba(0,0,0,24); "
+                    "border: 3px solid rgb(255, 214, 64); }"
+                )
+            label.show()
+
     def _refresh_right_views(self) -> None:
         for idx, label in enumerate(self._right_labels):
             label.setText("")
@@ -3728,7 +3912,9 @@ class SelectPhotoScreen(ImageScreen):
             )
 
     def _refresh_views(self) -> None:
+        self._refresh_ai_original_views()
         self._refresh_left_views()
+        self._refresh_ai_compare_views()
         self._refresh_right_views()
         self._update_next_hint()
 
@@ -3772,6 +3958,8 @@ class SelectPhotoScreen(ImageScreen):
             slot = self.shot_to_slot.pop(shot_key)
             if 0 <= slot < len(self.selected_paths):
                 self.selected_paths[slot] = None
+                if slot < len(self.selected_source_keys):
+                    self.selected_source_keys[slot] = None
             print(f"[SELECT_PHOTO] unselect shot={shot_name} from slot={slot + 1}")
             self._refresh_views()
             return
@@ -3781,10 +3969,19 @@ class SelectPhotoScreen(ImageScreen):
             print("[SELECT_PHOTO] blocked: slots full")
             self.show_notice("슬롯이 가득 찼습니다", duration_ms=800)
             return
-
-        self.selected_paths[slot] = shot_path
+        selected_path = self._ai_candidate_by_source_key.get(shot_key, shot_path)
+        self.selected_paths[slot] = selected_path
+        if slot >= len(self.selected_source_keys):
+            self.selected_source_keys.extend([None] * (slot - len(self.selected_source_keys) + 1))
+        self.selected_source_keys[slot] = shot_key
         self.shot_to_slot[shot_key] = slot
-        print(f"[SELECT_PHOTO] select shot={shot_name} -> slot={slot + 1}")
+        if selected_path != shot_path:
+            print(
+                f"[SELECT_PHOTO] select shot={shot_name} -> slot={slot + 1} "
+                f"mapped_ai={selected_path.name}"
+            )
+        else:
+            print(f"[SELECT_PHOTO] select shot={shot_name} -> slot={slot + 1}")
         self._refresh_views()
 
     def _on_right_slot_clicked(self, slot: int) -> None:
@@ -3794,8 +3991,14 @@ class SelectPhotoScreen(ImageScreen):
         if shot_path is None:
             return
         shot_name = shot_path.name
+        source_key = self.selected_source_keys[slot] if slot < len(self.selected_source_keys) else None
         self.selected_paths[slot] = None
-        self.shot_to_slot.pop(str(shot_path), None)
+        if slot < len(self.selected_source_keys):
+            self.selected_source_keys[slot] = None
+        if source_key:
+            self.shot_to_slot.pop(source_key, None)
+        else:
+            self.shot_to_slot.pop(str(shot_path), None)
         print(f"[SELECT_PHOTO] cancel slot={slot + 1} shot={shot_name}")
         self._refresh_views()
 
@@ -3807,6 +4010,21 @@ class SelectPhotoScreen(ImageScreen):
 
     def get_selected_paths(self) -> list[Optional[Path]]:
         return list(self.selected_paths)
+
+    def get_selected_source_paths(self) -> list[Optional[Path]]:
+        sources: list[Optional[Path]] = []
+        for idx, selected in enumerate(self.selected_paths):
+            source_key = self.selected_source_keys[idx] if idx < len(self.selected_source_keys) else None
+            if source_key:
+                source_path = Path(source_key)
+                if source_path.is_file():
+                    sources.append(source_path)
+                    continue
+            if isinstance(selected, Path) and selected.is_file():
+                sources.append(selected)
+            else:
+                sources.append(None)
+        return sources
 
     def selected_filled_count(self) -> int:
         return sum(1 for path in self.selected_paths if path is not None)
@@ -4046,6 +4264,7 @@ class PreloadSelectPhotoWorker(QThread):
         ai_dir.mkdir(parents=True, exist_ok=True)
 
         results: list[Path] = []
+        candidate_map: dict[str, str] = {}
         total = max(1, len(self.captured_paths))
         for index, source_path in enumerate(self.captured_paths, start=1):
             if self.isInterruptionRequested():
@@ -4061,6 +4280,7 @@ class PreloadSelectPhotoWorker(QThread):
             out_path = ai_dir / f"ai_pick_{index:02d}_{style_id}.jpg"
             if out_path.is_file():
                 results.append(out_path)
+                candidate_map[str(source_path)] = str(out_path)
                 step_done = 15 + int((index / total) * 70)
                 self._emit_progress(
                     step_done,
@@ -4076,6 +4296,7 @@ class PreloadSelectPhotoWorker(QThread):
                         ai_image = _apply_local_ai_style(source, style_id)
                     ai_image.convert("RGB").save(out_path, format="JPEG", quality=92)
                     results.append(out_path)
+                    candidate_map[str(source_path)] = str(out_path)
             except Exception as exc:
                 print(f"[AI_MODE] preload candidate failed shot={source_path.name} err={exc}")
             step_done = 15 + int((index / total) * 70)
@@ -4086,6 +4307,7 @@ class PreloadSelectPhotoWorker(QThread):
             )
         if results:
             payload["ai_candidate_paths"] = [str(p) for p in results]
+            payload["ai_candidate_map"] = candidate_map
             print(
                 f"[AI_MODE] preload generated style={style_id} count={len(results)} "
                 f"remote={1 if self.ai_remote_allowed else 0}"
@@ -4099,6 +4321,7 @@ class PreloadSelectPhotoWorker(QThread):
             "right_rects": [],
             "thumb_paths": [],
             "ai_candidate_paths": [],
+            "ai_candidate_map": {},
             "video_gif_path": None,
         }
         try:
@@ -4128,15 +4351,19 @@ class PreloadSelectPhotoWorker(QThread):
             thumbs_dir.mkdir(parents=True, exist_ok=True)
             ai_candidates = self._build_ai_candidate_paths(payload)
             thumb_sources: list[Path] = list(self.captured_paths)
-            if self.ai_mode_4641 and len(ai_candidates) >= len(self.captured_paths) and self.captured_paths:
-                thumb_sources = ai_candidates[: len(self.captured_paths)]
-            elif (not self.ai_mode_4641) and len(ai_candidates) >= len(self.captured_paths) and self.captured_paths:
-                thumb_sources = ai_candidates[: len(self.captured_paths)]
+            thumb_pairs: list[tuple[Path, Optional[Path]]] = []
+            if self.ai_mode_4641 and self.captured_paths:
+                for idx, source_path in enumerate(self.captured_paths):
+                    ai_path = ai_candidates[idx] if idx < len(ai_candidates) else None
+                    thumb_pairs.append((source_path, ai_path if isinstance(ai_path, Path) and ai_path.is_file() else None))
+            else:
+                for source_path in thumb_sources:
+                    thumb_pairs.append((source_path, None))
 
             left_rects = payload.get("left_rects") or []
             if self.ai_mode_4641:
                 self._emit_progress(90, "썸네일 준비중", "Preparing thumbnails")
-            for index, source_path in enumerate(thumb_sources, start=1):
+            for index, (source_path, ai_pair_path) in enumerate(thumb_pairs, start=1):
                 if self.isInterruptionRequested():
                     return
                 if not source_path.is_file():
@@ -4153,12 +4380,13 @@ class PreloadSelectPhotoWorker(QThread):
                     target_h = max(1, int(rect[3]))
 
                 thumb_path = thumbs_dir / f"thumb_{index:02d}.jpg"
-                with Image.open(source_path) as source:
+                source_for_thumb = ai_pair_path if self.ai_mode_4641 and ai_pair_path is not None else source_path
+                with Image.open(source_for_thumb) as source:
                     covered = self._cover_image(source, target_w, target_h)
                 covered.save(thumb_path, format="JPEG", quality=88)
                 payload["thumb_paths"].append(str(thumb_path))
                 if self.ai_mode_4641:
-                    thumb_total = max(1, len(thumb_sources))
+                    thumb_total = max(1, len(thumb_pairs))
                     thumb_pct = 90 + int((index / thumb_total) * 8)
                     self._emit_progress(
                         thumb_pct,
@@ -5177,6 +5405,16 @@ class SelectDesignScreen(ImageScreen):
 
     def _resolve_ai_source_pair(self) -> tuple[Path, Path]:
         candidates: list[Path] = []
+        preferred_originals = list(getattr(self.main_window, "ai_selected_source_paths", []) or [])
+        for raw in preferred_originals:
+            path = Path(raw)
+            if not path.is_file():
+                continue
+            if path in candidates:
+                continue
+            candidates.append(path)
+            if len(candidates) >= AI_SELECT_SLOTS:
+                break
         for path in self.selected_print_paths:
             if not isinstance(path, Path) or not path.is_file():
                 continue
@@ -5234,6 +5472,13 @@ class SelectDesignScreen(ImageScreen):
 
     def _resolve_ai_original_pair(self) -> tuple[Path, Path]:
         originals: list[Path] = []
+        preferred_originals = list(getattr(self.main_window, "ai_selected_source_paths", []) or [])
+        for raw in preferred_originals:
+            path = Path(raw)
+            if path.is_file():
+                originals.append(path)
+            if len(originals) >= AI_SELECT_SLOTS:
+                break
         current_captured = list(getattr(self.main_window, "current_captured_paths", []) or [])
         for raw in current_captured:
             if not isinstance(raw, str) or not raw.strip():
@@ -11481,16 +11726,6 @@ class CameraScreen(ImageScreen):
         if not self.slot_rects:
             return
 
-        try:
-            if (
-                hasattr(self.main_window, "is_ai_mode_active")
-                and bool(self.main_window.is_ai_mode_active())
-                and str(self.layout_id or "").strip() == AI_LAYOUT_ID
-            ):
-                return
-        except Exception:
-            pass
-
         for idx, rect in enumerate(self.slot_rects):
             target = self.design_rect_to_widget(rect)
 
@@ -11753,6 +11988,7 @@ class KioskMainWindow(QMainWindow):
         self.celebrity_template_dir: Optional[str] = None
         self.celebrity_template_name: Optional[str] = None
         self.ai_style_id: Optional[str] = None
+        self.ai_selected_source_paths: list[str] = []
         self.pending_coupon_code: Optional[str] = None
         self.print_thread: Optional[QThread] = None
         self.print_worker = None
@@ -12066,6 +12302,7 @@ class KioskMainWindow(QMainWindow):
         self.celebrity_template_dir = None
         self.celebrity_template_name = None
         self.ai_style_id = None
+        self.ai_selected_source_paths = []
         self.pending_coupon_code = None
         self.current_bill_total_amount = 0
         self.design_key_buffer = ""
@@ -12203,9 +12440,10 @@ class KioskMainWindow(QMainWindow):
                     for item in ai_candidate_raw:
                         if isinstance(item, str) and item.strip() and Path(item).is_file():
                             ai_candidates.append(item)
-                if len(ai_candidates) >= AI_CAPTURE_SLOTS:
-                    captured_for_screen = ai_candidates
-                    print(f"[AI_MODE] select_photo source=ai_candidates count={len(ai_candidates)}")
+                print(
+                    f"[AI_MODE] select_photo source=original count={len(captured_for_screen)} "
+                    f"ai_candidates={len(ai_candidates)}"
+                )
             screen.set_context(
                 self.current_layout_id,
                 captured_for_screen,
@@ -12216,47 +12454,79 @@ class KioskMainWindow(QMainWindow):
     def _prepare_ai_selected_paths_from_captures(
         self,
         preferred_paths: Optional[list[Path]] = None,
+        preferred_source_paths: Optional[list[Path]] = None,
     ) -> bool:
-        captured: list[Path] = []
+        selected_ai: list[Path] = []
         if isinstance(preferred_paths, list):
             for path in preferred_paths:
                 if isinstance(path, Path) and path.is_file():
-                    captured.append(path)
-                if len(captured) >= AI_SELECT_SLOTS:
+                    selected_ai.append(path)
+                if len(selected_ai) >= AI_SELECT_SLOTS:
                     break
-        if len(captured) >= AI_SELECT_SLOTS:
-            source_a = captured[0]
-            source_b = captured[1]
-            self.selected_print_paths = [str(source_a), str(source_b)]
-            self.current_print_slots = AI_SELECT_SLOTS
-            self.print_slots = AI_SELECT_SLOTS
-            print(
-                "[AI_MODE] selected ai shots "
-                f"src_a={source_a.name} src_b={source_b.name} slots={len(self.selected_print_paths)}"
-            )
-            return True
-        if len(captured) < AI_SELECT_SLOTS:
-            raw_paths = list(self.current_captured_paths or [])
+        if len(selected_ai) < AI_SELECT_SLOTS:
+            raw_paths = list(self.selected_print_paths or [])
             for raw in raw_paths:
-                if not isinstance(raw, str) or not raw.strip():
-                    continue
                 path = Path(raw)
                 if path.is_file():
-                    captured.append(path)
-                if len(captured) >= AI_SELECT_SLOTS:
+                    selected_ai.append(path)
+                if len(selected_ai) >= AI_SELECT_SLOTS:
                     break
-        if len(captured) < AI_SELECT_SLOTS:
+        if len(selected_ai) < AI_SELECT_SLOTS:
+            print("[AI_MODE] selection blocked: not enough selected ai shots")
+            return False
+
+        selected_ai = selected_ai[:AI_SELECT_SLOTS]
+        original_sources: list[Path] = []
+        if isinstance(preferred_source_paths, list):
+            for source_path in preferred_source_paths:
+                if isinstance(source_path, Path) and source_path.is_file():
+                    original_sources.append(source_path)
+                if len(original_sources) >= AI_SELECT_SLOTS:
+                    break
+
+        current_captured = [
+            Path(raw)
+            for raw in list(self.current_captured_paths or [])
+            if isinstance(raw, str) and raw.strip() and Path(raw).is_file()
+        ]
+
+        if len(original_sources) < AI_SELECT_SLOTS and current_captured:
+            for ai_path in selected_ai:
+                match = re.search(r"ai_(?:pick|preview|final)_(\d+)_", ai_path.name.lower())
+                if not match:
+                    continue
+                try:
+                    idx = int(match.group(1)) - 1
+                except Exception:
+                    continue
+                if 0 <= idx < len(current_captured):
+                    source = current_captured[idx]
+                    if source not in original_sources:
+                        original_sources.append(source)
+                if len(original_sources) >= AI_SELECT_SLOTS:
+                    break
+
+        if len(original_sources) < AI_SELECT_SLOTS:
+            for source in current_captured:
+                if source not in original_sources:
+                    original_sources.append(source)
+                if len(original_sources) >= AI_SELECT_SLOTS:
+                    break
+
+        if len(original_sources) < AI_SELECT_SLOTS:
             print("[AI_MODE] selection blocked: not enough source shots")
             return False
 
-        source_a = captured[0]
-        source_b = captured[1]
-        self.selected_print_paths = [str(source_a), str(source_b)]
+        source_a = original_sources[0]
+        source_b = original_sources[1]
+        self.selected_print_paths = [str(selected_ai[0]), str(selected_ai[1])]
+        self.ai_selected_source_paths = [str(source_a), str(source_b)]
         self.current_print_slots = AI_SELECT_SLOTS
         self.print_slots = AI_SELECT_SLOTS
         print(
-            "[AI_MODE] selected source shots "
-            f"src_a={source_a.name} src_b={source_b.name} slots={len(self.selected_print_paths)}"
+            "[AI_MODE] selected ai shots "
+            f"ai_a={selected_ai[0].name} ai_b={selected_ai[1].name} "
+            f"src_a={source_a.name} src_b={source_b.name}"
         )
         return True
 
@@ -12275,6 +12545,7 @@ class KioskMainWindow(QMainWindow):
     def _start_select_photo_preload(self) -> None:
         self._stop_select_photo_preload_worker(wait=False)
         self.prepared_select_photo = {}
+        self.ai_selected_source_paths = []
         self._after_loading_token += 1
         token = self._after_loading_token
         self._after_loading_handled_token = -1
@@ -14746,11 +15017,14 @@ class KioskMainWindow(QMainWindow):
             return False
         if self.is_ai_mode_active():
             selected_paths = [p for p in select_photo_screen.get_selected_paths() if isinstance(p, Path) and p.is_file()]
+            selected_source_paths = [
+                p for p in select_photo_screen.get_selected_source_paths() if isinstance(p, Path) and p.is_file()
+            ]
             if len(selected_paths) < AI_SELECT_SLOTS:
                 print(f"[SELECT_PHOTO] ai_mode blocked: incomplete {len(selected_paths)}/{AI_SELECT_SLOTS}")
                 select_photo_screen.show_notice("사진 2장을 선택해주세요", duration_ms=1000)
                 return False
-            if not self._prepare_ai_selected_paths_from_captures(selected_paths):
+            if not self._prepare_ai_selected_paths_from_captures(selected_paths, selected_source_paths):
                 select_photo_screen.show_notice("촬영 원본이 부족합니다", duration_ms=1000)
                 return False
             print("[SELECT_PHOTO] ai_mode -> select_design (2 selected)")
