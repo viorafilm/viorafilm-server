@@ -2,6 +2,7 @@
 
 import ctypes
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -12,6 +13,7 @@ import queue
 import re
 import socket
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -21,7 +23,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional, Callable
 from ctypes import wintypes
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
@@ -40,6 +42,11 @@ except Exception:
     requests = None
 
 try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+try:
     import winsound  # type: ignore[attr-defined]
 except Exception:
     winsound = None  # type: ignore[assignment]
@@ -47,6 +54,14 @@ except Exception:
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+if load_dotenv is not None:
+    try:
+        env_path = ROOT_DIR / ".env"
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+    except Exception as exc:
+        print(f"[BOOT] dotenv load failed: {exc}")
 
 _LOGGING_INITIALIZED = False
 _LOG_FILE_PATH: Optional[Path] = None
@@ -6872,6 +6887,26 @@ class CouponInputScreen(ImageScreen):
             self._submitting = False
             return
 
+        # If server-coupon environment is configured, do not fall back to local-only
+        # codes when server check is unavailable. This prevents kiosk-side coupon
+        # acceptance that later fails during /sales/complete sync.
+        server_configured = False
+        try:
+            if hasattr(self.main_window, "_coupon_check_url") and hasattr(self.main_window, "_build_kiosk_api_auth_headers"):
+                _ = self.main_window._coupon_check_url()
+                _ = self.main_window._build_kiosk_api_auth_headers()
+                server_configured = True
+        except Exception:
+            server_configured = False
+        if server_configured and not test_mode:
+            print("[COUPON] server unavailable -> block local fallback")
+            self._show_notice("쿠폰 서버 통신 오류입니다. 잠시 후 다시 시도해주세요", duration_ms=1300)
+            self.coupon_buf = ""
+            self._update_coupon_display()
+            self._show_invalid_overlay()
+            self._submitting = False
+            return
+
         is_ok = False
         coupon_value = 0
         if test_mode and self._accept_any_in_test:
@@ -12296,6 +12331,15 @@ class KioskMainWindow(QMainWindow):
         self._ota_target_version = ""
         self._ota_check_inflight = False
         self._ota_last_state_signature = ""
+        self._ota_auto_download_enabled = self._env_bool(os.environ.get("KIOSK_OTA_AUTO_DOWNLOAD", "0"), False)
+        self._ota_auto_apply_enabled = self._env_bool(os.environ.get("KIOSK_OTA_AUTO_APPLY", "0"), False)
+        self._ota_apply_cmd_template = str(os.environ.get("KIOSK_OTA_APPLY_CMD", "")).strip()
+        self._ota_download_dir = self._resolve_ota_download_dir()
+        self._ota_download_lock = threading.Lock()
+        self._ota_download_inflight = False
+        self._ota_last_download_signature = ""
+        self._ota_last_downloaded_path = ""
+        self._ota_last_download_error = ""
         self._offline_guard_enabled = True
         self._offline_grace_seconds = int(DEFAULT_OFFLINE_GRACE_HOURS * 3600)
         self._reported_sale_sessions: set[str] = set()
@@ -14585,6 +14629,191 @@ class KioskMainWindow(QMainWindow):
                     f"update={1 if update_available else 0} force={1 if force_update else 0}"
                 )
         self._set_ota_force_lock(active, message, target_version, trigger="check")
+        self._ota_try_auto_download(payload)
+
+    def _resolve_ota_download_dir(self) -> Path:
+        raw = str(os.environ.get("KIOSK_OTA_DOWNLOAD_DIR", "")).strip()
+        if not raw:
+            return ROOT_DIR / "out" / "updates"
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (ROOT_DIR / path).resolve()
+        return path
+
+    @staticmethod
+    def _sanitize_ota_filename(name: str, fallback: str = "kiosk_update.bin") -> str:
+        text = str(name or "").strip()
+        if not text:
+            return fallback
+        base = Path(text).name
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")
+        if not safe:
+            return fallback
+        return safe
+
+    def _ota_try_auto_download(self, payload: dict[str, Any]) -> None:
+        if not self._ota_auto_download_enabled:
+            return
+        if requests is None:
+            return
+        if not bool(payload.get("update_available", False)):
+            return
+        download_url = str(payload.get("download_url") or "").strip()
+        if not download_url:
+            return
+        target_version = str(payload.get("target_version") or "").strip()
+        expected_sha256 = str(payload.get("sha256") or "").strip().lower()
+        signature = "|".join([target_version, expected_sha256, download_url])
+        if signature and signature == self._ota_last_download_signature:
+            return
+        with self._ota_download_lock:
+            if self._ota_download_inflight:
+                return
+            self._ota_download_inflight = True
+
+        def _runner() -> None:
+            try:
+                candidate_urls: list[str] = [download_url]
+                try:
+                    fallback_url = self._updates_download_url(target_version)
+                except Exception:
+                    fallback_url = ""
+                if fallback_url and fallback_url not in candidate_urls:
+                    candidate_urls.append(fallback_url)
+
+                last_exc: Optional[Exception] = None
+                local_path: Optional[Path] = None
+                for idx, candidate in enumerate(candidate_urls, start=1):
+                    try:
+                        if idx > 1:
+                            print(f"[OTA] retry download via fallback url={candidate}")
+                        local_path = self._ota_download_artifact(candidate, target_version, expected_sha256)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if idx >= len(candidate_urls):
+                            raise
+                        print(f"[OTA] download attempt failed url={candidate} err={exc}")
+
+                if local_path is None:
+                    raise RuntimeError(str(last_exc or "download failed"))
+                self._ota_last_download_signature = signature
+                self._ota_last_downloaded_path = str(local_path)
+                self._ota_last_download_error = ""
+                print(
+                    f"[OTA] download ready version={target_version or '-'} "
+                    f"path={local_path}"
+                )
+                if self._ota_auto_apply_enabled:
+                    self._ota_auto_apply(local_path, target_version)
+            except Exception as exc:
+                self._ota_last_download_error = str(exc)
+                print(f"[OTA] download failed: {exc}")
+            finally:
+                with self._ota_download_lock:
+                    self._ota_download_inflight = False
+
+        threading.Thread(target=_runner, daemon=True, name="ota-download").start()
+
+    def _ota_download_artifact(self, download_url: str, target_version: str, expected_sha256: str) -> Path:
+        if requests is None:
+            raise RuntimeError("requests module not installed")
+        parsed = urlsplit(download_url)
+        candidate_name = Path(parsed.path).name if parsed.path else ""
+        safe_name = self._sanitize_ota_filename(candidate_name, "kiosk_update.bin")
+        version_tag = re.sub(r"[^A-Za-z0-9._-]+", "_", str(target_version or "").strip()) or "latest"
+        final_name = f"v{version_tag}_{safe_name}"
+
+        out_dir = self._ota_download_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_path = out_dir / final_name
+        tmp_path = out_dir / f"{final_name}.part"
+
+        timeout = max(15.0, min(180.0, self._sales_request_timeout() * 3))
+        print(f"[OTA] download start url={download_url} out={final_path}")
+        req_headers: dict[str, str] = {}
+        try:
+            req_headers = dict(self._build_kiosk_api_auth_headers())
+            req_headers.pop("Content-Type", None)
+        except Exception:
+            req_headers = {}
+        response = requests.get(download_url, headers=req_headers, stream=True, timeout=timeout)
+        if int(response.status_code) >= 400:
+            body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+            raise RuntimeError(f"HTTP {response.status_code} {body_text[:180]}")
+
+        digest = hashlib.sha256()
+        bytes_written = 0
+        try:
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    digest.update(chunk)
+                    bytes_written += len(chunk)
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+        if bytes_written <= 0:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise RuntimeError("empty download")
+
+        actual_sha = digest.hexdigest().lower()
+        if expected_sha256 and actual_sha != expected_sha256:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"sha256 mismatch expected={expected_sha256} actual={actual_sha}"
+            )
+
+        if final_path.exists():
+            try:
+                final_path.unlink()
+            except Exception:
+                pass
+        tmp_path.replace(final_path)
+
+        meta = {
+            "download_url": download_url,
+            "target_version": target_version,
+            "sha256": actual_sha,
+            "size_bytes": bytes_written,
+            "downloaded_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        meta_path = final_path.with_suffix(f"{final_path.suffix}.meta.json")
+        _write_json_atomic(meta_path, meta)
+        print(f"[OTA] download ok bytes={bytes_written} sha256={actual_sha}")
+        return final_path
+
+    def _ota_auto_apply(self, artifact_path: Path, target_version: str) -> None:
+        path = Path(artifact_path)
+        if not path.is_file():
+            print(f"[OTA] auto apply skipped: file missing ({path})")
+            return
+        cmd_tpl = str(self._ota_apply_cmd_template or "").strip()
+        if cmd_tpl:
+            cmd = cmd_tpl.format(artifact=str(path), version=str(target_version or ""))
+            try:
+                subprocess.Popen(cmd, shell=True)
+                print(f"[OTA] auto apply command started: {cmd}")
+            except Exception as exc:
+                print(f"[OTA] auto apply command failed: {exc}")
+            return
+
+        # If no explicit command is configured, stay safe and do not execute arbitrary binaries.
+        print(
+            "[OTA] auto apply skipped: set KIOSK_OTA_APPLY_CMD to enable "
+            f"(artifact={path})"
+        )
 
     def _probe_ota_state(self) -> dict[str, Any]:
         current_version = str(os.environ.get("KIOSK_APP_VERSION", "kiosk-local")).strip() or "kiosk-local"
@@ -14594,6 +14823,10 @@ class KioskMainWindow(QMainWindow):
             "target_version": "",
             "update_available": False,
             "force_update": False,
+            "download_url": "",
+            "sha256": "",
+            "notes": "",
+            "min_supported_version": "",
             "current_version": current_version,
             "error": "",
         }
@@ -14648,10 +14881,16 @@ class KioskMainWindow(QMainWindow):
         target_version = str(data.get("target_version") or data.get("active_version") or "").strip()
         min_supported = str(data.get("min_supported_version") or "").strip()
         notes = str(data.get("notes") or "").strip()
+        download_url = str(data.get("download_url") or "").strip()
+        sha256 = str(data.get("sha256") or "").strip().lower()
 
         result["update_available"] = update_available
         result["force_update"] = force_update
         result["target_version"] = target_version
+        result["download_url"] = download_url
+        result["sha256"] = sha256
+        result["notes"] = notes
+        result["min_supported_version"] = min_supported
         if force_update:
             result["active"] = True
             result["message"] = self._build_ota_force_lock_message(target_version, min_supported, notes)
@@ -16406,6 +16645,20 @@ class KioskMainWindow(QMainWindow):
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/updates/check"
 
+    def _updates_download_url(self, target_version: str) -> str:
+        share_cfg = self.get_share_settings()
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
+        if not api_base:
+            api_base = _normalize_kiosk_api_base_url(DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))
+        if not api_base:
+            raise RuntimeError("share.api_base_url missing")
+        params = {"platform": "win"}
+        version = str(target_version or "").strip()
+        if version:
+            params["version"] = version
+        query = urlencode(params)
+        return f"{api_base}/kiosk/updates/download?{query}"
+
     def _coupon_check_url(self) -> str:
         share_cfg = self.get_share_settings()
         api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", ""))
@@ -16599,6 +16852,27 @@ class KioskMainWindow(QMainWindow):
         step = max(0, int(retry_count))
         return float(min(300, 5 * (2 ** min(step, 6))))
 
+    @staticmethod
+    def _is_non_retryable_sale_error(reason: str) -> bool:
+        text = str(reason or "").upper()
+        tokens = (
+            "COUPON_NOT_FOUND",
+            "COUPON_REQUIRED",
+            "INVALID_PAYMENT_METHOD",
+            "INVALID_COUPON_AMOUNT_FOR_METHOD",
+            "AMOUNT_SUM_MISMATCH",
+        )
+        return any(token in text for token in tokens)
+
+    @staticmethod
+    def _sale_queue_max_age_sec() -> float:
+        raw = str(os.environ.get("KIOSK_SALE_QUEUE_MAX_AGE_HOURS", "24")).strip()
+        try:
+            hours = float(raw)
+        except Exception:
+            hours = 24.0
+        return float(max(1.0, min(168.0, hours)) * 3600.0)
+
     def _enqueue_offline_event(self, *, kind: str, payload: dict[str, Any], dedupe_key: str) -> None:
         event_kind = str(kind or "").strip().lower()
         if event_kind not in {"sale_complete", "heartbeat"}:
@@ -16664,10 +16938,22 @@ class KioskMainWindow(QMainWindow):
             self._save_offline_queue_unlocked(keep_items)
 
         requeue_items: list[dict[str, Any]] = []
+        stale_age_sec = self._sale_queue_max_age_sec()
         for item in due_items:
             kind = str(item.get("kind", "")).strip().lower()
             payload = item.get("payload")
             if not isinstance(payload, dict):
+                continue
+            try:
+                created_ts = float(item.get("created_ts", now_ts))
+            except Exception:
+                created_ts = now_ts
+            if kind == "sale_complete" and (now_ts - created_ts) > stale_age_sec:
+                age_hours = (now_ts - created_ts) / 3600.0
+                print(
+                    f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
+                    f"reason=stale age_h={age_hours:.1f} limit_h={stale_age_sec / 3600.0:.1f}"
+                )
                 continue
             ok = False
             reason = "unknown"
@@ -16685,6 +16971,12 @@ class KioskMainWindow(QMainWindow):
                 delivered += 1
                 print(
                     f"[QUEUE] delivered kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'}"
+                )
+                continue
+            if kind == "sale_complete" and self._is_non_retryable_sale_error(reason):
+                print(
+                    f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
+                    f"reason=non-retryable({reason})"
                 )
                 continue
             if str(reason).strip().upper().startswith("DEVICE_LOCKED"):
@@ -16760,6 +17052,8 @@ class KioskMainWindow(QMainWindow):
                 if int(response.status_code) >= 400:
                     reason = f"HTTP {response.status_code} {body_text[:220]}"
                     print(f"[SALES] report fail attempt={attempt} reason={reason}")
+                    if self._is_non_retryable_sale_error(reason):
+                        return False, reason
                     if attempt < 3:
                         time.sleep(0.5 * attempt)
                     continue
