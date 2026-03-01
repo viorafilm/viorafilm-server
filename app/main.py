@@ -1851,12 +1851,33 @@ def _normalize_group_slot_sizes(
     return _sort_rects_yx(normalized)
 
 
+def _normalize_slot_sizes_keep_topleft(
+    slots: list[tuple[int, int, int, int]],
+    bounds_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    if not slots:
+        return []
+    frame_w, frame_h = bounds_size
+    target_w = max(1, _median_int([r[2] for r in slots]))
+    target_h = max(1, _median_int([r[3] for r in slots]))
+    normalized: list[tuple[int, int, int, int]] = []
+    for x, y, _w, _h in slots:
+        nx = max(0, min(int(x), max(0, frame_w - target_w)))
+        ny = max(0, min(int(y), max(0, frame_h - target_h)))
+        normalized.append((nx, ny, target_w, target_h))
+    return _sort_rects_yx(normalized)
+
+
 def _normalize_slots_for_layout(
     layout_id: str,
     slots: list[tuple[int, int, int, int]],
     bounds_size: tuple[int, int],
 ) -> list[tuple[int, int, int, int]]:
     key = str(layout_id or "").strip()
+    if key == "4641" and slots:
+        # 4641 can include one malformed transparent hole (typically LT) on some assets.
+        # Normalize slot sizes while preserving top-left anchors to keep row alignment stable.
+        return _normalize_slot_sizes_keep_topleft(list(slots), bounds_size)
     # Strip-like layouts can contain one outlier transparent hole (notably 6241),
     # so normalize all slot sizes together before copy-group splitting.
     if key in {"6241", "2641", "2461", "2462"} and slots:
@@ -5378,6 +5399,19 @@ class SelectDesignScreen(ImageScreen):
         except Exception as exc:
             print(f"[QR_PRINT] generate failed: {exc}")
             return image_rgb
+
+        layout_key = str(self.layout_id or "").strip()
+        # AI 4641 is always a single-sheet composition.
+        # Keep one QR only (left-bottom by layout anchor), do not split per-copy.
+        if layout_key == AI_LAYOUT_ID:
+            normalized_slots = _normalize_slots_for_layout(layout_key, list(occupied_slots), image_rgb.size)
+            return _overlay_qr_on_image(
+                image_rgb=image_rgb,
+                layout_id=layout_key,
+                occupied_slots=normalized_slots,
+                qr_value=page_url,
+                log_prefix="[QR_PRINT] ai_single",
+            )
 
         valid_photos = [Path(p) for p in self.selected_print_paths if Path(p).is_file()]
         photo_count = max(1, len(valid_photos))
@@ -16075,10 +16109,33 @@ class KioskMainWindow(QMainWindow):
             return result
 
         result["checked"] = True
-        result["valid"] = bool(data.get("valid", False))
-        result["coupon_amount"] = max(0, self._safe_int(data.get("coupon_amount"), 0))
-        result["remaining_due"] = max(0, self._safe_int(data.get("remaining_due"), 0))
-        result["reason"] = str(data.get("reason", "UNKNOWN")).strip() or "UNKNOWN"
+        valid = bool(data.get("valid", False))
+        reason = str(data.get("reason", "UNKNOWN")).strip() or "UNKNOWN"
+
+        raw_coupon_amount = self._safe_int(data.get("coupon_amount"), 0)
+        raw_remaining_due = self._safe_int(data.get("remaining_due"), max(0, int(amount_due)))
+
+        # Backward/variant response compatibility:
+        # - {"coupon":{"amount":...}}
+        # - missing coupon_amount but provides remaining_due
+        coupon_obj = data.get("coupon")
+        if raw_coupon_amount <= 0 and isinstance(coupon_obj, dict):
+            raw_coupon_amount = self._safe_int(coupon_obj.get("amount"), 0)
+        if raw_coupon_amount <= 0 and "remaining_due" in data:
+            raw_coupon_amount = max(0, int(amount_due) - max(0, raw_remaining_due))
+        # If server says valid but omits amount fields, assume full-apply to avoid
+        # unexpected fallback to cash/card screen in kiosk flow.
+        if valid and raw_coupon_amount <= 0 and int(amount_due) > 0:
+            raw_coupon_amount = int(amount_due)
+            raw_remaining_due = 0
+            print(
+                f"[COUPON] server valid but amount missing -> assume full amount_due={amount_due}"
+            )
+
+        result["valid"] = valid
+        result["coupon_amount"] = max(0, int(raw_coupon_amount))
+        result["remaining_due"] = max(0, int(raw_remaining_due))
+        result["reason"] = reason
         print(
             f"[COUPON] server checked code={code} valid={1 if result['valid'] else 0} "
             f"amount={result['coupon_amount']} due={payload['amount_due']} reason={result['reason']}"
