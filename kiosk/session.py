@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -140,6 +142,8 @@ class Session:
 
 
 def create_session(base_dir="sessions") -> Session:
+    cleanup_old_sessions(base_dir, retention_hours=24.0)
+
     base_path = Path(base_dir)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = uuid4().hex[:4]
@@ -163,3 +167,41 @@ def create_session(base_dir="sessions") -> Session:
     )
     session._write_meta()
     return session
+
+
+def cleanup_old_sessions(
+    base_dir: str | Path = "sessions",
+    *,
+    retention_hours: float = 24.0,
+    keep_session_ids: Optional[set[str]] = None,
+) -> dict[str, int]:
+    base_path = Path(base_dir)
+    if not base_path.exists():
+        return {"removed": 0, "failed": 0}
+    if not base_path.is_dir():
+        return {"removed": 0, "failed": 1}
+
+    keep_ids = {str(x).strip() for x in (keep_session_ids or set()) if str(x).strip()}
+    retention_sec = max(3600.0, float(retention_hours) * 3600.0)
+    cutoff_ts = time.time() - retention_sec
+
+    removed = 0
+    failed = 0
+    for child in base_path.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name in keep_ids:
+            continue
+        try:
+            mtime = float(child.stat().st_mtime)
+        except Exception:
+            failed += 1
+            continue
+        if mtime > cutoff_ts:
+            continue
+        try:
+            shutil.rmtree(child, ignore_errors=False)
+            removed += 1
+        except Exception:
+            failed += 1
+    return {"removed": removed, "failed": failed}
