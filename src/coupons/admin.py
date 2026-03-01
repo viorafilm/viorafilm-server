@@ -4,7 +4,7 @@ from django.utils import timezone
 from audit.service import log_event
 
 from .models import Coupon, CouponBatch
-from .service import issue_coupons_for_batch
+from .service import issue_coupons_for_batch, recover_coupon_usage_from_sales
 
 
 @admin.register(CouponBatch)
@@ -38,7 +38,7 @@ class CouponAdmin(admin.ModelAdmin):
     )
     list_filter = ("currency", "used_at", "expires_at", "batch__org", "batch__branch")
     search_fields = ("code", "used_session_id", "used_by_device__device_code")
-    actions = ("delete_expired", "delete_used")
+    actions = ("recover_missing_usage", "delete_expired", "delete_used")
 
     def delete_queryset(self, request, queryset):
         ids = list(queryset.values_list("id", flat=True))
@@ -109,3 +109,29 @@ class CouponAdmin(admin.ModelAdmin):
                 meta={"scope": "admin_action_used"},
                 ip=request.META.get("REMOTE_ADDR"),
             )
+
+    @admin.action(description="Recover missing coupon usage from sales")
+    def recover_missing_usage(self, request, queryset):
+        org_ids = set(
+            queryset.exclude(batch__org_id__isnull=True).values_list("batch__org_id", flat=True).distinct()
+        )
+        branch_ids = set(
+            queryset.exclude(batch__branch_id__isnull=True).values_list("batch__branch_id", flat=True).distinct()
+        )
+        org_id = next(iter(org_ids)) if len(org_ids) == 1 else None
+        branch_id = next(iter(branch_ids)) if len(branch_ids) == 1 else None
+        stats = recover_coupon_usage_from_sales(
+            actor_user=request.user,
+            org_id=org_id,
+            branch_id=branch_id,
+            ip=request.META.get("REMOTE_ADDR"),
+        )
+        self.message_user(
+            request,
+            "Recovered coupon usage "
+            f"(scanned={stats['scanned']}, linked={stats['linked_sales']}, "
+            f"marked_used={stats['coupon_marked_used']}, "
+            f"no_code={stats['skipped_no_code']}, not_found={stats['skipped_not_found']}, "
+            f"conflict={stats['skipped_conflict']})",
+            level=messages.INFO,
+        )
