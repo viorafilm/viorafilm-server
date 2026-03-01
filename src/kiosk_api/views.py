@@ -3,6 +3,7 @@ import re
 from datetime import timedelta
 
 from django.conf import settings
+from django.http import FileResponse
 from django.utils import timezone
 from django.db import transaction, IntegrityError
 from packaging.version import InvalidVersion, Version
@@ -192,7 +193,11 @@ class UpdateCheckView(APIView):
 
         update_available = current_v != active_v
         force_update = bool(active.force_below_min and current_v < min_v)
-        download_url = request.build_absolute_uri(active.artifact.url) if active.artifact else None
+        # Use authenticated API download URL so kiosk update fetch does not depend
+        # on external /media static routing.
+        download_url = request.build_absolute_uri(
+            f"/api/kiosk/updates/download?platform={platform}&version={active.version}"
+        )
 
         return Response(
             {
@@ -208,6 +213,46 @@ class UpdateCheckView(APIView):
                 "notes": active.notes,
             }
         )
+
+
+class UpdateDownloadView(APIView):
+    authentication_classes = [DeviceTokenAuthentication]
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        device: Device = getattr(request, "device", None)
+        if not device:
+            return Response({"detail": "Device auth required"}, status=401)
+
+        platform = request.query_params.get("platform", "win")
+        version = str(request.query_params.get("version", "") or "").strip()
+
+        release = None
+        if version:
+            release = (
+                AppRelease.objects.filter(platform=platform, version=version)
+                .order_by("-created_at")
+                .first()
+            )
+        if release is None:
+            release = (
+                AppRelease.objects.filter(platform=platform, is_active=True)
+                .order_by("-created_at")
+                .first()
+            )
+        if release is None or not release.artifact:
+            return Response({"detail": "release not found"}, status=404)
+
+        try:
+            fh = release.artifact.open("rb")
+        except Exception:
+            return Response({"detail": "artifact unavailable"}, status=404)
+
+        filename = str(release.artifact.name or "").split("/")[-1] or f"{platform}_{release.version}.bin"
+        response = FileResponse(fh, as_attachment=True, filename=filename)
+        response["X-Release-Version"] = release.version
+        response["X-Release-Sha256"] = str(release.sha256 or "")
+        return response
 
 
 class ShareCreateView(APIView):
