@@ -51,15 +51,51 @@ try:
 except Exception:
     winsound = None  # type: ignore[assignment]
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+def _resolve_root_dir() -> Path:
+    # Frozen(one-folder) build should use executable location as install root.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    script_path = Path(__file__).resolve()
+    candidates = [
+        script_path.parents[1],  # repo-style: <root>/app/main.py
+        script_path.parent,      # flat-style: <root>/main.py
+        Path.cwd(),
+    ]
+    for candidate in candidates:
+        if (candidate / "kiosk").is_dir():
+            return candidate
+    return script_path.parents[1]
+
+
+def _resolve_bundle_root(install_root: Path) -> Path:
+    if not getattr(sys, "frozen", False):
+        return install_root
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(str(meipass)).resolve()
+        if candidate.is_dir():
+            return candidate
+    return install_root
+
+
+INSTALL_ROOT = _resolve_root_dir()
+ROOT_DIR = _resolve_bundle_root(INSTALL_ROOT)
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+if str(INSTALL_ROOT) not in sys.path:
+    sys.path.insert(0, str(INSTALL_ROOT))
 
 if load_dotenv is not None:
     try:
-        env_path = ROOT_DIR / ".env"
-        if env_path.is_file():
-            load_dotenv(env_path, override=False)
+        env_candidates = [
+            INSTALL_ROOT / ".env",
+            ROOT_DIR / ".env",
+        ]
+        for env_path in env_candidates:
+            if env_path.is_file():
+                load_dotenv(env_path, override=False)
+                break
     except Exception as exc:
         print(f"[BOOT] dotenv load failed: {exc}")
 
@@ -67,12 +103,68 @@ _LOGGING_INITIALIZED = False
 _LOG_FILE_PATH: Optional[Path] = None
 
 
+def _safe_boot_write(message: str) -> None:
+    text = str(message or "")
+    if not text:
+        return
+    candidates = [
+        getattr(sys, "__stderr__", None),
+        getattr(sys, "__stdout__", None),
+        getattr(sys, "stderr", None),
+        getattr(sys, "stdout", None),
+    ]
+    for stream in candidates:
+        if stream is None or not hasattr(stream, "write"):
+            continue
+        try:
+            stream.write(text)
+            if hasattr(stream, "flush"):
+                stream.flush()
+            return
+        except Exception:
+            continue
+
+
+def _is_writable_stream(stream) -> bool:
+    if stream is None or not hasattr(stream, "write"):
+        return False
+    try:
+        stream.write("")
+        if hasattr(stream, "flush"):
+            stream.flush()
+        return True
+    except Exception:
+        return False
+
+
+class _NullStream:
+    def write(self, message) -> int:
+        try:
+            return len(str(message or ""))
+        except Exception:
+            return 0
+
+    def flush(self) -> None:
+        return
+
+    def isatty(self) -> bool:
+        return False
+
+
 class _LoggerStream:
-    def __init__(self, logger: logging.Logger, level: int, fallback_stream) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        level: int,
+        fallback_stream,
+        forward_to_logger: bool = True,
+    ) -> None:
         self._logger = logger
         self._level = level
         self._fallback = fallback_stream
+        self._forward_to_logger = bool(forward_to_logger)
         self._buffer = ""
+        self._in_write = False
 
     def write(self, message) -> int:
         if message is None:
@@ -80,21 +172,54 @@ class _LoggerStream:
         text = str(message)
         if not text:
             return 0
+        if self._in_write:
+            try:
+                if self._fallback is not None and hasattr(self._fallback, "write"):
+                    self._fallback.write(text)
+            except Exception:
+                pass
+            return len(text)
+        self._in_write = True
         self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            line = line.rstrip("\r")
-            if line:
-                self._logger.log(self._level, line)
+        try:
+            while "\n" in self._buffer:
+                line, self._buffer = self._buffer.split("\n", 1)
+                line = line.rstrip("\r")
+                if not line:
+                    continue
+                if self._forward_to_logger:
+                    try:
+                        self._logger.log(self._level, line)
+                    except Exception:
+                        try:
+                            if self._fallback is not None and hasattr(self._fallback, "write"):
+                                self._fallback.write(line + "\n")
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        if self._fallback is not None and hasattr(self._fallback, "write"):
+                            self._fallback.write(line + "\n")
+                    except Exception:
+                        pass
+        finally:
+            self._in_write = False
         return len(text)
 
     def flush(self) -> None:
         line = self._buffer.strip()
         self._buffer = ""
-        if line:
-            self._logger.log(self._level, line)
+        if line and not self._in_write and self._forward_to_logger:
+            self._in_write = True
+            try:
+                self._logger.log(self._level, line)
+            except Exception:
+                pass
+            finally:
+                self._in_write = False
         try:
-            self._fallback.flush()
+            if self._fallback is not None and hasattr(self._fallback, "flush"):
+                self._fallback.flush()
         except Exception:
             pass
 
@@ -127,6 +252,255 @@ def _normalize_kiosk_api_base_url(value: object) -> str:
     return f"{split.scheme}://{split.netloc}{path}".rstrip("/")
 
 
+def _remap_legacy_install_path(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace("\\", "/")
+    lowered = normalized.lower()
+    legacy_prefixes = (
+        "d:/photoharu/",
+        "d:/photoharu",
+    )
+    for prefix in legacy_prefixes:
+        if lowered.startswith(prefix):
+            suffix = normalized[len(prefix) :].lstrip("/")
+            mapped = ROOT_DIR / suffix if suffix else ROOT_DIR
+            return str(mapped)
+    return text
+
+
+def _default_runtime_data_dir() -> Path:
+    def _can_write(path: Path) -> bool:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / f".vf_probe_{os.getpid()}.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            try:
+                probe.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    candidates: list[Path] = []
+    custom = str(os.environ.get("VIORAFILM_DATA_DIR", "")).strip()
+    if custom:
+        candidates.append(Path(custom))
+
+    program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+    if program_data:
+        candidates.append(Path(program_data) / "ViorafilmKiosk")
+
+    public_root = str(os.environ.get("PUBLIC", "")).strip()
+    if public_root:
+        candidates.append(Path(public_root) / "Documents" / "ViorafilmKiosk")
+
+    local_appdata = str(os.environ.get("LOCALAPPDATA", "")).strip()
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "ViorafilmKiosk")
+
+    roaming_appdata = str(os.environ.get("APPDATA", "")).strip()
+    if roaming_appdata:
+        candidates.append(Path(roaming_appdata) / "ViorafilmKiosk")
+
+    expanded_local = os.path.expandvars(r"%LOCALAPPDATA%").strip()
+    if expanded_local and expanded_local != r"%LOCALAPPDATA%":
+        candidates.append(Path(expanded_local) / "ViorafilmKiosk")
+
+    user_profile = str(os.environ.get("USERPROFILE", "")).strip()
+    if user_profile:
+        candidates.append(Path(user_profile) / "AppData" / "Local" / "ViorafilmKiosk")
+
+    try:
+        home = Path.home()
+        if str(home).strip():
+            candidates.append(home / "AppData" / "Local" / "ViorafilmKiosk")
+            candidates.append(home / "ViorafilmKiosk")
+    except Exception:
+        pass
+
+    for temp_key in ("TEMP", "TMP"):
+        temp_dir = str(os.environ.get(temp_key, "")).strip()
+        if temp_dir:
+            candidates.append(Path(temp_dir) / "ViorafilmKiosk")
+
+    candidates.append(Path.cwd() / "ViorafilmKioskData")
+
+    seen: set[str] = set()
+    dedup: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate).strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            dedup.append(candidate)
+
+    for candidate in dedup:
+        if _can_write(candidate):
+            return candidate
+    return dedup[0] if dedup else (Path.cwd() / "ViorafilmKioskData")
+
+
+def _path_is_within(child: Path, parent: Path) -> bool:
+    try:
+        child_resolved = child.resolve(strict=False)
+        parent_resolved = parent.resolve(strict=False)
+    except Exception:
+        return False
+    try:
+        child_resolved.relative_to(parent_resolved)
+        return True
+    except Exception:
+        return False
+
+
+def _is_protected_install_path(path: Path) -> bool:
+    normalized = str(path).replace("/", "\\").lower()
+    if "\\program files\\" in normalized:
+        return True
+    if "\\windows\\" in normalized:
+        return True
+    if getattr(sys, "frozen", False):
+        install_roots: list[Path] = []
+        for root in (INSTALL_ROOT, ROOT_DIR):
+            try:
+                install_roots.append(Path(root).resolve(strict=False))
+            except Exception:
+                continue
+        for root in install_roots:
+            if _path_is_within(path, root):
+                return True
+    return False
+
+
+def _sanitize_runtime_path(path: Path, fallback: Path, label: str) -> Path:
+    candidate = Path(path)
+    if getattr(sys, "frozen", False) and _is_protected_install_path(candidate):
+        _safe_boot_write(
+            f"[BOOT] unsafe {label} path redirected: {candidate} -> {fallback}\n"
+        )
+        return fallback
+    return candidate
+
+
+def _resolve_log_dir(log_dir_name: str) -> Path:
+    raw = str(log_dir_name or "logs").strip() or "logs"
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        fallback = _default_runtime_data_dir() / "logs"
+        return _sanitize_runtime_path(candidate, fallback, "log_dir")
+    if getattr(sys, "frozen", False):
+        return _default_runtime_data_dir() / candidate
+    return ROOT_DIR / candidate
+
+
+def _resolve_runtime_config_path() -> Path:
+    env_override = str(os.environ.get("VIORAFILM_CONFIG_PATH", "")).strip()
+    if env_override:
+        path = Path(env_override)
+        if not path.is_absolute():
+            base = _default_runtime_data_dir() if getattr(sys, "frozen", False) else ROOT_DIR
+            path = (base / path).resolve()
+        fallback = _default_runtime_data_dir() / "config" / "config.json"
+        path = _sanitize_runtime_path(path, fallback, "config_path")
+        if _is_directory_writable(path.parent):
+            return path
+        _safe_boot_write(
+            f"[BOOT] config path not writable, fallback: {path} -> {fallback}\n"
+        )
+        return fallback
+
+    bundled = ROOT_DIR / "config" / "config.json"
+    if not getattr(sys, "frozen", False):
+        return bundled
+
+    runtime_path = _default_runtime_data_dir() / "config" / "config.json"
+    runtime_path = _sanitize_runtime_path(
+        runtime_path,
+        _default_runtime_data_dir() / "config" / "config.json",
+        "runtime_config_path",
+    )
+    try:
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        if (not runtime_path.is_file()) and bundled.is_file():
+            shutil.copy2(bundled, runtime_path)
+    except Exception as exc:
+        _safe_boot_write(f"[BOOT] runtime config prepare failed: {exc}\n")
+    if not _is_directory_writable(runtime_path.parent):
+        fallback = (_default_runtime_data_dir() / "config" / "config.json")
+        try:
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            if (not fallback.is_file()) and bundled.is_file():
+                shutil.copy2(bundled, fallback)
+            runtime_path = fallback
+        except Exception:
+            pass
+    return runtime_path
+
+
+def _resolve_runtime_out_dir() -> Path:
+    env_override = str(os.environ.get("VIORAFILM_OUT_DIR", "")).strip()
+    if env_override:
+        path = Path(env_override)
+        if not path.is_absolute():
+            base = _default_runtime_data_dir() if getattr(sys, "frozen", False) else ROOT_DIR
+            path = (base / path).resolve()
+        fallback = _default_runtime_data_dir() / "out"
+        path = _sanitize_runtime_path(path, fallback, "out_dir")
+        if _is_directory_writable(path):
+            return path
+        _safe_boot_write(f"[BOOT] out_dir not writable, fallback: {path} -> {fallback}\n")
+        return fallback
+    if getattr(sys, "frozen", False):
+        target = _default_runtime_data_dir() / "out"
+    else:
+        target = ROOT_DIR / "out"
+    if _is_directory_writable(target):
+        return target
+    return _default_runtime_data_dir() / "out"
+
+
+def _resolve_runtime_sessions_dir() -> Path:
+    env_override = str(
+        os.environ.get("KIOSK_SESSIONS_DIR", os.environ.get("VIORAFILM_SESSIONS_DIR", ""))
+    ).strip()
+    if env_override:
+        path = Path(env_override)
+        if not path.is_absolute():
+            base = _default_runtime_data_dir() if getattr(sys, "frozen", False) else ROOT_DIR
+            path = (base / path).resolve()
+        fallback = _default_runtime_data_dir() / "sessions"
+        path = _sanitize_runtime_path(path, fallback, "sessions_dir")
+        if _is_directory_writable(path):
+            return path
+        _safe_boot_write(
+            f"[BOOT] sessions_dir not writable, fallback: {path} -> {fallback}\n"
+        )
+        return fallback
+    if getattr(sys, "frozen", False):
+        target = _default_runtime_data_dir() / "sessions"
+    else:
+        target = ROOT_DIR / "sessions"
+    if _is_directory_writable(target):
+        return target
+    return _default_runtime_data_dir() / "sessions"
+
+
+def _is_directory_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".vf_write_probe_{os.getpid()}.tmp"
+        probe.write_text("ok", encoding="utf-8")
+        try:
+            probe.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def setup_logging() -> Path:
     global _LOGGING_INITIALIZED
     global _LOG_FILE_PATH
@@ -134,7 +508,7 @@ def setup_logging() -> Path:
     if _LOGGING_INITIALIZED and _LOG_FILE_PATH is not None:
         return _LOG_FILE_PATH
 
-    config_path = ROOT_DIR / "config" / "config.json"
+    config_path = _resolve_runtime_config_path()
     level_name = "DEBUG"
     log_dir_name = "logs"
     rotate_mb = 10
@@ -155,10 +529,46 @@ def setup_logging() -> Path:
                     rotate_mb = _to_positive_int(logging_cfg.get("rotate_mb"), 10)
                     backup_count = _to_positive_int(logging_cfg.get("backup_count"), 10)
     except Exception as exc:
-        sys.__stderr__.write(f"[BOOT] logging config parse failed: {exc}\n")
+        _safe_boot_write(f"[BOOT] logging config parse failed: {exc}\n")
 
-    log_dir = ROOT_DIR / log_dir_name
-    log_dir.mkdir(parents=True, exist_ok=True)
+    def _candidate_log_dirs(primary: Path) -> list[Path]:
+        dirs: list[Path] = [primary]
+        runtime_root = _default_runtime_data_dir()
+        dirs.append(runtime_root / "logs")
+        program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+        if program_data:
+            dirs.append(Path(program_data) / "ViorafilmKiosk" / "logs")
+        public_root = str(os.environ.get("PUBLIC", "")).strip()
+        if public_root:
+            dirs.append(Path(public_root) / "Documents" / "ViorafilmKiosk" / "logs")
+        temp_root = str(os.environ.get("TEMP", os.getcwd())).strip()
+        dirs.append(Path(temp_root) / "ViorafilmKiosk" / "logs")
+        dedup: list[Path] = []
+        seen: set[str] = set()
+        for item in dirs:
+            key = str(item).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                dedup.append(item)
+        return dedup
+
+    log_dir = _resolve_log_dir(log_dir_name)
+    selected_log_dir: Optional[Path] = None
+    for candidate_dir in _candidate_log_dirs(log_dir):
+        if _is_directory_writable(candidate_dir):
+            selected_log_dir = candidate_dir
+            break
+    if selected_log_dir is None:
+        selected_log_dir = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "logs"
+        try:
+            selected_log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    if str(selected_log_dir).lower() != str(log_dir).lower():
+        _safe_boot_write(
+            f"[BOOT] log dir fallback ({log_dir}) -> ({selected_log_dir})\n"
+        )
+    log_dir = selected_log_dir
     log_file = log_dir / f"kiosk_{time.strftime('%Y%m%d')}.log"
 
     level_value = getattr(logging, level_name, logging.DEBUG)
@@ -169,24 +579,106 @@ def setup_logging() -> Path:
     logger.setLevel(level_value)
     logger.propagate = False
 
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=rotate_mb * 1024 * 1024,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
+    try:
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=rotate_mb * 1024 * 1024,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    except Exception as file_exc:
+        fallback_done = False
+        for candidate_dir in _candidate_log_dirs(_default_runtime_data_dir() / "logs"):
+            try:
+                candidate_dir.mkdir(parents=True, exist_ok=True)
+                candidate_file = candidate_dir / f"kiosk_{time.strftime('%Y%m%d')}.log"
+                file_handler = RotatingFileHandler(
+                    candidate_file,
+                    maxBytes=rotate_mb * 1024 * 1024,
+                    backupCount=backup_count,
+                    encoding="utf-8",
+                )
+                log_file = candidate_file
+                fallback_done = True
+                _safe_boot_write(
+                    f"[BOOT] log file fallback ({file_exc}) -> ({log_file})\n"
+                )
+                break
+            except Exception:
+                continue
+        if not fallback_done:
+            raise
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    console_handler = logging.StreamHandler(sys.__stdout__)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    raw_stdout = getattr(sys, "__stdout__", None)
+    raw_stderr = getattr(sys, "__stderr__", None)
+    logging.raiseExceptions = False
 
-    sys.stdout = _LoggerStream(logger, logging.INFO, sys.__stdout__)
-    sys.stderr = _LoggerStream(logger, logging.ERROR, sys.__stderr__)
+    stdout_writable = _is_writable_stream(raw_stdout)
+    stderr_writable = _is_writable_stream(raw_stderr)
+
+    # Avoid unstable GUI stdio streams in frozen(windowed) builds.
+    if stdout_writable and not getattr(sys, "frozen", False):
+        console_handler = logging.StreamHandler(raw_stdout)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+    # Windowed executable can have None/broken stdio; avoid logging recursion.
+    stdout_fallback = raw_stdout if stdout_writable else _NullStream()
+    stderr_fallback = raw_stderr if stderr_writable else _NullStream()
+    # Always forward print() to file logger so kiosk logs are preserved
+    # even when stdout/stderr are unavailable in windowed executables.
+    stdout_to_logger = True
+    sys.stdout = _LoggerStream(
+        logger,
+        logging.INFO,
+        stdout_fallback,
+        forward_to_logger=stdout_to_logger,
+    )
+    sys.stderr = _LoggerStream(
+        logger,
+        logging.ERROR,
+        stderr_fallback,
+        forward_to_logger=False,
+    )
 
     _LOGGING_INITIALIZED = True
     _LOG_FILE_PATH = log_file
+    try:
+        runtime_data = _default_runtime_data_dir()
+        runtime_data.mkdir(parents=True, exist_ok=True)
+        marker = runtime_data / "last_log_path.txt"
+        marker.write_text(str(log_file), encoding="utf-8")
+        try:
+            install_marker = INSTALL_ROOT / "last_log_path.txt"
+            install_marker.write_text(str(log_file), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            public_root = str(os.environ.get("PUBLIC", "")).strip()
+            if public_root:
+                public_marker = Path(public_root) / "Documents" / "ViorafilmKiosk" / "last_log_path.txt"
+                public_marker.parent.mkdir(parents=True, exist_ok=True)
+                public_marker.write_text(str(log_file), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+            if program_data:
+                prog_marker = Path(program_data) / "ViorafilmKiosk" / "last_log_path.txt"
+                prog_marker.parent.mkdir(parents=True, exist_ok=True)
+                prog_marker.write_text(str(log_file), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            temp_marker = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "last_log_path.txt"
+            temp_marker.parent.mkdir(parents=True, exist_ok=True)
+            temp_marker.write_text(str(log_file), encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass
     logger.info("[BOOT] logging initialized file=%s level=%s", str(log_file), level_name)
     return log_file
 
@@ -197,6 +689,7 @@ try:
         QApplication,
         QCheckBox,
         QComboBox,
+        QDialog,
         QFormLayout,
         QGridLayout,
         QHBoxLayout,
@@ -221,6 +714,7 @@ except ImportError:
             QApplication,
             QCheckBox,
             QComboBox,
+            QDialog,
             QFormLayout,
             QGridLayout,
             QHBoxLayout,
@@ -245,6 +739,7 @@ except ImportError:
                 QApplication,
                 QCheckBox,
                 QComboBox,
+                QDialog,
                 QFormLayout,
                 QGridLayout,
                 QHBoxLayout,
@@ -372,6 +867,8 @@ LAYOUT_KEY_MAP = {
     KEY_4: "4661",
     KEY_5: "4681",
 }
+
+DEFAULT_FRAME_LAYOUT_IDS = ["2641", "6241", "4641", "4661", "4681"]
 
 CAPTURE_SLOT_OVERRIDE_BY_LAYOUT = {
     "2641": 8,
@@ -512,10 +1009,21 @@ BILL_PROFILES = {
     "KR_ONEPLUS_RS232_V1_7": {
         "label": "Korea (ONEPLUS RS-232 v1.7)",
         "baud": 9600,
+        "probe_bauds": [9600],
+        "default_port": "COM3",
         "parity": "N",
         "bytesize": 8,
         "stopbits": 1,
+        "strict_init": True,
+        "supports_reset": True,
         "supports_config_bits": True,
+        "supports_insert_control": True,
+        "recognition_status": [0x05, 0x0B],
+        "bill_to_amount": {
+            1: 1000,
+            5: 5000,
+            10: 10000,
+        },
         "default_denoms": {
             "1000": True,
             "5000": True,
@@ -523,12 +1031,107 @@ BILL_PROFILES = {
             "50000": False,
         },
     },
+    "TP70_RS232_COMPAT": {
+        "label": "Overseas (TP70 RS-232 compatible)",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200],
+        "default_port": "COM3",
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x05, 0x0B],
+        # 해외 설치 시 운영 통화에 맞게 config.json bill_acceptor.bill_to_amount 값으로 override 가능.
+        "bill_to_amount": {
+            1: 1000,
+            2: 2000,
+            5: 5000,
+            10: 10000,
+            20: 20000,
+            50: 50000,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
+    "TOP_TB_SERIES_RS232_STD": {
+        "label": "TOP TB Series (TB74/TB7x RS-232 standard)",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200, 38400, 57600],
+        "probe_parities": ["N", "E", "O"],
+        "probe_stopbits": [1, 2],
+        "probe_bytesizes": [8, 7],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x05, 0x0B],
+        "bill_to_amount": {
+            1: 1000,
+            2: 2000,
+            5: 5000,
+            10: 10000,
+            20: 20000,
+            50: 50000,
+            100: 100000,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
+    "TOP_TV74_RS232_STD": {
+        "label": "TOP TV74 Series (alias, RS-232 standard)",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200, 38400, 57600],
+        "probe_parities": ["N", "E", "O"],
+        "probe_stopbits": [1, 2],
+        "probe_bytesizes": [8, 7],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x05, 0x0B],
+        "bill_to_amount": {
+            1: 1000,
+            2: 2000,
+            5: 5000,
+            10: 10000,
+            20: 20000,
+            50: 50000,
+            100: 100000,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
 }
 
 DEFAULT_BILL_ACCEPTOR_SETTINGS = {
     "enabled": False,
     "profile": "KR_ONEPLUS_RS232_V1_7",
-    "port": "COM3",
+    "port": "AUTO",
     "baud": 9600,
     "denoms": {
         "1000": True,
@@ -536,6 +1139,7 @@ DEFAULT_BILL_ACCEPTOR_SETTINGS = {
         "10000": True,
         "50000": False,
     },
+    "bill_to_amount": {},
 }
 
 DEFAULT_PRICING_SETTINGS = {
@@ -571,7 +1175,7 @@ DEFAULT_MODE_SETTINGS = {
 }
 
 DEFAULT_CELEBRITY_SETTINGS = {
-    "templates_dir": "D:/photoharu/assets/celebrity_templates",
+    "templates_dir": str((ROOT_DIR / "assets" / "celebrity_templates").as_posix()),
     "layout_id": "2461",
 }
 
@@ -782,6 +1386,8 @@ def _health_log_key(raw_key: str) -> str:
     key = str(raw_key or "").strip()
     if key == "printer_ds620":
         return "printer_DS620"
+    if key == "printer_ds620_strip":
+        return "printer_DS620_STRIP"
     if key == "printer_rx1hs":
         return "printer_RX1HS"
     return key
@@ -1283,6 +1889,25 @@ def normalize_serial_port(port: str) -> str:
         if suffix.isdigit() and int(suffix) >= 10:
             return f"\\\\.\\{text.upper()}"
     return text
+
+
+def _is_auto_serial_port(port: object) -> bool:
+    text = str(port or "").strip().upper()
+    return text in {"AUTO", "AUTODETECT", "DETECT", "SCAN"}
+
+
+def _list_serial_port_names() -> list[str]:
+    if serial_list_ports is None:
+        return []
+    ports: list[str] = []
+    try:
+        for info in serial_list_ports.comports():
+            device = str(getattr(info, "device", "")).strip()
+            if device:
+                ports.append(device)
+    except Exception:
+        return []
+    return sorted(set(ports))
 
 
 def _packet_byte(value: Any) -> int:
@@ -4438,7 +5063,7 @@ class PreloadSelectPhotoWorker(QThread):
                 payload["right_rects"] = right_rects
             self._emit_progress(10, "레이아웃 분석중", "Analyzing layout")
 
-            cache_root = self.session_dir if self.session_dir is not None else (ROOT_DIR / "out")
+            cache_root = self.session_dir if self.session_dir is not None else _resolve_runtime_out_dir()
             thumbs_dir = cache_root / "cache" / "thumbs"
             thumbs_dir.mkdir(parents=True, exist_ok=True)
             ai_candidates = self._build_ai_candidate_paths(payload)
@@ -7031,7 +7656,14 @@ class AppPaymentCompleteSuccessScreen(StaticImageScreen):
         if self._active_token != self._entered_token:
             return
         if hasattr(self.main_window, "handle_payment_complete_success"):
-            self.main_window.handle_payment_complete_success()
+            try:
+                self.main_window.handle_payment_complete_success()
+            except Exception as exc:
+                print(f"[PAYMENT_COMPLETE] auto transition failed: {exc}")
+                try:
+                    self.main_window.goto_screen("frame_select")
+                except Exception:
+                    pass
 
 
 class BootHealthCheckWorker(QObject):
@@ -7042,14 +7674,46 @@ class BootHealthCheckWorker(QObject):
         self,
         camera_backend: str,
         camera_dll_path: str,
-        printer_ds620: str,
-        printer_rx1hs: str,
+        printer_ds620_candidates: list[str],
+        printer_rx1hs_candidates: list[str],
     ) -> None:
         super().__init__()
         self.camera_backend = str(camera_backend or "auto")
         self.camera_dll_path = str(camera_dll_path or "")
-        self.printer_ds620 = str(printer_ds620 or "")
-        self.printer_rx1hs = str(printer_rx1hs or "")
+        self.printer_ds620_candidates = [
+            str(item).strip()
+            for item in list(printer_ds620_candidates or [])
+            if str(item).strip()
+        ]
+        self.printer_rx1hs_candidates = [
+            str(item).strip()
+            for item in list(printer_rx1hs_candidates or [])
+            if str(item).strip()
+        ]
+
+    @staticmethod
+    def _check_printer_candidates(candidates: list[str]) -> tuple[bool, str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for raw in list(candidates or []):
+            name = str(raw or "").strip()
+            if not name:
+                continue
+            key = re.sub(r"[^a-z0-9]+", "", name.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(name)
+        if not unique:
+            return False, "프린터 이름 미설정"
+        first_msg = ""
+        for idx, name in enumerate(unique):
+            ok, msg = get_printer_health(name)
+            if ok:
+                return True, str(msg)
+            if idx == 0:
+                first_msg = str(msg)
+        return False, first_msg or "printer health check failed"
 
     def run(self) -> None:
         try:
@@ -7057,10 +7721,10 @@ class BootHealthCheckWorker(QObject):
             cam_ok, cam_msg = get_camera_health(self.camera_dll_path, self.camera_backend)
             results["camera"] = {"ok": bool(cam_ok), "msg": str(cam_msg)}
 
-            ds_ok, ds_msg = get_printer_health(self.printer_ds620)
+            ds_ok, ds_msg = self._check_printer_candidates(self.printer_ds620_candidates)
             results["printer_ds620"] = {"ok": bool(ds_ok), "msg": str(ds_msg)}
 
-            rx_ok, rx_msg = get_printer_health(self.printer_rx1hs)
+            rx_ok, rx_msg = self._check_printer_candidates(self.printer_rx1hs_candidates)
             results["printer_rx1hs"] = {"ok": bool(rx_ok), "msg": str(rx_msg)}
 
             net_ok, net_msg = check_internet(timeout=1.0)
@@ -7076,7 +7740,7 @@ class BootHealthCheckScreen(ImageScreen):
     NOTICE_RECT = (120, 925, 1680, 90)
     STATUS_ROWS: list[tuple[str, str]] = [
         ("camera", "Camera"),
-        ("printer_ds620", "Printer DS620"),
+        ("printer_ds620", "Printer DS620/STRIP"),
         ("printer_rx1hs", "Printer RX1HS"),
         ("internet", "Internet"),
     ]
@@ -7237,11 +7901,43 @@ class BootHealthCheckScreen(ImageScreen):
 
     def _collect_check_inputs(self) -> dict:
         printing = self.main_window.get_printing_settings() if hasattr(self.main_window, "get_printing_settings") else {}
-        ds620 = ""
-        rx1hs = ""
-        if hasattr(self.main_window, "_resolve_printer_name_for_model"):
+        ds620_candidates: list[str] = []
+        rx1hs_candidates: list[str] = []
+        if hasattr(self.main_window, "_resolve_printer_candidates_for_model"):
+            ds620_candidates.extend(
+                self.main_window._resolve_printer_candidates_for_model(
+                    model="DS620",
+                    primary_name="",
+                    settings=printing,
+                )
+            )
+            strip_candidates = self.main_window._resolve_printer_candidates_for_model(
+                model="DS620_STRIP",
+                primary_name="",
+                settings=printing,
+            )
+            for cand in strip_candidates:
+                token = re.sub(r"[^a-z0-9]+", "", str(cand).strip().lower())
+                exists = any(
+                    re.sub(r"[^a-z0-9]+", "", str(item).strip().lower()) == token
+                    for item in ds620_candidates
+                )
+                if token and not exists:
+                    ds620_candidates.append(str(cand).strip())
+            rx1hs_candidates.extend(
+                self.main_window._resolve_printer_candidates_for_model(
+                    model="RX1HS",
+                    primary_name="",
+                    settings=printing,
+                )
+            )
+        elif hasattr(self.main_window, "_resolve_printer_name_for_model"):
             ds620 = self.main_window._resolve_printer_name_for_model("DS620", printing)
             rx1hs = self.main_window._resolve_printer_name_for_model("RX1HS", printing)
+            if ds620:
+                ds620_candidates.append(ds620)
+            if rx1hs:
+                rx1hs_candidates.append(rx1hs)
         return {
             "camera_backend": self.main_window._resolve_requested_camera_backend()
             if hasattr(self.main_window, "_resolve_requested_camera_backend")
@@ -7249,8 +7945,8 @@ class BootHealthCheckScreen(ImageScreen):
             "camera_dll_path": self.main_window._resolve_canon_edsdk_dll_path()
             if hasattr(self.main_window, "_resolve_canon_edsdk_dll_path")
             else "",
-            "printer_ds620": ds620,
-            "printer_rx1hs": rx1hs,
+            "printer_ds620_candidates": ds620_candidates,
+            "printer_rx1hs_candidates": rx1hs_candidates,
         }
 
     def start_check(self) -> None:
@@ -7272,8 +7968,8 @@ class BootHealthCheckScreen(ImageScreen):
         worker = BootHealthCheckWorker(
             camera_backend=str(payload.get("camera_backend", "auto")),
             camera_dll_path=str(payload.get("camera_dll_path", "")),
-            printer_ds620=str(payload.get("printer_ds620", "")),
-            printer_rx1hs=str(payload.get("printer_rx1hs", "")),
+            printer_ds620_candidates=list(payload.get("printer_ds620_candidates", [])),
+            printer_rx1hs_candidates=list(payload.get("printer_rx1hs_candidates", [])),
         )
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -8198,9 +8894,8 @@ class BillAcceptorWorker(QThread):
     bill_accepted = Signal(int, int, int)
     failed = Signal(str)
 
-    STATUS_RECOGNITION_END = 0x05
-    STATUS_STACK_END = 0x0B
-    BILL_TO_AMOUNT = {
+    DEFAULT_ACCEPT_STATUS_CODES = {0x05, 0x0B}
+    DEFAULT_BILL_TO_AMOUNT = {
         1: 1000,
         5: 5000,
         10: 10000,
@@ -8213,6 +8908,8 @@ class BillAcceptorWorker(QThread):
         self._serial_conn = None
         self._insert_enabled = False
         self._last_status: Optional[int] = None
+        self._accept_status_codes = self._resolve_accept_status_codes()
+        self._bill_to_amount_map = self._resolve_bill_to_amount_map()
 
     def request_stop(self) -> None:
         self._running = False
@@ -8226,6 +8923,42 @@ class BillAcceptorWorker(QThread):
         if profile_key not in BILL_PROFILES:
             profile_key = str(DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])
         return dict(BILL_PROFILES.get(profile_key, {}))
+
+    def _resolve_accept_status_codes(self) -> set[int]:
+        profile_data = self._profile_data()
+        result = set(self.DEFAULT_ACCEPT_STATUS_CODES)
+        raw_codes = profile_data.get("recognition_status")
+        if isinstance(raw_codes, (list, tuple, set)):
+            parsed: set[int] = set()
+            for code in raw_codes:
+                try:
+                    value = int(code) & 0xFF
+                except Exception:
+                    continue
+                parsed.add(value)
+            if parsed:
+                result = parsed
+        return result
+
+    def _resolve_bill_to_amount_map(self) -> dict[int, int]:
+        result = dict(self.DEFAULT_BILL_TO_AMOUNT)
+        profile_data = self._profile_data()
+
+        def _apply(raw_map: Any) -> None:
+            if not isinstance(raw_map, dict):
+                return
+            for raw_key, raw_amount in raw_map.items():
+                try:
+                    bill_code = int(raw_key) & 0xFF
+                    amount = int(raw_amount)
+                except Exception:
+                    continue
+                if amount > 0:
+                    result[bill_code] = amount
+
+        _apply(profile_data.get("bill_to_amount"))
+        _apply(self.settings.get("bill_to_amount"))
+        return result
 
     def _resolve_config_byte(self) -> int:
         profile_data = self._profile_data()
@@ -8306,6 +9039,185 @@ class BillAcceptorWorker(QThread):
             raise RuntimeError(f"reset unexpected response={packet}")
         time.sleep(2.5)
 
+    def _resolve_probe_bauds(self, profile_data: dict, fallback_baud: int) -> list[int]:
+        values: list[int] = []
+        for candidate in [fallback_baud, profile_data.get("baud"), self.settings.get("baud")]:
+            try:
+                parsed = int(candidate)
+            except Exception:
+                continue
+            if parsed > 0:
+                values.append(parsed)
+        raw_probe = profile_data.get("probe_bauds")
+        if isinstance(raw_probe, (list, tuple, set)):
+            for item in raw_probe:
+                try:
+                    parsed = int(item)
+                except Exception:
+                    continue
+                if parsed > 0:
+                    values.append(parsed)
+        dedup: list[int] = []
+        for value in values:
+            if value not in dedup:
+                dedup.append(value)
+        return dedup or [9600]
+
+    def _resolve_probe_parities(self, profile_data: dict, fallback_parity: str) -> list[str]:
+        values: list[str] = []
+        for candidate in [fallback_parity, profile_data.get("parity"), self.settings.get("parity")]:
+            text = str(candidate or "").strip().upper()
+            if text in {"N", "E", "O"}:
+                values.append(text)
+        raw_probe = profile_data.get("probe_parities")
+        if isinstance(raw_probe, (list, tuple, set)):
+            for item in raw_probe:
+                text = str(item or "").strip().upper()
+                if text in {"N", "E", "O"}:
+                    values.append(text)
+        dedup: list[str] = []
+        for value in values:
+            if value not in dedup:
+                dedup.append(value)
+        return dedup or ["N"]
+
+    def _resolve_probe_stopbits(self, profile_data: dict, fallback_stopbits: int) -> list[int]:
+        values: list[int] = []
+        for candidate in [fallback_stopbits, profile_data.get("stopbits"), self.settings.get("stopbits")]:
+            try:
+                parsed = int(candidate)
+            except Exception:
+                continue
+            if parsed in {1, 2}:
+                values.append(parsed)
+        raw_probe = profile_data.get("probe_stopbits")
+        if isinstance(raw_probe, (list, tuple, set)):
+            for item in raw_probe:
+                try:
+                    parsed = int(item)
+                except Exception:
+                    continue
+                if parsed in {1, 2}:
+                    values.append(parsed)
+        dedup: list[int] = []
+        for value in values:
+            if value not in dedup:
+                dedup.append(value)
+        return dedup or [1]
+
+    def _resolve_probe_bytesizes(self, profile_data: dict, fallback_bytesize: int) -> list[int]:
+        values: list[int] = []
+        for candidate in [fallback_bytesize, profile_data.get("bytesize"), self.settings.get("bytesize")]:
+            try:
+                parsed = int(candidate)
+            except Exception:
+                continue
+            if parsed in {7, 8}:
+                values.append(parsed)
+        raw_probe = profile_data.get("probe_bytesizes")
+        if isinstance(raw_probe, (list, tuple, set)):
+            for item in raw_probe:
+                try:
+                    parsed = int(item)
+                except Exception:
+                    continue
+                if parsed in {7, 8}:
+                    values.append(parsed)
+        dedup: list[int] = []
+        for value in values:
+            if value not in dedup:
+                dedup.append(value)
+        return dedup or [8]
+
+    def _open_serial_connection(
+        self,
+        port: str,
+        baud: int,
+        parity: Any,
+        bytesize: int,
+        stopbits: Any,
+    ):
+        return serial.Serial(
+            port=normalize_serial_port(port),
+            baudrate=int(baud),
+            bytesize=int(bytesize),
+            parity=parity,
+            stopbits=stopbits,
+            timeout=0.05,
+            write_timeout=0.5,
+        )
+
+    def _auto_open_serial_connection(
+        self,
+        profile_data: dict,
+        parity_text: str,
+        bytesize: int,
+        stopbits_value: int,
+        fallback_baud: int,
+    ) -> tuple[Any, str, int, str, int, int]:
+        ports = _list_serial_port_names()
+        if not ports:
+            raise RuntimeError("bill auto-detect failed: no serial ports")
+        bauds = self._resolve_probe_bauds(profile_data, fallback_baud)
+        parity_candidates = self._resolve_probe_parities(profile_data, parity_text)
+        stopbits_candidates = self._resolve_probe_stopbits(profile_data, stopbits_value)
+        bytesize_candidates = self._resolve_probe_bytesizes(profile_data, bytesize)
+        parity_map = {
+            "N": serial.PARITY_NONE,
+            "E": serial.PARITY_EVEN,
+            "O": serial.PARITY_ODD,
+        }
+        last_error = "probe timeout"
+        for raw_port in ports:
+            for baud in bauds:
+                for byte_candidate in bytesize_candidates:
+                    for parity_candidate in parity_candidates:
+                        for stop_candidate in stopbits_candidates:
+                            conn = None
+                            try:
+                                stopbits = serial.STOPBITS_TWO if int(stop_candidate) == 2 else serial.STOPBITS_ONE
+                                conn = self._open_serial_connection(
+                                    raw_port,
+                                    baud,
+                                    parity_map.get(parity_candidate, serial.PARITY_NONE),
+                                    int(byte_candidate),
+                                    stopbits,
+                                )
+                                self._log(
+                                    f"[BILL] probe port={raw_port} baud={baud} "
+                                    f"mode={parity_candidate}{int(byte_candidate)}{int(stop_candidate)}"
+                                )
+                                send_cmd_with_retry(
+                                    conn,
+                                    ("G", "A", "?"),
+                                    timeout=0.35,
+                                    retries=1,
+                                )
+                                self._log(
+                                    f"[BILL] auto-detect matched port={raw_port} baud={baud} "
+                                    f"mode={parity_candidate}{int(byte_candidate)}{int(stop_candidate)}"
+                                )
+                                return (
+                                    conn,
+                                    normalize_serial_port(raw_port),
+                                    int(baud),
+                                    str(parity_candidate),
+                                    int(stop_candidate),
+                                    int(byte_candidate),
+                                )
+                            except Exception as exc:
+                                last_error = str(exc)
+                                if conn is not None:
+                                    try:
+                                        conn.close()
+                                    except Exception:
+                                        pass
+                                continue
+        raise RuntimeError(
+            "bill auto-detect failed: "
+            f"{last_error} (check device mode: RS-232 vs MDB/ccTalk)"
+        )
+
     def run(self) -> None:
         if serial is None:
             self.failed.emit("pyserial not installed")
@@ -8315,7 +9227,19 @@ class BillAcceptorWorker(QThread):
             return
 
         profile_data = self._profile_data()
-        port = normalize_serial_port(str(self.settings.get("port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])).strip())
+        profile_key = str(self.settings.get("profile", DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])).strip()
+        strict_init = bool(profile_data.get("strict_init", True))
+        supports_reset = bool(profile_data.get("supports_reset", True))
+        supports_config_bits = bool(profile_data.get("supports_config_bits", True))
+        supports_insert_control = bool(profile_data.get("supports_insert_control", True))
+        requested_port = str(
+            self.settings.get(
+                "port",
+                profile_data.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"]),
+            )
+        ).strip()
+        if not requested_port:
+            requested_port = str(profile_data.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])).strip()
         baud = int(self.settings.get("baud", profile_data.get("baud", DEFAULT_BILL_ACCEPTOR_SETTINGS["baud"])))
         parity_text = str(profile_data.get("parity", "N")).strip().upper()
         bytesize = int(profile_data.get("bytesize", 8))
@@ -8329,34 +9253,93 @@ class BillAcceptorWorker(QThread):
         stopbits = serial.STOPBITS_TWO if stopbits_value == 2 else serial.STOPBITS_ONE
 
         try:
-            self._serial_conn = serial.Serial(
-                port=port,
-                baudrate=int(baud),
-                bytesize=int(bytesize),
-                parity=parity,
-                stopbits=stopbits,
-                timeout=0.05,
-                write_timeout=0.5,
+            port = normalize_serial_port(requested_port)
+            actual_baud = int(baud)
+            if _is_auto_serial_port(requested_port):
+                (
+                    self._serial_conn,
+                    port,
+                    actual_baud,
+                    parity_text,
+                    stopbits_value,
+                    bytesize,
+                ) = self._auto_open_serial_connection(
+                    profile_data=profile_data,
+                    parity_text=parity_text,
+                    bytesize=bytesize,
+                    stopbits_value=stopbits_value,
+                    fallback_baud=int(baud),
+                )
+            else:
+                try:
+                    self._serial_conn = self._open_serial_connection(
+                        port=port,
+                        baud=int(baud),
+                        parity=parity,
+                        bytesize=bytesize,
+                        stopbits=stopbits,
+                    )
+                except SerialException:
+                    if bool(profile_data.get("auto_fallback", False)):
+                        self._log(f"[BILL] manual open failed on {requested_port}, fallback to AUTO probe")
+                        (
+                            self._serial_conn,
+                            port,
+                            actual_baud,
+                            parity_text,
+                            stopbits_value,
+                            bytesize,
+                        ) = self._auto_open_serial_connection(
+                            profile_data=profile_data,
+                            parity_text=parity_text,
+                            bytesize=bytesize,
+                            stopbits_value=stopbits_value,
+                            fallback_baud=int(baud),
+                        )
+                    else:
+                        raise
+            self._log(
+                f"[BILL] open port={port} {int(actual_baud)}{parity_text}{int(bytesize)}{stopbits_value} "
+                f"profile={profile_key} strict_init={1 if strict_init else 0}"
             )
-            self._log(f"[BILL] open port={port} {int(baud)}{parity_text}{int(bytesize)}{stopbits_value}")
 
-            self.cmd_reset()
-            cfg = self._resolve_config_byte()
-            self.cmd_set_config(cfg)
-            self._log(f"[BILL] set_config=0x{cfg:02X} ok")
+            if supports_reset:
+                try:
+                    self.cmd_reset()
+                except Exception as exc:
+                    if strict_init:
+                        raise
+                    self._log(f"[BILL] reset skipped: {exc}")
 
-            self.cmd_insert_enable()
-            self._insert_enabled = True
-            self._log("[BILL] insert_enable ok")
+            if supports_config_bits:
+                try:
+                    cfg = self._resolve_config_byte()
+                    self.cmd_set_config(cfg)
+                    self._log(f"[BILL] set_config=0x{cfg:02X} ok")
+                except Exception as exc:
+                    if strict_init:
+                        raise
+                    self._log(f"[BILL] set_config skipped: {exc}")
+
+            if supports_insert_control:
+                try:
+                    self.cmd_insert_enable()
+                    self._insert_enabled = True
+                    self._log("[BILL] insert_enable ok")
+                except Exception as exc:
+                    if strict_init:
+                        raise
+                    self._insert_enabled = False
+                    self._log(f"[BILL] insert_enable skipped: {exc}")
 
             while self._running and not self.isInterruptionRequested():
                 try:
                     status = self.cmd_get_status()
                     if self._last_status != status:
                         self._last_status = status
-                    if status in {self.STATUS_RECOGNITION_END, self.STATUS_STACK_END}:
+                    if status in self._accept_status_codes:
                         billdata = self.cmd_get_billdata()
-                        amount = self.BILL_TO_AMOUNT.get(int(billdata))
+                        amount = self._bill_to_amount_map.get(int(billdata))
                         if amount is not None:
                             self.bill_accepted.emit(int(amount), int(status), int(billdata))
                             self._log(
@@ -8366,9 +9349,16 @@ class BillAcceptorWorker(QThread):
                             self._log(
                                 f"[BILL] status=0x{status:02X} -> billdata={int(billdata)} amount=UNKNOWN"
                             )
-                        self.cmd_insert_enable()
-                        self._insert_enabled = True
-                        self._log("[BILL] insert_enable ok")
+                        if supports_insert_control:
+                            try:
+                                self.cmd_insert_enable()
+                                self._insert_enabled = True
+                                self._log("[BILL] insert_enable ok")
+                            except Exception as exc:
+                                if strict_init:
+                                    raise
+                                self._insert_enabled = False
+                                self._log(f"[BILL] insert_enable retry failed: {exc}")
                     elif status >= 0x80:
                         error_code = self.cmd_get_error()
                         self._log(f"[BILL] status=0x{status:02X} error=0x{error_code:02X}")
@@ -8541,15 +9531,25 @@ class AdminScreen(QWidget):
         self.pricing_layout_grid.setVerticalSpacing(6)
         self.print_printer_ds620_combo = QComboBox(self)
         self.print_printer_rx1hs_combo = QComboBox(self)
+        self.print_printer_ds620_combo.setEditable(True)
+        self.print_printer_rx1hs_combo.setEditable(True)
         self.print_form_ds620_4x6_combo = QComboBox(self)
         self.print_form_ds620_2x6_combo = QComboBox(self)
         self.print_form_rx1hs_4x6_combo = QComboBox(self)
         self.print_form_rx1hs_2x6_combo = QComboBox(self)
+        self.print_resolved_ds620_input = QLineEdit(self)
+        self.print_resolved_ds620_input.setReadOnly(True)
+        self.print_resolved_rx1hs_input = QLineEdit(self)
+        self.print_resolved_rx1hs_input.setReadOnly(True)
         self.print_printer_refresh_btn = QPushButton("프린터 목록 새로고침", self)
         self.print_test_ds620_btn = QPushButton("Test Print (DS620)", self)
         self.print_test_rx1hs_btn = QPushButton("Test Print (RX1HS)", self)
         self.print_health_ds620_btn = QPushButton("프린터 상태 (DS620)", self)
         self.print_health_rx1hs_btn = QPushButton("프린터 상태 (RX1HS)", self)
+        self.log_path_input = QLineEdit(self)
+        self.log_path_input.setReadOnly(True)
+        self.log_refresh_btn = QPushButton("로그 경로 새로고침", self)
+        self.log_open_btn = QPushButton("로그 폴더 열기", self)
         self.print_printer_ds620_combo.currentTextChanged.connect(
             lambda _text: self._refresh_print_form_controls()
         )
@@ -8565,6 +9565,8 @@ class AdminScreen(QWidget):
         self.print_health_rx1hs_btn.clicked.connect(
             lambda: self._on_check_printer_health_clicked("RX1HS")
         )
+        self.log_refresh_btn.clicked.connect(self._on_refresh_log_path_clicked)
+        self.log_open_btn.clicked.connect(self._on_open_log_folder_clicked)
         self.bill_denom_cbs: dict[str, QCheckBox] = {}
         for denom in ("1000", "5000", "10000", "50000"):
             self.bill_denom_cbs[denom] = QCheckBox(denom, self)
@@ -8600,9 +9602,11 @@ class AdminScreen(QWidget):
         form.addRow("printer_DS620", self.print_printer_ds620_combo)
         form.addRow("DS620 form_4x6", self.print_form_ds620_4x6_combo)
         form.addRow("DS620 form_2x6", self.print_form_ds620_2x6_combo)
+        form.addRow("DS620 resolved", self.print_resolved_ds620_input)
         form.addRow("printer_RX1HS", self.print_printer_rx1hs_combo)
         form.addRow("RX1HS form_4x6", self.print_form_rx1hs_4x6_combo)
         form.addRow("RX1HS form_2x6", self.print_form_rx1hs_2x6_combo)
+        form.addRow("RX1HS resolved", self.print_resolved_rx1hs_input)
         form.addRow(self._make_section_label("결제/모드 / Payment & Mode"))
         form.addRow("pay_cash", self.payment_cash_cb)
         form.addRow("pay_card", self.payment_card_cb)
@@ -8636,6 +9640,16 @@ class AdminScreen(QWidget):
         print_button_layout.addWidget(self.print_health_ds620_btn)
         print_button_layout.addWidget(self.print_health_rx1hs_btn)
         form.addRow("printing_tools", print_button_row)
+
+        form.addRow(self._make_section_label("로그 / Logs"))
+        form.addRow("runtime_log_file", self.log_path_input)
+        log_button_row = QWidget(self)
+        log_button_layout = QHBoxLayout(log_button_row)
+        log_button_layout.setContentsMargins(0, 0, 0, 0)
+        log_button_layout.setSpacing(8)
+        log_button_layout.addWidget(self.log_refresh_btn)
+        log_button_layout.addWidget(self.log_open_btn)
+        form.addRow("log_tools", log_button_row)
         self._scroll_layout.addLayout(form)
 
         bill_test_row = QHBoxLayout()
@@ -8930,6 +9944,34 @@ class AdminScreen(QWidget):
         self._set_combo_items(self.print_form_ds620_2x6_combo, ds620_forms, selected_ds620_2x6)
         self._set_combo_items(self.print_form_rx1hs_4x6_combo, rx1hs_forms, selected_rx1hs_4x6)
         self._set_combo_items(self.print_form_rx1hs_2x6_combo, rx1hs_forms, selected_rx1hs_2x6)
+        self._refresh_resolved_printer_labels()
+
+    def _refresh_resolved_printer_labels(self) -> None:
+        ds620_resolved = ""
+        rx1hs_resolved = ""
+        if hasattr(self.main_window, "resolve_admin_printer_name"):
+            try:
+                current = self._collect_printing_settings()
+                ds620_resolved = str(
+                    self.main_window.resolve_admin_printer_name("DS620", current)
+                ).strip()
+                rx1hs_resolved = str(
+                    self.main_window.resolve_admin_printer_name("RX1HS", current)
+                ).strip()
+            except Exception:
+                ds620_resolved = ""
+                rx1hs_resolved = ""
+        self.print_resolved_ds620_input.setText(ds620_resolved)
+        self.print_resolved_rx1hs_input.setText(rx1hs_resolved)
+
+    def _refresh_log_path(self) -> None:
+        path = ""
+        if hasattr(self.main_window, "get_runtime_log_file_path"):
+            try:
+                path = str(self.main_window.get_runtime_log_file_path() or "").strip()
+            except Exception:
+                path = ""
+        self.log_path_input.setText(path)
 
     def _load_printing_controls(self, printing: Optional[dict], printer_names: Optional[list[str]]) -> None:
         settings = printing if isinstance(printing, dict) else {}
@@ -8961,6 +10003,7 @@ class AdminScreen(QWidget):
             rx1hs_form_4x6=rx1hs_form_4x6,
             rx1hs_form_2x6=rx1hs_form_2x6,
         )
+        self._refresh_log_path()
 
     def _collect_printing_settings(self) -> dict:
         current = (
@@ -9006,8 +10049,23 @@ class AdminScreen(QWidget):
 
         layout_prices = settings.get("layouts") if isinstance(settings.get("layouts"), dict) else {}
         detected = [str(v).strip() for v in (layout_ids or []) if str(v).strip()]
+        for default_layout in DEFAULT_FRAME_LAYOUT_IDS:
+            layout_key = str(default_layout or "").strip()
+            if layout_key and layout_key not in detected:
+                detected.append(layout_key)
         if not detected and isinstance(layout_prices, dict):
             detected = sorted(str(k).strip() for k in layout_prices.keys() if str(k).strip())
+        if isinstance(layout_prices, dict):
+            for key in layout_prices.keys():
+                layout_key = str(key).strip()
+                if layout_key and layout_key not in detected:
+                    detected.append(layout_key)
+        celeb_layout = str(DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461")).strip() or "2461"
+        if celeb_layout not in detected:
+            detected.append(celeb_layout)
+        ai_layout = str(AI_LAYOUT_ID).strip()
+        if ai_layout and ai_layout not in detected:
+            detected.append(ai_layout)
         self.pricing_layout_ids = sorted(set(detected))
 
         while self.pricing_layout_grid.count():
@@ -9090,6 +10148,10 @@ class AdminScreen(QWidget):
         if hasattr(self.main_window, "list_serial_ports"):
             ports = list(self.main_window.list_serial_ports())
         selected = str(selected_port or "").strip()
+        if _is_auto_serial_port(selected):
+            selected = "AUTO"
+        if "AUTO" not in ports:
+            ports.insert(0, "AUTO")
         if selected and selected not in ports:
             ports.append(selected)
         if not ports:
@@ -9113,6 +10175,15 @@ class AdminScreen(QWidget):
             default_denoms = DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"]
         for denom, cb in self.bill_denom_cbs.items():
             cb.setChecked(bool(default_denoms.get(denom, False)))
+        default_port = str(profile.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])).strip()
+        if default_port:
+            normalized = "AUTO" if _is_auto_serial_port(default_port) else default_port
+            index = self.bill_port_combo.findText(normalized)
+            if index < 0:
+                self.bill_port_combo.addItem(normalized)
+                index = self.bill_port_combo.findText(normalized)
+            if index >= 0:
+                self.bill_port_combo.setCurrentIndex(index)
 
     def _on_bill_profile_changed(self, _index: int) -> None:
         if self._loading_bill_controls:
@@ -9129,6 +10200,8 @@ class AdminScreen(QWidget):
         if profile not in BILL_PROFILES:
             profile = str(DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])
         port = str(incoming.get("port", defaults["port"])).strip()
+        if _is_auto_serial_port(port):
+            port = "AUTO"
         denoms = incoming.get("denoms")
         denoms_map = dict(denoms_default)
         if isinstance(denoms, dict):
@@ -9157,12 +10230,32 @@ class AdminScreen(QWidget):
         denoms = {
             denom: cb.isChecked() for denom, cb in self.bill_denom_cbs.items()
         }
+        bill_to_amount: dict[int, int] = {}
+        try:
+            current = self.main_window.get_bill_acceptor_settings()
+            raw_map = current.get("bill_to_amount") if isinstance(current, dict) else None
+            if isinstance(raw_map, dict):
+                for raw_key, raw_amount in raw_map.items():
+                    try:
+                        code = int(raw_key) & 0xFF
+                        amount = int(raw_amount)
+                    except Exception:
+                        continue
+                    if amount > 0:
+                        bill_to_amount[code] = amount
+        except Exception:
+            pass
         return {
             "enabled": self.bill_enabled_cb.isChecked(),
             "profile": profile,
-            "port": self.bill_port_combo.currentText().strip() or str(DEFAULT_BILL_ACCEPTOR_SETTINGS["port"]),
+            "port": (
+                "AUTO"
+                if _is_auto_serial_port(self.bill_port_combo.currentText().strip())
+                else self.bill_port_combo.currentText().strip() or str(DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])
+            ),
             "baud": baud,
             "denoms": denoms,
+            "bill_to_amount": bill_to_amount,
         }
 
     def _on_save_clicked(self) -> None:
@@ -9268,24 +10361,63 @@ class AdminScreen(QWidget):
         )
         self._show_status("프린터 목록 갱신", duration_ms=900)
 
+    def _on_refresh_log_path_clicked(self) -> None:
+        self._refresh_log_path()
+        self._show_status("로그 경로 갱신", duration_ms=900)
+
+    def _on_open_log_folder_clicked(self) -> None:
+        ok = False
+        if hasattr(self.main_window, "open_runtime_log_folder"):
+            try:
+                ok = bool(self.main_window.open_runtime_log_folder())
+            except Exception:
+                ok = False
+        self._refresh_log_path()
+        if ok:
+            self._show_status("로그 폴더 열기 완료", duration_ms=1200)
+        else:
+            self._show_status("로그 폴더 열기 실패", duration_ms=1600)
+
     def _on_test_print_clicked(self, model: str) -> None:
         ok = False
+        resolved = ""
+        if hasattr(self.main_window, "resolve_admin_printer_name"):
+            try:
+                resolved = str(
+                    self.main_window.resolve_admin_printer_name(model, self._collect_printing_settings())
+                ).strip()
+            except Exception:
+                resolved = ""
         if hasattr(self.main_window, "run_admin_print_test"):
             ok = bool(self.main_window.run_admin_print_test(model, self._collect_printing_settings()))
-        self._show_status("Test Print OK" if ok else "Test Print FAIL", duration_ms=1200)
+        self._refresh_resolved_printer_labels()
+        status = "Test Print OK" if ok else "Test Print FAIL"
+        if resolved:
+            status = f"{status} ({resolved})"
+        self._show_status(status, duration_ms=1200)
 
     def _on_check_printer_health_clicked(self, model: str) -> None:
         ok = False
         msg = "점검 실패"
+        resolved = ""
+        if hasattr(self.main_window, "resolve_admin_printer_name"):
+            try:
+                resolved = str(
+                    self.main_window.resolve_admin_printer_name(model, self._collect_printing_settings())
+                ).strip()
+            except Exception:
+                resolved = ""
         if hasattr(self.main_window, "run_admin_printer_health_check"):
             ok, msg = self.main_window.run_admin_printer_health_check(
                 model,
                 self._collect_printing_settings(),
             )
+        self._refresh_resolved_printer_labels()
+        prefix = f"{model} ({resolved})" if resolved else model
         if ok:
-            self._show_status(f"{model} OK: {msg}", duration_ms=1600)
+            self._show_status(f"{prefix} OK: {msg}", duration_ms=1600)
         else:
-            self._show_status(f"{model} FAIL: {msg}", duration_ms=2200)
+            self._show_status(f"{prefix} FAIL: {msg}", duration_ms=2200)
 
     def _on_jump_clicked(self) -> None:
         target = self.jump_screen_combo.currentText().strip()
@@ -11705,7 +12837,21 @@ class CameraScreen(ImageScreen):
         print(f"[CAMERA] design_index={design_index} design_path={design_path}")
 
     def start_session(self, layout_id: Optional[str], design_path: Optional[str]) -> None:
-        self.session = create_session(ROOT_DIR / "sessions")
+        try:
+            self.session = create_session(self._runtime_sessions_dir)
+        except Exception as exc:
+            print(f"[SESSION] create failed base={self._runtime_sessions_dir} err={exc}")
+            if hasattr(self.main_window, "_switch_runtime_storage_to_fallback"):
+                try:
+                    self.main_window._switch_runtime_storage_to_fallback(
+                        f"session_create_failed:{exc}"
+                    )
+                except Exception as fallback_exc:
+                    print(f"[SESSION] fallback switch failed: {fallback_exc}")
+            fallback_sessions = Path(
+                getattr(self.main_window, "_runtime_sessions_dir", _default_runtime_data_dir() / "sessions")
+            )
+            self.session = create_session(fallback_sessions)
         self.session.set_context(layout_id=layout_id, design_path=design_path)
         self._shots_raw_dir = self.session.session_dir / "shots_raw"
         setattr(self.session, "current_shot_index", 1)
@@ -12222,17 +13368,20 @@ class KioskMainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PhotoHaru")
+        self.setWindowTitle("Viorafilm Kiosk")
         self.resize(DESIGN_WIDTH, DESIGN_HEIGHT)
 
         self.stack = QStackedWidget(self)
         self.setCentralWidget(self.stack)
 
-        self.config_path = ROOT_DIR / "config" / "config.json"
+        self.config_path = _resolve_runtime_config_path()
         self.hotspots_path = ROOT_DIR / "assets" / "hotspots.json"
         self.hotspot_map: Dict[str, list[Hotspot]] = {}
         self.available_layout_ids: list[str] = self._detect_layout_ids_from_hotspots_file()
         self.share_settings = self._resolve_share_settings()
+        self._device_registration_required = self._env_bool(os.environ.get("KIOSK_REQUIRE_DEVICE_AUTH", "1"), True)
+        if self._device_registration_required:
+            self._ensure_device_registration_or_raise()
         self.payment_pricing_settings = self._resolve_payment_pricing_settings()
         self.printing_settings = self._resolve_printing_settings()
         self.coupon_value_settings = self._resolve_coupon_value_settings()
@@ -12318,8 +13467,11 @@ class KioskMainWindow(QMainWindow):
         self._frame_select_mode_price_labels: dict[str, QLabel] = {}
         self.ui_sound = UiSoundManager(self)
         self._suppress_nav_sound_until: float = 0.0
+        self._runtime_out_dir = _resolve_runtime_out_dir()
+        self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
+        self._ensure_runtime_dirs()
         self._license_state_lock = threading.Lock()
-        self._license_state_path = ROOT_DIR / "out" / "license_state.json"
+        self._license_state_path = self._runtime_out_dir / "license_state.json"
         self._first_seen_ts = 0.0
         self._last_online_ts = 0.0
         self._offline_lock_active = False
@@ -12358,9 +13510,9 @@ class KioskMainWindow(QMainWindow):
         self._offline_queue_lock = threading.Lock()
         self._offline_flush_lock = threading.Lock()
         self._offline_flush_inflight = False
-        self._offline_queue_path = ROOT_DIR / "out" / "offline_events_queue.json"
+        self._offline_queue_path = self._runtime_out_dir / "offline_events_queue.json"
         self._film_state_lock = threading.Lock()
-        self._film_state_path = ROOT_DIR / "out" / "film_remaining_state.json"
+        self._film_state_path = self._runtime_out_dir / "film_remaining_state.json"
         self._film_remaining_by_model: dict[str, int] = {}
         self._active_print_context: dict[str, Any] = {}
         self._heartbeat_timer = QTimer(self)
@@ -12386,6 +13538,9 @@ class KioskMainWindow(QMainWindow):
             ota_poll_ms = 300000
         self._ota_check_timer.setInterval(max(30000, min(3600000, ota_poll_ms)))
         self._ota_check_timer.timeout.connect(self._ota_check_tick)
+        self._payment_complete_watchdog_timer = QTimer(self)
+        self._payment_complete_watchdog_timer.setSingleShot(True)
+        self._payment_complete_watchdog_timer.timeout.connect(self._payment_complete_watchdog_tick)
         self.offline_guard_signal.connect(self._enforce_offline_runtime_guard)
         self.server_lock_signal.connect(self._on_server_lock_signal)
         self.server_mode_permissions_signal.connect(self._on_server_mode_permissions_signal)
@@ -12474,6 +13629,84 @@ class KioskMainWindow(QMainWindow):
         else:
             self.goto_screen("boot_healthcheck")
 
+    def _ensure_runtime_dirs(self) -> None:
+        candidates = [
+            _default_runtime_data_dir(),
+            Path(self._runtime_out_dir),
+            Path(self._runtime_sessions_dir),
+        ]
+        for path in candidates:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                _safe_boot_write(f"[BOOT] runtime dir prepare failed: {path} ({exc})\n")
+        out_dir = Path(self._runtime_out_dir)
+        sessions_dir = Path(self._runtime_sessions_dir)
+        if not _is_directory_writable(out_dir) or not _is_directory_writable(sessions_dir):
+            self._switch_runtime_storage_to_fallback("dir_not_writable")
+        try:
+            print(
+                "[BOOT] runtime dirs "
+                f"data={_default_runtime_data_dir()} "
+                f"out={self._runtime_out_dir} "
+                f"sessions={self._runtime_sessions_dir}"
+            )
+        except Exception:
+            pass
+
+    def _switch_runtime_storage_to_fallback(self, reason: str) -> None:
+        fallback_data = _default_runtime_data_dir()
+        fallback_out = fallback_data / "out"
+        fallback_sessions = fallback_data / "sessions"
+        for path in [fallback_data, fallback_out, fallback_sessions]:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        self._runtime_out_dir = fallback_out
+        self._runtime_sessions_dir = fallback_sessions
+        self._license_state_path = fallback_out / "license_state.json"
+        self._offline_queue_path = fallback_out / "offline_events_queue.json"
+        self._film_state_path = fallback_out / "film_remaining_state.json"
+        self._ota_download_dir = fallback_out / "updates"
+        self._ota_state_path = fallback_out / "ota_state.json"
+        _safe_boot_write(
+            "[BOOT] runtime storage switched to fallback "
+            f"reason={reason} data={fallback_data}\n"
+        )
+        try:
+            print(
+                f"[BOOT] runtime fallback reason={reason} "
+                f"out={self._runtime_out_dir} sessions={self._runtime_sessions_dir}"
+            )
+        except Exception:
+            pass
+
+    def _start_payment_complete_transition_watchdog(self) -> None:
+        try:
+            if self._payment_complete_watchdog_timer.isActive():
+                self._payment_complete_watchdog_timer.stop()
+            self._payment_complete_watchdog_timer.start(int(AppPaymentCompleteSuccessScreen.AUTO_MS) + 2200)
+        except Exception:
+            pass
+
+    def _stop_payment_complete_transition_watchdog(self) -> None:
+        try:
+            if self._payment_complete_watchdog_timer.isActive():
+                self._payment_complete_watchdog_timer.stop()
+        except Exception:
+            pass
+
+    def _payment_complete_watchdog_tick(self) -> None:
+        try:
+            current = self.stack.currentWidget()
+            if getattr(current, "screen_name", None) != "payment_complete_success":
+                return
+            print("[PAYMENT_COMPLETE] watchdog fired -> retry camera transition")
+            self.handle_payment_complete_success()
+        except Exception as exc:
+            print(f"[PAYMENT_COMPLETE] watchdog failed: {exc}")
+
     def goto_screen(self, screen_name: str) -> None:
         if screen_name == "boot_healthcheck" and (
             self.boot_check_done or self._boot_checked
@@ -12485,6 +13718,8 @@ class KioskMainWindow(QMainWindow):
         if not target:
             print(f"[NAV] Unknown screen: {screen_name}")
             return
+        if screen_name != "payment_complete_success":
+            self._stop_payment_complete_transition_watchdog()
         current_widget = self.stack.currentWidget()
         current_screen_name = getattr(current_widget, "screen_name", None)
         should_play_nav_sound = bool(
@@ -12564,6 +13799,8 @@ class KioskMainWindow(QMainWindow):
                 f"[CAMERA] enter layout_id={self.current_layout_id} "
                 f"design_path={self.current_design_path}"
             )
+        elif screen_name == "payment_complete_success":
+            self._start_payment_complete_transition_watchdog()
         print(f"[NAV] {screen_name}")
 
     def complete_boot_healthcheck(self, force: bool = False) -> None:
@@ -12690,7 +13927,7 @@ class KioskMainWindow(QMainWindow):
             return camera_screen.session
         return None
 
-    def _prepare_camera_entry(self) -> bool:
+    def _prepare_camera_entry(self, skip_health_check: bool = False) -> bool:
         if not self.current_layout_id:
             print("[CAMERA] enter blocked: layout_id missing")
             return False
@@ -12699,28 +13936,43 @@ class KioskMainWindow(QMainWindow):
             print("[CAMERA] enter blocked: camera screen missing")
             return False
         requested_backend = self._resolve_requested_camera_backend()
-        health_ok, health_msg = self.check_runtime_camera_health(requested_backend)
         effective_backend = requested_backend
-        if not health_ok:
-            allow_dummy = bool(self.allow_dummy_when_camera_fail() or self.is_test_mode())
-            if requested_backend in {"auto", "edsdk"} and allow_dummy:
-                effective_backend = "dummy"
-                print(f"[CAMERA] health failed -> fallback dummy ({health_msg})")
-                self._show_runtime_notice("카메라 연결 실패: 더미 모드로 진행합니다", duration_ms=1200)
-            else:
-                print(f"[CAMERA] enter blocked: {health_msg}")
-                self._show_runtime_notice("카메라 연결 실패", duration_ms=1200)
-                return False
+        if not skip_health_check:
+            health_ok, health_msg = self.check_runtime_camera_health(requested_backend)
+            if not health_ok:
+                allow_dummy = bool(self.allow_dummy_when_camera_fail() or self.is_test_mode())
+                if requested_backend in {"auto", "edsdk"} and allow_dummy:
+                    effective_backend = "dummy"
+                    print(f"[CAMERA] health failed -> fallback dummy ({health_msg})")
+                    self._show_runtime_notice("카메라 연결 실패: 더미 모드로 진행합니다", duration_ms=1200)
+                else:
+                    print(f"[CAMERA] enter blocked: {health_msg}")
+                    self._show_runtime_notice("카메라 연결 실패", duration_ms=1200)
+                    return False
         camera_screen.camera_backend = effective_backend
         camera_screen.set_layout(self.current_layout_id)
         camera_screen.set_design(
             self.current_design_index,
             self.current_design_path,
         )
-        camera_screen.start_session(
-            self.current_layout_id,
-            self.current_design_path,
-        )
+        try:
+            camera_screen.start_session(
+                self.current_layout_id,
+                self.current_design_path,
+            )
+        except Exception as exc:
+            print(f"[CAMERA] start_session failed: {exc}")
+            try:
+                self._switch_runtime_storage_to_fallback(f"camera_start_session_failed:{exc}")
+                camera_screen._runtime_sessions_dir = Path(self._runtime_sessions_dir)
+                camera_screen.start_session(
+                    self.current_layout_id,
+                    self.current_design_path,
+                )
+            except Exception as fallback_exc:
+                print(f"[CAMERA] start_session fallback failed: {fallback_exc}")
+                self._show_runtime_notice("카메라 세션 시작 실패", duration_ms=1200)
+                return False
         if camera_screen.session is not None:
             camera_screen.session.print_count = int(self.current_print_count or self.print_count or 2)
             setattr(camera_screen.session, "payment_method", self.current_payment_method)
@@ -13141,11 +14393,34 @@ class KioskMainWindow(QMainWindow):
         return data
 
     def _write_config_dict_atomic(self, data: dict) -> None:
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        target_path = self.config_path
         payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        tmp_path.write_text(payload, encoding="utf-8")
-        os.replace(tmp_path, self.config_path)
+
+        def _write(path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            os.replace(tmp_path, path)
+
+        try:
+            _write(target_path)
+            return
+        except Exception as exc:
+            fallback_path = _default_runtime_data_dir() / "config" / "config.json"
+            _safe_boot_write(
+                f"[CONFIG] write denied at {target_path} ({exc}) -> fallback {fallback_path}\n"
+            )
+            try:
+                _write(fallback_path)
+                self.config_path = fallback_path
+                return
+            except Exception as fallback_exc:
+                temp_fallback = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "config.json"
+                _safe_boot_write(
+                    f"[CONFIG] fallback write failed at {fallback_path} ({fallback_exc}) -> temp {temp_fallback}\n"
+                )
+                _write(temp_fallback)
+                self.config_path = temp_fallback
 
     @staticmethod
     def _parse_layout_id_from_action(action: object) -> Optional[str]:
@@ -13196,11 +14471,17 @@ class KioskMainWindow(QMainWindow):
         base_layout_ids: Optional[list[str]] = None,
         celebrity_layout_id: Optional[str] = None,
     ) -> list[str]:
-        merged: set[str] = set()
+        merged_ordered: list[str] = []
+
+        def _append_layout(value: object) -> None:
+            key = str(value or "").strip()
+            if key and key not in merged_ordered:
+                merged_ordered.append(key)
+
+        for layout_id in DEFAULT_FRAME_LAYOUT_IDS:
+            _append_layout(layout_id)
         for layout_id in list(base_layout_ids or []):
-            key = str(layout_id or "").strip()
-            if key:
-                merged.add(key)
+            _append_layout(layout_id)
         celeb_layout = str(celebrity_layout_id or "").strip()
         if not celeb_layout:
             celeb_cfg = getattr(self, "celebrity_settings", {})
@@ -13209,9 +14490,9 @@ class KioskMainWindow(QMainWindow):
                     celeb_cfg.get("layout_id", DEFAULT_CELEBRITY_SETTINGS["layout_id"])
                 ).strip()
         celeb_layout = celeb_layout or str(DEFAULT_CELEBRITY_SETTINGS["layout_id"]).strip() or "2461"
-        merged.add(celeb_layout)
-        merged.add(str(AI_LAYOUT_ID).strip())
-        return sorted(merged)
+        _append_layout(celeb_layout)
+        _append_layout(str(AI_LAYOUT_ID).strip())
+        return list(merged_ordered)
 
     def get_pricing_layout_ids(self) -> list[str]:
         return self._pricing_layout_ids_with_modes(self.available_layout_ids)
@@ -13385,7 +14666,9 @@ class KioskMainWindow(QMainWindow):
     def _normalize_celebrity_settings(cls, raw_settings: object) -> dict[str, str]:
         normalized = dict(DEFAULT_CELEBRITY_SETTINGS)
         if isinstance(raw_settings, dict):
-            templates_dir = str(raw_settings.get("templates_dir", normalized["templates_dir"])).strip()
+            templates_dir = _remap_legacy_install_path(
+                raw_settings.get("templates_dir", normalized["templates_dir"])
+            ).strip()
             layout_id = str(raw_settings.get("layout_id", normalized["layout_id"])).strip()
             if templates_dir:
                 normalized["templates_dir"] = templates_dir
@@ -13434,7 +14717,9 @@ class KioskMainWindow(QMainWindow):
     def _normalize_bill_acceptor_settings(cls, raw_settings: object) -> dict:
         normalized = dict(DEFAULT_BILL_ACCEPTOR_SETTINGS)
         denoms = dict(DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"])
+        bill_to_amount: dict[int, int] = {}
         normalized["denoms"] = denoms
+        normalized["bill_to_amount"] = bill_to_amount
         if not isinstance(raw_settings, dict):
             return normalized
 
@@ -13453,15 +14738,42 @@ class KioskMainWindow(QMainWindow):
         if isinstance(default_denoms, dict):
             for key in denoms.keys():
                 denoms[key] = cls._as_bool(default_denoms.get(key), denoms[key])
+        profile_bill_map = profile_info.get("bill_to_amount")
+        if isinstance(profile_bill_map, dict):
+            for raw_key, raw_amount in profile_bill_map.items():
+                try:
+                    code = int(raw_key) & 0xFF
+                    amount = int(raw_amount)
+                except Exception:
+                    continue
+                if amount > 0:
+                    bill_to_amount[code] = amount
 
         raw_denoms = raw_settings.get("denoms")
         if isinstance(raw_denoms, dict):
             for key in denoms.keys():
                 denoms[key] = cls._as_bool(raw_denoms.get(key), denoms[key])
+        raw_bill_map = raw_settings.get("bill_to_amount")
+        if isinstance(raw_bill_map, dict):
+            for raw_key, raw_amount in raw_bill_map.items():
+                try:
+                    code = int(raw_key) & 0xFF
+                    amount = int(raw_amount)
+                except Exception:
+                    continue
+                if amount > 0:
+                    bill_to_amount[code] = amount
 
-        raw_port = raw_settings.get("port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])
+        raw_port = raw_settings.get("port", profile_info.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"]))
         port_text = str(raw_port).strip()
-        normalized["port"] = port_text if port_text else str(DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])
+        if _is_auto_serial_port(port_text):
+            normalized["port"] = "AUTO"
+        else:
+            normalized["port"] = (
+                port_text
+                if port_text
+                else str(profile_info.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"]))
+            )
 
         default_baud = int(profile_info.get("baud", DEFAULT_BILL_ACCEPTOR_SETTINGS["baud"]))
         try:
@@ -13479,7 +14791,19 @@ class KioskMainWindow(QMainWindow):
     def get_bill_acceptor_settings(self) -> dict:
         settings = dict(self.bill_acceptor_settings)
         denoms = settings.get("denoms")
+        raw_bill_map = settings.get("bill_to_amount")
+        bill_to_amount: dict[int, int] = {}
+        if isinstance(raw_bill_map, dict):
+            for raw_key, raw_amount in raw_bill_map.items():
+                try:
+                    code = int(raw_key) & 0xFF
+                    amount = int(raw_amount)
+                except Exception:
+                    continue
+                if amount > 0:
+                    bill_to_amount[code] = amount
         settings["denoms"] = dict(denoms) if isinstance(denoms, dict) else dict(DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"])
+        settings["bill_to_amount"] = bill_to_amount
         return settings
 
     def list_serial_ports(self) -> list[str]:
@@ -14032,6 +15356,204 @@ class KioskMainWindow(QMainWindow):
                 result["timeout_sec"] = min(60.0, max(3.0, timeout_value))
         return result
 
+    def _probe_device_credentials(
+        self,
+        *,
+        api_base_url: str,
+        device_code: str,
+        device_token: str,
+        timeout_sec: float = 8.0,
+    ) -> tuple[bool, str]:
+        if requests is None:
+            return False, "requests 모듈이 없어 인증 검증을 할 수 없습니다."
+        api_base = _normalize_kiosk_api_base_url(api_base_url)
+        if not api_base:
+            return False, "API 주소가 비어 있습니다."
+        code = str(device_code or "").strip()
+        token = str(device_token or "").strip()
+        if not code or not token:
+            return False, "디바이스 코드/토큰을 모두 입력하세요."
+        url = f"{api_base}/kiosk/config"
+        headers = {
+            "X-Device-Code": code,
+            "X-Device-Token": token,
+        }
+        try:
+            resp = requests.get(url, headers=headers, timeout=max(3.0, min(20.0, float(timeout_sec))))
+        except Exception as exc:
+            return False, f"서버 연결 실패: {exc}"
+        if int(resp.status_code) == 200:
+            return True, "OK"
+        if int(resp.status_code) == 401:
+            return False, "인증 실패: 코드/토큰이 올바르지 않습니다."
+        body = ""
+        try:
+            body = str(resp.text or "").strip()
+        except Exception:
+            body = ""
+        if len(body) > 200:
+            body = body[:200] + "..."
+        return False, f"인증 실패: HTTP {resp.status_code} {body}".strip()
+
+    def _persist_device_credentials(
+        self,
+        *,
+        api_base_url: str,
+        device_code: str,
+        device_token: str,
+    ) -> None:
+        config = self._read_config_dict()
+        share = config.get("share") if isinstance(config.get("share"), dict) else {}
+        share = dict(share)
+        normalized_api = _normalize_kiosk_api_base_url(api_base_url)
+        if normalized_api:
+            share["api_base_url"] = normalized_api
+            try:
+                split = urlsplit(normalized_api)
+                if split.scheme and split.netloc:
+                    base = f"{split.scheme}://{split.netloc}"
+                    share["base_page_url"] = f"{base}/s"
+                    share["base_file_url"] = f"{base}/s"
+            except Exception:
+                pass
+        share["device_code"] = str(device_code or "").strip()
+        share["device_token"] = str(device_token or "").strip()
+        config["share"] = share
+        self._write_config_dict_atomic(config)
+        self.share_settings = self._resolve_share_settings()
+
+    def _show_device_registration_dialog(
+        self,
+        *,
+        reason: str,
+        api_base_url: str,
+        device_code: str,
+        device_token: str,
+    ) -> Optional[dict[str, str]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("디바이스 등록 / Device Registration")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(620)
+
+        root_layout = QVBoxLayout(dialog)
+        root_layout.setContentsMargins(20, 20, 20, 20)
+        root_layout.setSpacing(10)
+
+        title = QLabel("최초 1회 디바이스 인증이 필요합니다.\nDevice token setup is required.", dialog)
+        title.setWordWrap(True)
+        root_layout.addWidget(title)
+
+        status = QLabel(reason or "", dialog)
+        status.setWordWrap(True)
+        status.setStyleSheet("color:#b00020;")
+        root_layout.addWidget(status)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        api_input = QLineEdit(dialog)
+        api_input.setText(str(api_base_url or "").strip())
+        api_input.setPlaceholderText("https://api.viorafilm.com/api")
+        form.addRow("API Base URL", api_input)
+
+        code_input = QLineEdit(dialog)
+        code_input.setText(str(device_code or "").strip())
+        code_input.setPlaceholderText("예: KIOSK001")
+        form.addRow("Device Code", code_input)
+
+        token_input = QLineEdit(dialog)
+        token_input.setText(str(device_token or "").strip())
+        token_input.setPlaceholderText("발급받은 1회 토큰")
+        try:
+            token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        except Exception:
+            pass
+        form.addRow("Device Token", token_input)
+
+        root_layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        exit_btn = QPushButton("종료 / Exit", dialog)
+        verify_btn = QPushButton("검증 후 저장 / Verify & Save", dialog)
+        button_row.addWidget(exit_btn)
+        button_row.addWidget(verify_btn)
+        root_layout.addLayout(button_row)
+
+        result: dict[str, str] = {}
+
+        def _verify() -> None:
+            api_base = str(api_input.text() or "").strip()
+            code = str(code_input.text() or "").strip()
+            token = str(token_input.text() or "").strip()
+            ok, message = self._probe_device_credentials(
+                api_base_url=api_base,
+                device_code=code,
+                device_token=token,
+                timeout_sec=8.0,
+            )
+            if not ok:
+                status.setText(message)
+                return
+            result["api_base_url"] = api_base
+            result["device_code"] = code
+            result["device_token"] = token
+            dialog.accept()
+
+        verify_btn.clicked.connect(_verify)
+        exit_btn.clicked.connect(dialog.reject)
+
+        exec_fn = getattr(dialog, "exec", None) or getattr(dialog, "exec_", None)
+        if not callable(exec_fn):
+            return None
+        accepted = int(exec_fn()) == int(getattr(QDialog, "Accepted", 1))
+        if not accepted:
+            return None
+        return result if result else None
+
+    def _ensure_device_registration_or_raise(self) -> None:
+        api_base = str(self.share_settings.get("api_base_url", DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))).strip()
+        code = str(self.share_settings.get("device_code", "")).strip()
+        token = str(self.share_settings.get("device_token", "")).strip()
+
+        ok, reason = self._probe_device_credentials(
+            api_base_url=api_base,
+            device_code=code,
+            device_token=token,
+            timeout_sec=6.0,
+        )
+        if ok:
+            print(f"[DEVICE_AUTH] startup credentials verified code={code}")
+            return
+
+        print(f"[DEVICE_AUTH] startup verification failed: {reason}")
+        while True:
+            entered = self._show_device_registration_dialog(
+                reason=reason,
+                api_base_url=api_base or str(DEFAULT_SHARE_SETTINGS.get("api_base_url", "")).strip(),
+                device_code=code,
+                device_token=token,
+            )
+            if not isinstance(entered, dict):
+                raise RuntimeError("device registration canceled")
+            api_base = str(entered.get("api_base_url", "")).strip()
+            code = str(entered.get("device_code", "")).strip()
+            token = str(entered.get("device_token", "")).strip()
+            ok, reason = self._probe_device_credentials(
+                api_base_url=api_base,
+                device_code=code,
+                device_token=token,
+                timeout_sec=8.0,
+            )
+            if ok:
+                self._persist_device_credentials(
+                    api_base_url=api_base,
+                    device_code=code,
+                    device_token=token,
+                )
+                print(f"[DEVICE_AUTH] registered code={code}")
+                return
+
     def _normalize_printing_settings(self, raw_settings: object) -> dict:
         result = {
             "enabled": bool(DEFAULT_PRINTING_SETTINGS["enabled"]),
@@ -14287,6 +15809,74 @@ class KioskMainWindow(QMainWindow):
             "default_model": str(self.printing_settings.get("default_model", "DS620")),
         }
 
+    @staticmethod
+    def _normalize_printer_name_token(value: str) -> str:
+        text = str(value or "").strip().lower()
+        return re.sub(r"[^a-z0-9]+", "", text)
+
+    def _match_installed_printer_name(self, requested: str, model_hint: str = "") -> str:
+        wanted = str(requested or "").strip()
+        if not wanted:
+            return ""
+
+        names = self.list_windows_printers()
+        if not names:
+            return wanted
+
+        # 1) Exact (case-sensitive / case-insensitive)
+        for name in names:
+            if name == wanted:
+                return name
+        wanted_low = wanted.lower()
+        for name in names:
+            if str(name).strip().lower() == wanted_low:
+                return name
+
+        # 2) Normalized exact: ignore spaces, '-', '_', etc.
+        wanted_norm = self._normalize_printer_name_token(wanted)
+        if wanted_norm:
+            for name in names:
+                if self._normalize_printer_name_token(name) == wanted_norm:
+                    return name
+
+        # 3) Fuzzy fallback scoring.
+        hint = str(model_hint or "").strip().upper()
+        best_name = ""
+        best_score = -1.0
+        for name in names:
+            cand = str(name).strip()
+            if not cand:
+                continue
+            cand_low = cand.lower()
+            cand_norm = self._normalize_printer_name_token(cand)
+            score = 0.0
+
+            if wanted_low in cand_low:
+                score += 35.0
+            if cand_low in wanted_low:
+                score += 20.0
+            if wanted_norm and wanted_norm in cand_norm:
+                score += 35.0
+            if wanted_norm and cand_norm and cand_norm in wanted_norm:
+                score += 15.0
+
+            if hint in {"DS620", "DS620_STRIP"} and "ds620" in cand_low:
+                score += 12.0
+            if hint == "RX1HS" and ("rx1hs" in cand_low or "rx1" in cand_low):
+                score += 12.0
+
+            # Prefer closer names when fuzzy score ties.
+            score -= abs(len(cand_low) - len(wanted_low)) * 0.2
+
+            if score > best_score:
+                best_score = score
+                best_name = cand
+
+        # Require a minimum confidence to avoid wrong routing.
+        if best_name and best_score >= 25.0:
+            return best_name
+        return wanted
+
     def list_windows_printers(self) -> list[str]:
         try:
             import win32print
@@ -14344,6 +15934,111 @@ class KioskMainWindow(QMainWindow):
                     win32print.ClosePrinter(handle)
                 except Exception:
                     pass
+
+    def _candidate_runtime_log_dirs(self) -> list[Path]:
+        dirs: list[Path] = []
+        runtime_root = _default_runtime_data_dir()
+        dirs.append(runtime_root / "logs")
+
+        program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+        if program_data:
+            dirs.append(Path(program_data) / "ViorafilmKiosk" / "logs")
+
+        public_root = str(os.environ.get("PUBLIC", "")).strip()
+        if public_root:
+            dirs.append(Path(public_root) / "Documents" / "ViorafilmKiosk" / "logs")
+
+        temp_root = str(os.environ.get("TEMP", os.getcwd())).strip()
+        if temp_root:
+            dirs.append(Path(temp_root) / "ViorafilmKiosk" / "logs")
+
+        dedup: list[Path] = []
+        seen: set[str] = set()
+        for item in dirs:
+            key = str(item).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                dedup.append(item)
+        return dedup
+
+    def _candidate_runtime_log_markers(self) -> list[Path]:
+        markers: list[Path] = []
+        runtime_root = _default_runtime_data_dir()
+        markers.append(runtime_root / "last_log_path.txt")
+        markers.append(INSTALL_ROOT / "last_log_path.txt")
+
+        program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+        if program_data:
+            markers.append(Path(program_data) / "ViorafilmKiosk" / "last_log_path.txt")
+
+        public_root = str(os.environ.get("PUBLIC", "")).strip()
+        if public_root:
+            markers.append(Path(public_root) / "Documents" / "ViorafilmKiosk" / "last_log_path.txt")
+
+        temp_root = str(os.environ.get("TEMP", os.getcwd())).strip()
+        if temp_root:
+            markers.append(Path(temp_root) / "ViorafilmKiosk" / "last_log_path.txt")
+        return markers
+
+    def get_runtime_log_file_path(self) -> str:
+        global _LOG_FILE_PATH
+
+        if isinstance(_LOG_FILE_PATH, Path):
+            return str(_LOG_FILE_PATH)
+
+        for marker in self._candidate_runtime_log_markers():
+            try:
+                if not marker.is_file():
+                    continue
+                raw = marker.read_text(encoding="utf-8").strip()
+                if not raw:
+                    continue
+                p = Path(raw)
+                if p.is_file():
+                    return str(p)
+                if p.parent.is_dir():
+                    return str(p)
+            except Exception:
+                continue
+
+        latest_file: Optional[Path] = None
+        latest_mtime = -1.0
+        for log_dir in self._candidate_runtime_log_dirs():
+            try:
+                if not log_dir.is_dir():
+                    continue
+                for path in log_dir.glob("kiosk_*.log"):
+                    try:
+                        mtime = float(path.stat().st_mtime)
+                    except Exception:
+                        continue
+                    if mtime > latest_mtime:
+                        latest_mtime = mtime
+                        latest_file = path
+            except Exception:
+                continue
+        if latest_file is not None:
+            return str(latest_file)
+        return ""
+
+    def open_runtime_log_folder(self) -> bool:
+        log_file = self.get_runtime_log_file_path()
+        folder = Path(log_file).parent if log_file else (_default_runtime_data_dir() / "logs")
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+            print(f"[ADMIN] open log folder path={folder}")
+            return True
+        except Exception as exc:
+            print(f"[ADMIN] open log folder failed path={folder} err={exc}")
+            return False
 
     def _show_runtime_notice(self, message: str, duration_ms: int = 1200) -> None:
         current = self.stack.currentWidget()
@@ -14438,10 +16133,16 @@ class KioskMainWindow(QMainWindow):
 
     def _save_license_state_unlocked(self, state: dict[str, Any]) -> None:
         path = Path(self._license_state_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(state or {})
         payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        _write_json_atomic(path, payload)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, payload)
+        except Exception as exc:
+            self._switch_runtime_storage_to_fallback(f"license_state_write_failed:{exc}")
+            fallback = Path(self._license_state_path)
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(fallback, payload)
 
     def _compute_offline_guard_status(self) -> tuple[bool, str]:
         if not bool(self._offline_guard_enabled):
@@ -14643,19 +16344,21 @@ class KioskMainWindow(QMainWindow):
     def _resolve_ota_download_dir(self) -> Path:
         raw = str(os.environ.get("KIOSK_OTA_DOWNLOAD_DIR", "")).strip()
         if not raw:
-            return ROOT_DIR / "out" / "updates"
+            return _resolve_runtime_out_dir() / "updates"
         path = Path(raw)
         if not path.is_absolute():
-            path = (ROOT_DIR / path).resolve()
+            base = _default_runtime_data_dir() if getattr(sys, "frozen", False) else ROOT_DIR
+            path = (base / path).resolve()
         return path
 
     def _resolve_ota_state_path(self) -> Path:
         raw = str(os.environ.get("KIOSK_OTA_STATE_PATH", "")).strip()
         if not raw:
-            return ROOT_DIR / "out" / "ota_state.json"
+            return _resolve_runtime_out_dir() / "ota_state.json"
         path = Path(raw)
         if not path.is_absolute():
-            path = (ROOT_DIR / path).resolve()
+            base = _default_runtime_data_dir() if getattr(sys, "frozen", False) else ROOT_DIR
+            path = (base / path).resolve()
         return path
 
     def _load_kiosk_app_version(self) -> str:
@@ -14685,8 +16388,14 @@ class KioskMainWindow(QMainWindow):
             "source": str(source or "ota"),
         }
         path = Path(self._ota_state_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, payload)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, payload)
+        except Exception as exc:
+            self._switch_runtime_storage_to_fallback(f"ota_state_write_failed:{exc}")
+            fallback = Path(self._ota_state_path)
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(fallback, payload)
         print(f"[OTA] version state updated current={ver} source={source}")
 
     def _current_kiosk_app_version(self) -> str:
@@ -14915,7 +16624,7 @@ class KioskMainWindow(QMainWindow):
             return
 
         # Built-in default apply path for Windows deployments.
-        script_path = ROOT_DIR / "deploy" / "windows" / "apply_update.ps1"
+        script_path = INSTALL_ROOT / "deploy" / "windows" / "apply_update.ps1"
         try:
             if script_path.is_file():
                 cmd_parts = [
@@ -14931,7 +16640,7 @@ class KioskMainWindow(QMainWindow):
                     cmd_parts.extend(
                         [
                             "-InstallDir",
-                            str(ROOT_DIR),
+                            str(INSTALL_ROOT),
                             "-TargetVersion",
                             str(target_version or ""),
                             "-StateFile",
@@ -15203,7 +16912,12 @@ class KioskMainWindow(QMainWindow):
 
     def check_runtime_printer_health(self, model: str, printer_name: str) -> tuple[bool, str]:
         model_key = str(model).strip().upper()
-        key = "printer_ds620" if model_key in {"DS620", "DS620_STRIP"} else "printer_rx1hs"
+        if model_key == "DS620_STRIP":
+            key = "printer_ds620_strip"
+        elif model_key == "DS620":
+            key = "printer_ds620"
+        else:
+            key = "printer_rx1hs"
         log_key = _health_log_key(key)
         ok, msg = get_printer_health(printer_name)
         print(f"[HEALTH] {log_key}={'OK' if ok else 'FAIL'} msg={msg}")
@@ -15218,52 +16932,160 @@ class KioskMainWindow(QMainWindow):
         cfg = settings if isinstance(settings, dict) else self.get_printing_settings()
         printers = cfg.get("printers", {})
         model_key = str(model or "DS620").strip().upper()
+
+        def _finalize(candidate_name: str) -> str:
+            value = str(candidate_name or "").strip()
+            if not value:
+                return ""
+            matched = self._match_installed_printer_name(value, model_key)
+            if matched and matched != value:
+                print(
+                    f"[PRINT] printer name auto-match model={model_key} "
+                    f"requested=\"{value}\" matched=\"{matched}\""
+                )
+            return matched or value
+
         selected = ""
         if isinstance(printers, dict):
             item = printers.get(model_key)
             if isinstance(item, dict):
                 selected = str(item.get("win_name", "")).strip()
         if selected:
-            return selected
+            return _finalize(selected)
 
         data = self._read_config_dict()
         if model_key == "DS620_STRIP":
-            # Auto-detect dedicated strip queue when not configured yet.
-            auto_strip = self._find_ds620_strip_printer_queue()
-            if auto_strip:
-                return auto_strip
             if isinstance(printers, dict):
                 item = printers.get("DS620")
                 if isinstance(item, dict):
                     fallback = str(item.get("win_name", "")).strip()
                     if fallback:
-                        return fallback
+                        return _finalize(fallback)
             value = data.get("default_printer_ds620") if isinstance(data, dict) else None
             if isinstance(value, str) and value.strip():
-                return value.strip()
-            return str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"])
+                return _finalize(value.strip())
+            return _finalize(str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"]))
         if model_key == "RX1HS":
             value = data.get("default_printer_rx1hs") if isinstance(data, dict) else None
             if isinstance(value, str) and value.strip():
-                return value.strip()
-            return str(DEFAULT_PRINTING_SETTINGS["printers"]["RX1HS"]["win_name"])
+                return _finalize(value.strip())
+            return _finalize(str(DEFAULT_PRINTING_SETTINGS["printers"]["RX1HS"]["win_name"]))
         value = data.get("default_printer_ds620") if isinstance(data, dict) else None
         if isinstance(value, str) and value.strip():
-            return value.strip()
-        return str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"])
+            return _finalize(value.strip())
+        return _finalize(str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"]))
 
-    def _find_ds620_strip_printer_queue(self) -> str:
-        names = self.list_windows_printers()
-        if not names:
+    def _resolve_dedicated_strip_queue_name(self, settings: Optional[dict] = None) -> str:
+        cfg = settings if isinstance(settings, dict) else self.get_printing_settings()
+        printers = cfg.get("printers", {}) if isinstance(cfg, dict) else {}
+        strip_item = printers.get("DS620_STRIP", {}) if isinstance(printers, dict) else {}
+        configured = str(strip_item.get("win_name", "")).strip() if isinstance(strip_item, dict) else ""
+
+        installed = self.list_windows_printers()
+
+        def _installed_member(name: str) -> str:
+            probe = str(name or "").strip()
+            if not probe:
+                return ""
+            for item in installed:
+                cand = str(item).strip()
+                if cand == probe:
+                    return cand
+            probe_low = probe.lower()
+            for item in installed:
+                cand = str(item).strip()
+                if cand.lower() == probe_low:
+                    return cand
+            probe_norm = self._normalize_printer_name_token(probe)
+            if probe_norm:
+                for item in installed:
+                    cand = str(item).strip()
+                    if self._normalize_printer_name_token(cand) == probe_norm:
+                        return cand
             return ""
-        lowered = [(name, str(name).strip().lower()) for name in names if str(name).strip()]
-        for name, low in lowered:
-            if low == "ds620_strip":
-                return name
-        for name, low in lowered:
-            if "ds620" in low and "strip" in low:
-                return name
+
+        # 1) Explicit DS620_STRIP queue from config.
+        if configured:
+            matched = self._match_installed_printer_name(configured, "DS620_STRIP")
+            found = _installed_member(matched or configured)
+            if found:
+                return found
+            print(
+                f"[PRINT_MODE] strip queue configured but missing: requested=\"{configured}\" "
+                f"matched=\"{matched}\""
+            )
+
+        # 2) Auto-detect dedicated strip queue by canonical names.
+        for probe in ("DS620_STRIP", "DS620 STRIP", "DP-DS620 STRIP", "DS620STRIP"):
+            matched = self._match_installed_printer_name(probe, "DS620_STRIP")
+            found = _installed_member(matched or probe)
+            if found:
+                return found
         return ""
+
+    def _is_installed_printer_name(self, name: str, installed: Optional[list[str]] = None) -> bool:
+        probe = str(name or "").strip()
+        if not probe:
+            return False
+        names = installed if isinstance(installed, list) else self.list_windows_printers()
+        probe_low = probe.lower()
+        probe_norm = self._normalize_printer_name_token(probe)
+        for item in names:
+            cand = str(item).strip()
+            if not cand:
+                continue
+            if cand == probe or cand.lower() == probe_low:
+                return True
+            if probe_norm and self._normalize_printer_name_token(cand) == probe_norm:
+                return True
+        return False
+
+    def _resolve_printer_candidates_for_model(
+        self,
+        model: str,
+        primary_name: str = "",
+        settings: Optional[dict] = None,
+    ) -> list[str]:
+        cfg = settings if isinstance(settings, dict) else self.get_printing_settings()
+        model_key = str(model or "DS620").strip().upper()
+        if model_key not in {"DS620", "DS620_STRIP", "RX1HS"}:
+            model_key = "DS620"
+
+        installed = self.list_windows_printers()
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _push(raw: str) -> None:
+            text = str(raw or "").strip()
+            if not text:
+                return
+            matched = self._match_installed_printer_name(text, model_key)
+            chosen = ""
+            if matched and self._is_installed_printer_name(matched, installed):
+                chosen = matched
+            elif self._is_installed_printer_name(text, installed):
+                chosen = text
+            if not chosen:
+                return
+            key = self._normalize_printer_name_token(chosen)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(chosen)
+
+        _push(primary_name)
+        _push(self._resolve_printer_name_for_model(model_key, cfg))
+        if model_key == "DS620_STRIP":
+            _push(self._resolve_dedicated_strip_queue_name(cfg))
+            for probe in ("DS620_STRIP", "DS620 STRIP", "DP-DS620 STRIP", "DS620STRIP"):
+                _push(probe)
+        elif model_key == "DS620":
+            for probe in ("DP-DS620", "DS620"):
+                _push(probe)
+        elif model_key == "RX1HS":
+            for probe in ("DNP RX1HS", "RX1HS", "RX1"):
+                _push(probe)
+        return candidates
 
     def _resolve_printer_form_name_for_job(
         self,
@@ -16203,8 +18025,12 @@ class KioskMainWindow(QMainWindow):
         return started
 
     def handle_payment_complete_success(self) -> None:
-        if self._prepare_camera_entry():
+        if self._prepare_camera_entry(skip_health_check=True):
             self.goto_screen("camera")
+            return
+        print("[PAYMENT_COMPLETE] camera transition failed -> fallback frame_select")
+        self._show_runtime_notice("카메라 화면 전환 실패: 프레임 선택으로 복귀합니다", duration_ms=1200)
+        self.goto_screen("frame_select")
 
     def _resolve_printer_name(self) -> str:
         return self._resolve_printer_name_for_model("DS620", self.get_printing_settings())
@@ -16274,16 +18100,7 @@ class KioskMainWindow(QMainWindow):
         forced_printer_name: Optional[str] = None
         use_driver_default_form = False
         if strip_split:
-            strip_item = (
-                printing_settings.get("printers", {}).get("DS620_STRIP", {})
-                if isinstance(printing_settings, dict)
-                else {}
-            )
-            strip_name = str(strip_item.get("win_name", "")).strip() if isinstance(strip_item, dict) else ""
-            if not strip_name:
-                strip_name = self._find_ds620_strip_printer_queue()
-                if strip_name:
-                    print(f"[PRINT] auto detected strip queue win_name=\"{strip_name}\"")
+            strip_name = self._resolve_dedicated_strip_queue_name(printing_settings)
             if strip_name:
                 model = "DS620_STRIP"
                 forced_printer_name = strip_name
@@ -16295,7 +18112,7 @@ class KioskMainWindow(QMainWindow):
                 use_driver_default_form = True
                 print("[PRINT_MODE] dedicated strip queue active -> disable app split")
             else:
-                print("[PRINT_MODE] strip queue override skipped: DS620_STRIP.win_name is empty")
+                print("[PRINT_MODE] strip queue override skipped: dedicated DS620_STRIP queue not found")
         printer_name = forced_printer_name or self._resolve_printer_name_for_model(model, printing_settings)
         exists = image_path.is_file()
         size = image_path.stat().st_size if exists else 0
@@ -16327,17 +18144,47 @@ class KioskMainWindow(QMainWindow):
         should_check_printer = should_check_printer and not bool(printing_settings.get("dry_run", False))
         should_check_printer = should_check_printer and not bool(self.is_test_mode())
         if should_check_printer:
-            p_ok, p_msg = self.check_runtime_printer_health(model, printer_name)
-            if not p_ok:
-                self._show_runtime_notice(
-                    "프린터가 오프라인입니다. 프린터를 연결해주세요.",
-                    duration_ms=1500,
-                )
+            candidates = self._resolve_printer_candidates_for_model(
+                model=model,
+                primary_name=printer_name,
+                settings=printing_settings,
+            )
+            if candidates:
+                printer_name = str(candidates[0]).strip() or printer_name
+            first_fail_msg = ""
+            selected_ok = False
+            for cand in candidates:
+                p_ok, p_msg = self.check_runtime_printer_health(model, cand)
+                if p_ok:
+                    if cand != printer_name:
+                        print(
+                            f"[PRINT] health fallback selected model={model} "
+                            f"printer=\"{cand}\" (from \"{printer_name}\")"
+                        )
+                    printer_name = cand
+                    selected_ok = True
+                    break
+                if not first_fail_msg:
+                    first_fail_msg = str(p_msg)
+
+            if not selected_ok:
+                hard_block = str(os.environ.get("KIOSK_PRINT_BLOCK_ON_HEALTH_FAIL", "0")).strip().lower()
+                should_block = hard_block in {"1", "true", "yes", "on"}
+                if should_block:
+                    self._show_runtime_notice(
+                        "프린터가 오프라인입니다. 프린터를 연결해주세요.",
+                        duration_ms=1500,
+                    )
+                    print(
+                        f"[PRINT] blocked offline printer=\"{printer_name}\" "
+                        f"msg=\"{first_fail_msg or 'health_check_failed'}\" "
+                        "policy=block"
+                    )
+                    return False
                 print(
-                    f"[PRINT] blocked offline printer=\"{printer_name}\" "
-                    f"msg=\"{p_msg}\""
+                    f"[PRINT] health warning ignored model={model} printer=\"{printer_name}\" "
+                    f"msg=\"{first_fail_msg or 'health_check_failed'}\" policy=soft"
                 )
-                return False
         loading_screen = self.screens.get("loading")
         if isinstance(loading_screen, LoadingScreen):
             loading_screen.set_status_message("PRINTING\n인쇄중", animate=True)
@@ -16430,7 +18277,7 @@ class KioskMainWindow(QMainWindow):
             preview_screen.set_confirm_locked(True)
 
     def _create_admin_test_print_image(self, model: str) -> Path:
-        out_dir = ROOT_DIR / "out"
+        out_dir = _resolve_runtime_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"admin_print_test_{str(model).upper()}.jpg"
         now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -16443,6 +18290,19 @@ class KioskMainWindow(QMainWindow):
         image.save(out_path, format="JPEG", quality=95)
         return out_path
 
+    def resolve_admin_printer_name(
+        self,
+        model: str,
+        printing_override: Optional[dict] = None,
+    ) -> str:
+        cfg = self._normalize_printing_settings(
+            printing_override if isinstance(printing_override, dict) else self.get_printing_settings()
+        )
+        model_key = str(model or self._resolve_print_model(cfg)).strip().upper()
+        if model_key not in {"DS620", "DS620_STRIP", "RX1HS"}:
+            model_key = "DS620"
+        return self._resolve_printer_name_for_model(model_key, cfg)
+
     def run_admin_printer_health_check(
         self,
         model: str,
@@ -16452,7 +18312,7 @@ class KioskMainWindow(QMainWindow):
             printing_override if isinstance(printing_override, dict) else self.get_printing_settings()
         )
         model_key = str(model or self._resolve_print_model(cfg)).strip().upper()
-        if model_key not in {"DS620", "RX1HS"}:
+        if model_key not in {"DS620", "DS620_STRIP", "RX1HS"}:
             model_key = "DS620"
         printer_name = self._resolve_printer_name_for_model(model_key, cfg)
         ok, msg = self.check_runtime_printer_health(model_key, printer_name)
@@ -16467,7 +18327,7 @@ class KioskMainWindow(QMainWindow):
             printing_override if isinstance(printing_override, dict) else self.get_printing_settings()
         )
         model_key = str(model or self._resolve_print_model(cfg)).strip().upper()
-        if model_key not in {"DS620", "RX1HS"}:
+        if model_key not in {"DS620", "DS620_STRIP", "RX1HS"}:
             model_key = "DS620"
         printer_name = self._resolve_printer_name_for_model(model_key, cfg)
         form_name = self._resolve_printer_form_name_for_job(model_key, "4x6", cfg)
@@ -16561,7 +18421,11 @@ class KioskMainWindow(QMainWindow):
             "models": dict(self._film_remaining_by_model),
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
-        _write_json_atomic(self._film_state_path, payload)
+        try:
+            _write_json_atomic(self._film_state_path, payload)
+        except Exception as exc:
+            self._switch_runtime_storage_to_fallback(f"film_state_write_failed:{exc}")
+            _write_json_atomic(Path(self._film_state_path), payload)
 
     def _load_film_remaining_state_unlocked(self) -> dict[str, int]:
         path = Path(self._film_state_path)
@@ -17021,8 +18885,15 @@ class KioskMainWindow(QMainWindow):
 
     def _save_offline_queue_unlocked(self, items: list[dict[str, Any]]) -> None:
         path = Path(self._offline_queue_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, {"items": items, "updated_at": datetime.now().isoformat(timespec="seconds")})
+        payload = {"items": items, "updated_at": datetime.now().isoformat(timespec="seconds")}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, payload)
+        except Exception as exc:
+            self._switch_runtime_storage_to_fallback(f"offline_queue_write_failed:{exc}")
+            fallback = Path(self._offline_queue_path)
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(fallback, payload)
 
     @staticmethod
     def _offline_retry_backoff_sec(retry_count: int) -> float:
@@ -17269,16 +19140,22 @@ class KioskMainWindow(QMainWindow):
         printing_settings = self.get_printing_settings()
         printers = printing_settings.get("printers", {}) if isinstance(printing_settings, dict) else {}
 
-        def _printer_bool(config_key: str) -> bool:
-            item = printers.get(config_key, {}) if isinstance(printers, dict) else {}
-            name = str(item.get("win_name", "")).strip() if isinstance(item, dict) else ""
-            if not name:
-                return True
-            ok, _msg = get_printer_health(name)
-            return bool(ok)
+        def _printer_any_ok(config_keys: tuple[str, ...]) -> bool:
+            configured = False
+            for config_key in config_keys:
+                item = printers.get(config_key, {}) if isinstance(printers, dict) else {}
+                name = str(item.get("win_name", "")).strip() if isinstance(item, dict) else ""
+                if not name:
+                    continue
+                configured = True
+                ok, _msg = get_printer_health(name)
+                if bool(ok):
+                    return True
+            # Preserve existing behavior: when not configured, don't hard-fail heartbeat.
+            return not configured
 
-        ds620_ok = _printer_bool("DS620")
-        rx1hs_ok = _printer_bool("RX1HS")
+        ds620_ok = _printer_any_ok(("DS620", "DS620_STRIP"))
+        rx1hs_ok = _printer_any_ok(("RX1HS",))
         printer_ok = bool(ds620_ok or rx1hs_ok)
 
         payload: dict[str, Any] = {
@@ -18158,6 +20035,7 @@ class KioskMainWindow(QMainWindow):
         self._heartbeat_timer.stop()
         self._server_lock_probe_timer.stop()
         self._ota_check_timer.stop()
+        self._stop_payment_complete_transition_watchdog()
         self._stop_select_photo_preload_worker(wait=True)
         self.stop_bill_acceptor_test(wait_ms=3000)
         camera_screen = self.screens.get("camera")
@@ -18176,7 +20054,11 @@ def main() -> int:
     setup_logging()
     app = QApplication(sys.argv)
     app.aboutToQuit.connect(terminate_edsdk_once)
-    window = KioskMainWindow()
+    try:
+        window = KioskMainWindow()
+    except RuntimeError as exc:
+        print(f"[BOOT] startup canceled: {exc}")
+        return 1
     force_windowed = str(os.environ.get("KIOSK_WINDOWED", "0")).strip().lower() in {"1", "true", "yes", "on"}
     if force_windowed:
         window.show()
