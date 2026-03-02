@@ -49,43 +49,25 @@ jobs:
               cp .env.example .env
             fi
 
-            python3 - <<'PY'
-            import os
-            from pathlib import Path
-
-            env_path = Path(".env")
-            env_path.touch(exist_ok=True)
-            original_lines = env_path.read_text(encoding="utf-8").splitlines()
-            updates = {
-                "R2_ACCOUNT_ID": os.environ.get("R2_ACCOUNT_ID", ""),
-                "R2_ACCESS_KEY_ID": os.environ.get("R2_ACCESS_KEY_ID", ""),
-                "R2_SECRET_ACCESS_KEY": os.environ.get("R2_SECRET_ACCESS_KEY", ""),
-                "R2_BUCKET_NAME": os.environ.get("R2_BUCKET_NAME", ""),
-                "R2_PREFIX": os.environ.get("R2_PREFIX", ""),
+            update_env() {
+              key="$1"
+              value="${2:-}"
+              if [ -z "$value" ]; then
+                return 0
+              fi
+              tmp="$(mktemp)"
+              if [ -f ".env" ]; then
+                grep -v "^${key}=" .env > "$tmp" || true
+              fi
+              printf '%s=%s\n' "$key" "$value" >> "$tmp"
+              mv "$tmp" .env
             }
 
-            lines = []
-            seen = set()
-            for line in original_lines:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#") or "=" not in line:
-                    lines.append(line)
-                    continue
-
-                key, _ = line.split("=", 1)
-                value = updates.get(key, "")
-                if value:
-                    lines.append(f"{key}={value}")
-                    seen.add(key)
-                else:
-                    lines.append(line)
-
-            for key, value in updates.items():
-                if value and key not in seen:
-                    lines.append(f"{key}={value}")
-
-            env_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-            PY
+            update_env "R2_ACCOUNT_ID" "${R2_ACCOUNT_ID:-}"
+            update_env "R2_ACCESS_KEY_ID" "${R2_ACCESS_KEY_ID:-}"
+            update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
+            update_env "R2_BUCKET_NAME" "${R2_BUCKET_NAME:-}"
+            update_env "R2_PREFIX" "${R2_PREFIX:-}"
 
             git fetch origin main
             git checkout main
