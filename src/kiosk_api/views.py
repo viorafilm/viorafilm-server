@@ -131,6 +131,20 @@ class ConfigView(APIView):
         security_cfg.setdefault("offline_grace_days", int(getattr(settings, "KIOSK_OFFLINE_GRACE_DAYS", 3)))
         security_cfg.setdefault("server_lock_enforced", True)
         config["security"] = security_cfg
+        kiosk_gemini_api_key = str(getattr(settings, "KIOSK_GEMINI_API_KEY", "") or "").strip()
+        if kiosk_gemini_api_key:
+            # Centralized runtime key delivery for kiosks.
+            config["gemini_api_key"] = kiosk_gemini_api_key
+            ai_cfg = config.get("ai") if isinstance(config.get("ai"), dict) else {}
+            ai_cfg = dict(ai_cfg)
+            ai_cfg["gemini_api_key"] = kiosk_gemini_api_key
+            config["ai"] = ai_cfg
+        else:
+            logger.error(
+                "[CONFIG] KIOSK_GEMINI_API_KEY missing; gemini_api_key not injected "
+                "device=%s",
+                getattr(device, "device_code", "unknown"),
+            )
         config["device_mode_permissions"] = {
             "allow_celebrity_mode": bool(getattr(device, "allow_celebrity_mode", True)),
             "allow_ai_mode": bool(getattr(device, "allow_ai_mode", True)),

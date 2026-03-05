@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -270,20 +271,7 @@ def _remap_legacy_install_path(value: object) -> str:
     return text
 
 
-def _default_runtime_data_dir() -> Path:
-    def _can_write(path: Path) -> bool:
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            probe = path / f".vf_probe_{os.getpid()}.tmp"
-            probe.write_text("ok", encoding="utf-8")
-            try:
-                probe.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return True
-        except Exception:
-            return False
-
+def _iter_runtime_data_dir_candidates() -> list[Path]:
     candidates: list[Path] = []
     custom = str(os.environ.get("VIORAFILM_DATA_DIR", "")).strip()
     if custom:
@@ -335,7 +323,35 @@ def _default_runtime_data_dir() -> Path:
         if key and key not in seen:
             seen.add(key)
             dedup.append(candidate)
+    return dedup
 
+
+def _preferred_runtime_data_dirs() -> list[Path]:
+    preferred: list[Path] = []
+    program_data = str(os.environ.get("PROGRAMDATA", "")).strip()
+    if program_data:
+        preferred.append(Path(program_data) / "ViorafilmKiosk")
+    public_root = str(os.environ.get("PUBLIC", "")).strip()
+    if public_root:
+        preferred.append(Path(public_root) / "Documents" / "ViorafilmKiosk")
+    return preferred
+
+
+def _default_runtime_data_dir() -> Path:
+    def _can_write(path: Path) -> bool:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / f".vf_probe_{os.getpid()}.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            try:
+                probe.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    dedup = _iter_runtime_data_dir_candidates()
     for candidate in dedup:
         if _can_write(candidate):
             return candidate
@@ -415,10 +431,29 @@ def _resolve_runtime_config_path() -> Path:
     if not getattr(sys, "frozen", False):
         return bundled
 
-    runtime_path = _default_runtime_data_dir() / "config" / "config.json"
+    default_runtime_path = _default_runtime_data_dir() / "config" / "config.json"
+    runtime_path = default_runtime_path
+    preferred_existing: list[Path] = []
+    for root in _preferred_runtime_data_dirs():
+        candidate = _sanitize_runtime_path(
+            root / "config" / "config.json",
+            default_runtime_path,
+            "runtime_config_path",
+        )
+        try:
+            if candidate.is_file():
+                preferred_existing.append(candidate)
+        except Exception:
+            continue
+    if preferred_existing:
+        try:
+            preferred_existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            runtime_path = preferred_existing[0]
+        except Exception:
+            runtime_path = preferred_existing[0]
     runtime_path = _sanitize_runtime_path(
         runtime_path,
-        _default_runtime_data_dir() / "config" / "config.json",
+        default_runtime_path,
         "runtime_config_path",
     )
     try:
@@ -428,7 +463,7 @@ def _resolve_runtime_config_path() -> Path:
     except Exception as exc:
         _safe_boot_write(f"[BOOT] runtime config prepare failed: {exc}\n")
     if not _is_directory_writable(runtime_path.parent):
-        fallback = (_default_runtime_data_dir() / "config" / "config.json")
+        fallback = default_runtime_path
         try:
             fallback.parent.mkdir(parents=True, exist_ok=True)
             if (not fallback.is_file()) and bundled.is_file():
@@ -963,7 +998,7 @@ PRINT_QR_MARGIN_MULTIPLIER_BY_LAYOUT = {
 DEFAULT_ADMIN_SETTINGS = {
     "test_mode": False,
     "camera_backend": "auto",
-    "allow_dummy_when_camera_fail": True,
+    "allow_dummy_when_camera_fail": False,
     "countdown_seconds": 3,
     "capture_slots_override": "auto",
     "debug_fullscreen_shutter": False,
@@ -1216,6 +1251,43 @@ AI_STYLE_PRESETS: dict[str, dict[str, str]] = {
     key: dict(value) for key, value in DEFAULT_AI_STYLE_PRESETS.items()
 }
 
+AI_STYLE_PRIMARY_FALLBACK = "kpop_idol"
+
+
+def _resolve_preferred_ai_style_id(value: object = "") -> str:
+    style = str(value or "").strip().lower()
+    if style in AI_STYLE_PRESETS:
+        return style
+    if AI_STYLE_PRIMARY_FALLBACK in AI_STYLE_PRESETS:
+        return AI_STYLE_PRIMARY_FALLBACK
+    if AI_STYLE_PRESETS:
+        return next(iter(AI_STYLE_PRESETS.keys()))
+    if AI_STYLE_PRIMARY_FALLBACK in DEFAULT_AI_STYLE_PRESETS:
+        return AI_STYLE_PRIMARY_FALLBACK
+    if DEFAULT_AI_STYLE_PRESETS:
+        return next(iter(DEFAULT_AI_STYLE_PRESETS.keys()))
+    return AI_STYLE_PRIMARY_FALLBACK
+
+
+def _extract_ai_style_id_from_path(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    name = Path(raw).name.lower()
+    stem = Path(name).stem.lower()
+    known_styles: list[str] = []
+    for style_id in list(AI_STYLE_PRESETS.keys()) + list(DEFAULT_AI_STYLE_PRESETS.keys()):
+        normalized = str(style_id or "").strip().lower()
+        if normalized and normalized not in known_styles:
+            known_styles.append(normalized)
+    known_styles.sort(key=len, reverse=True)
+    for style_id in known_styles:
+        if stem == style_id:
+            return style_id
+        if stem.endswith(f"_{style_id}") or f"_{style_id}_" in stem:
+            return style_id
+    return ""
+
 DEFAULT_OFFLINE_GRACE_HOURS = 72
 DEFAULT_FILM_REMAINING_BY_MODEL = {
     "DS620": 400,
@@ -1374,12 +1446,59 @@ def _wait_spooler_job(printer_name: str, job_id: int, timeout_sec: float = 8.0) 
         win32print.ClosePrinter(handle)
 
 
-def check_internet(timeout: float = 1.0) -> tuple[bool, str]:
-    try:
-        with socket.create_connection(("1.1.1.1", 53), timeout=max(0.2, float(timeout))):
-            return True, "인터넷 연결됨"
-    except Exception:
-        return False, "인터넷 연결 안됨"
+def _internet_probe_urls(api_base_url: str = "") -> list[str]:
+    candidates: list[str] = []
+    base_candidates = [
+        api_base_url,
+        os.environ.get("VIORAFILM_API_BASE_URL", ""),
+        DEFAULT_SHARE_SETTINGS.get("api_base_url", ""),
+        "https://api.viorafilm.com/api",
+    ]
+    for raw_base in base_candidates:
+        normalized = _normalize_kiosk_api_base_url(raw_base)
+        if not normalized:
+            continue
+        candidates.append(f"{normalized}/health/")
+        candidates.append(f"{normalized}/health")
+    candidates.append("https://www.msftconnecttest.com/connecttest.txt")
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        url = str(item or "").strip()
+        key = url.lower()
+        if not url or key in seen:
+            continue
+        seen.add(key)
+        unique.append(url)
+    return unique
+
+
+def check_internet(timeout: float = 1.0, api_base_url: str = "") -> tuple[bool, str]:
+    probe_timeout = max(0.3, float(timeout))
+    urls = _internet_probe_urls(api_base_url)
+    if requests is not None:
+        for url in urls:
+            try:
+                resp = requests.get(
+                    url,
+                    timeout=max(0.8, min(3.0, probe_timeout)),
+                    allow_redirects=True,
+                )
+                code = int(resp.status_code)
+                if 200 <= code < 500:
+                    host = urlsplit(url).netloc or url
+                    return True, f"인터넷 연결됨 ({host})"
+            except Exception:
+                continue
+
+    for host, port in (("1.1.1.1", 53), ("8.8.8.8", 53), ("api.viorafilm.com", 443)):
+        try:
+            with socket.create_connection((host, int(port)), timeout=max(0.2, probe_timeout)):
+                return True, "인터넷 연결됨"
+        except Exception:
+            continue
+    return False, "인터넷 연결 안됨 (네트워크 정책 또는 DNS 차단 가능)"
 
 
 def _health_log_key(raw_key: str) -> str:
@@ -1592,6 +1711,40 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
     if not desired:
         return False
 
+    def _apply_devmode_to_dc(devmode_obj: object, reason: str) -> bool:
+        # Prefer ResetDC when available; some pywin32 builds expose only CreateDC.
+        if hasattr(hdc, "ResetDC"):
+            try:
+                hdc.ResetDC(devmode_obj)
+                return True
+            except Exception as exc:
+                print(
+                    f"[PRINT_FORM] ResetDC failed printer={printer_name} "
+                    f"reason={reason} error={exc}"
+                )
+                return False
+        try:
+            hdc.DeleteDC()
+        except Exception:
+            pass
+        try:
+            hdc.CreateDC("WINSPOOL", str(printer_name), None, devmode_obj)
+            print(
+                f"[PRINT_FORM] applied via CreateDC printer={printer_name} "
+                f"reason={reason}"
+            )
+            return True
+        except Exception as exc:
+            print(
+                f"[PRINT_FORM] CreateDC failed printer={printer_name} "
+                f"reason={reason} error={exc}"
+            )
+            try:
+                hdc.CreatePrinterDC(str(printer_name))
+            except Exception:
+                pass
+            return False
+
     handle = None
     try:
         handle = win32print.OpenPrinter(str(printer_name))
@@ -1679,7 +1832,8 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
                     devmode.dmPaperLength = 1524
                 if hasattr(devmode, "PaperLength"):
                     devmode.PaperLength = 1524
-                hdc.ResetDC(devmode)
+                if not _apply_devmode_to_dc(devmode, "custom_2x6"):
+                    return False
                 print(
                     "[PRINT_FORM] applied custom 2x6 "
                     f"printer={printer_name} desired=\"{desired}\""
@@ -1706,7 +1860,8 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
             devmode.dmFormName = str(resolved)[:31]
         if hasattr(devmode, "FormName"):
             devmode.FormName = str(resolved)[:31]
-        hdc.ResetDC(devmode)
+        if not _apply_devmode_to_dc(devmode, f"named_form:{resolved}"):
+            return False
         print(f"[PRINT_FORM] applied form=\"{resolved}\"")
         return True
     except Exception as exc:
@@ -2986,12 +3141,85 @@ def _extract_image_from_gemini_response(payload: object) -> Optional[Image.Image
     return None
 
 
+_AI_API_KEY_CACHE: dict[str, object] = {
+    "path": "",
+    "mtime_ns": -1,
+    "value": "",
+}
+
+
+def _resolve_gemini_api_key() -> str:
+    env_key = str(
+        os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+    ).strip()
+    if env_key:
+        return env_key
+
+    config_path = _resolve_runtime_config_path()
+    path_text = str(config_path)
+    try:
+        mtime_ns = int(config_path.stat().st_mtime_ns)
+    except Exception:
+        mtime_ns = -1
+
+    cached_path = str(_AI_API_KEY_CACHE.get("path", ""))
+    cached_mtime = int(_AI_API_KEY_CACHE.get("mtime_ns", -1))
+    if cached_path == path_text and cached_mtime == mtime_ns:
+        return str(_AI_API_KEY_CACHE.get("value", ""))
+
+    key = ""
+    try:
+        payload: object = {}
+        loaded = False
+        for enc in ("utf-8", "utf-8-sig", "cp949"):
+            try:
+                with config_path.open("r", encoding=enc) as fp:
+                    payload = json.load(fp)
+                loaded = True
+                break
+            except Exception:
+                continue
+        if not loaded:
+            payload = {}
+        if isinstance(payload, dict):
+            ai_section = payload.get("ai") if isinstance(payload.get("ai"), dict) else {}
+            admin_section = payload.get("admin") if isinstance(payload.get("admin"), dict) else {}
+            for candidate in (
+                payload.get("gemini_api_key"),
+                payload.get("google_api_key"),
+                ai_section.get("gemini_api_key"),
+                ai_section.get("google_api_key"),
+                admin_section.get("gemini_api_key"),
+                admin_section.get("google_api_key"),
+            ):
+                text = str(candidate or "").strip()
+                if text:
+                    key = text
+                    break
+    except Exception:
+        key = ""
+
+    _AI_API_KEY_CACHE["path"] = path_text
+    _AI_API_KEY_CACHE["mtime_ns"] = mtime_ns
+    _AI_API_KEY_CACHE["value"] = key
+    if key:
+        print(f"[AI] gemini api_key loaded from config path={config_path}")
+    return key
+
+
 def _generate_ai_variant_via_gemini(
     source: Image.Image,
     style_id: str,
 ) -> Optional[Image.Image]:
-    api_key = str(os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-    if not api_key or requests is None:
+    api_key = _resolve_gemini_api_key()
+    if requests is None:
+        print("[AI] gemini disabled: requests unavailable")
+        return None
+    if not api_key:
+        print(
+            "[AI] gemini disabled: api_key missing "
+            "(set GEMINI_API_KEY/GOOGLE_API_KEY or config gemini_api_key)"
+        )
         return None
 
     style_info = AI_STYLE_PRESETS.get(style_id) or {}
@@ -3001,6 +3229,37 @@ def _generate_ai_variant_via_gemini(
     if requested_model and requested_model != model:
         print(f"[AI] model override ignored requested={requested_model} locked={model}")
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    # Slow overseas links need longer read windows; keep model fixed and tune only transport timings.
+    connect_timeout_sec = 20.0
+    read_timeout_sec = 120.0
+    retry_count = 2  # total attempts = retry_count + 1
+    retry_backoff_sec = 2.0
+    try:
+        connect_timeout_sec = max(
+            5.0,
+            float(os.environ.get("KIOSK_AI_GEMINI_CONNECT_TIMEOUT_SEC", str(connect_timeout_sec)) or connect_timeout_sec),
+        )
+    except Exception:
+        pass
+    try:
+        read_timeout_sec = max(
+            30.0,
+            float(os.environ.get("KIOSK_AI_GEMINI_READ_TIMEOUT_SEC", str(read_timeout_sec)) or read_timeout_sec),
+        )
+    except Exception:
+        pass
+    try:
+        retry_count = max(0, int(os.environ.get("KIOSK_AI_GEMINI_RETRY_COUNT", str(retry_count)) or retry_count))
+    except Exception:
+        pass
+    try:
+        retry_backoff_sec = max(
+            0.0,
+            float(os.environ.get("KIOSK_AI_GEMINI_RETRY_BACKOFF_SEC", str(retry_backoff_sec)) or retry_backoff_sec),
+        )
+    except Exception:
+        pass
 
     try:
         buffer = io.BytesIO()
@@ -3029,32 +3288,70 @@ def _generate_ai_variant_via_gemini(
         "generationConfig": {"temperature": 0.35},
     }
 
-    try:
-        response = requests.post(endpoint, json=payload, timeout=40)
-        if response.status_code >= 400:
-            print(f"[AI] gemini failed status={response.status_code} style={style_id}")
+    transient_status = {408, 409, 425, 429, 500, 502, 503, 504}
+    max_attempts = max(1, retry_count + 1)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(
+                endpoint,
+                json=payload,
+                timeout=(connect_timeout_sec, read_timeout_sec),
+            )
+            if response.status_code >= 400:
+                body_text = str(response.text or "").replace("\n", " ").replace("\r", " ").strip()
+                if len(body_text) > 240:
+                    body_text = f"{body_text[:240]}..."
+                can_retry = response.status_code in transient_status and attempt < max_attempts
+                print(
+                    f"[AI] gemini failed status={response.status_code} style={style_id} "
+                    f"attempt={attempt}/{max_attempts} retry={1 if can_retry else 0} "
+                    f"body={body_text or '-'}"
+                )
+                if can_retry:
+                    if retry_backoff_sec > 0:
+                        time.sleep(retry_backoff_sec * attempt)
+                    continue
+                return None
+            parsed = response.json()
+            image = _extract_image_from_gemini_response(parsed)
+            if image is None:
+                print(
+                    f"[AI] gemini no image style={style_id} "
+                    f"attempt={attempt}/{max_attempts}"
+                )
+                return None
+            print(
+                f"[AI] gemini ok model={model} style={style_id} "
+                f"attempt={attempt}/{max_attempts} req={send_image.width}x{send_image.height} "
+                f"max_edge={GEMINI_REQUEST_MAX_EDGE} timeout={connect_timeout_sec:.0f}/{read_timeout_sec:.0f}s"
+            )
+            return image
+        except Exception as exc:
+            can_retry = attempt < max_attempts
+            print(
+                f"[AI] gemini exception style={style_id} "
+                f"attempt={attempt}/{max_attempts} retry={1 if can_retry else 0} err={exc}"
+            )
+            if can_retry:
+                if retry_backoff_sec > 0:
+                    time.sleep(retry_backoff_sec * attempt)
+                continue
             return None
-        parsed = response.json()
-        image = _extract_image_from_gemini_response(parsed)
-        if image is None:
-            print(f"[AI] gemini no image style={style_id}")
-            return None
-        print(
-            f"[AI] gemini ok model={model} style={style_id} "
-            f"req={send_image.width}x{send_image.height} max_edge={GEMINI_REQUEST_MAX_EDGE}"
-        )
-        return image
-    except Exception as exc:
-        print(f"[AI] gemini exception style={style_id} err={exc}")
-        return None
+    return None
 
 
-def _generate_ai_variant_image(source: Image.Image, style_id: str) -> Image.Image:
+def _generate_ai_variant_image(
+    source: Image.Image,
+    style_id: str,
+    allow_local_fallback: bool = True,
+) -> Image.Image:
     remote = _generate_ai_variant_via_gemini(source, style_id)
     if remote is not None:
         return remote
-    print(f"[AI] local filter fallback style={style_id}")
-    return _apply_local_ai_style(source, style_id)
+    if allow_local_fallback:
+        print(f"[AI] local filter fallback style={style_id}")
+        return _apply_local_ai_style(source, style_id)
+    raise RuntimeError(f"gemini_required_but_unavailable style={style_id}")
 
 
 def _design_assets_base_dir(layout_id: Optional[str] = None) -> Path:
@@ -4789,6 +5086,7 @@ class PreloadSelectPhotoWorker(QThread):
         ai_mode_4641: bool = False,
         ai_style_id: str = "",
         ai_remote_allowed: bool = True,
+        ai_strict_mode: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -4805,6 +5103,7 @@ class PreloadSelectPhotoWorker(QThread):
         self.ai_mode_4641 = bool(ai_mode_4641)
         self.ai_style_id = str(ai_style_id or "").strip().lower()
         self.ai_remote_allowed = bool(ai_remote_allowed)
+        self.ai_strict_mode = bool(ai_strict_mode)
 
     def _emit_progress(self, percent: int, ko_message: str, en_message: str) -> None:
         if not self.ai_mode_4641:
@@ -4976,7 +5275,7 @@ class PreloadSelectPhotoWorker(QThread):
             return []
         if self.session_dir is None:
             return []
-        style_id = self.ai_style_id if self.ai_style_id in AI_STYLE_PRESETS else next(iter(AI_STYLE_PRESETS.keys()))
+        style_id = _resolve_preferred_ai_style_id(self.ai_style_id)
         ai_dir = self.session_dir / "ai"
         ai_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5008,7 +5307,11 @@ class PreloadSelectPhotoWorker(QThread):
             try:
                 with Image.open(source_path) as source:
                     if self.ai_remote_allowed:
-                        ai_image = _generate_ai_variant_image(source, style_id)
+                        ai_image = _generate_ai_variant_image(
+                            source,
+                            style_id,
+                            allow_local_fallback=not self.ai_strict_mode,
+                        )
                     else:
                         ai_image = _apply_local_ai_style(source, style_id)
                     ai_image.convert("RGB").save(out_path, format="JPEG", quality=92)
@@ -5016,6 +5319,10 @@ class PreloadSelectPhotoWorker(QThread):
                     candidate_map[str(source_path)] = str(out_path)
             except Exception as exc:
                 print(f"[AI_MODE] preload candidate failed shot={source_path.name} err={exc}")
+                if self.ai_remote_allowed and self.ai_strict_mode:
+                    raise RuntimeError(
+                        f"ai_preload_failed_strict shot={source_path.name} err={exc}"
+                    ) from exc
             step_done = 15 + int((index / total) * 70)
             self._emit_progress(
                 step_done,
@@ -5139,6 +5446,7 @@ class DesignPreviewWorker(QThread):
         ai_source_b: str = "",
         ai_session_dir: str = "",
         ai_remote_allowed: bool = True,
+        ai_strict_mode: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -5160,6 +5468,7 @@ class DesignPreviewWorker(QThread):
         self.ai_source_b = Path(ai_source_b) if str(ai_source_b or "").strip() else None
         self.ai_session_dir = Path(ai_session_dir) if str(ai_session_dir or "").strip() else None
         self.ai_remote_allowed = bool(ai_remote_allowed)
+        self.ai_strict_mode = bool(ai_strict_mode)
 
     @staticmethod
     def _fit_preview(image: Image.Image, preview_size: tuple[int, int]) -> Image.Image:
@@ -5181,7 +5490,7 @@ class DesignPreviewWorker(QThread):
         return canvas
 
     def _build_ai_preview_paths(self) -> list[Path]:
-        style_id = self.ai_style_id if self.ai_style_id in AI_STYLE_PRESETS else next(iter(AI_STYLE_PRESETS.keys()))
+        style_id = _resolve_preferred_ai_style_id(self.ai_style_id)
         if self.ai_source_a is None or not self.ai_source_a.is_file():
             raise RuntimeError("ai preview source_a missing")
         if self.ai_source_b is None or not self.ai_source_b.is_file():
@@ -5203,13 +5512,21 @@ class DesignPreviewWorker(QThread):
 
         with Image.open(self.ai_source_a) as img_a:
             if self.ai_remote_allowed:
-                ai_a = _generate_ai_variant_image(img_a, style_id)
+                ai_a = _generate_ai_variant_image(
+                    img_a,
+                    style_id,
+                    allow_local_fallback=not self.ai_strict_mode,
+                )
             else:
                 ai_a = _apply_local_ai_style(img_a, style_id)
             ai_a.convert("RGB").save(out_a, format="JPEG", quality=95)
         with Image.open(self.ai_source_b) as img_b:
             if self.ai_remote_allowed:
-                ai_b = _generate_ai_variant_image(img_b, style_id)
+                ai_b = _generate_ai_variant_image(
+                    img_b,
+                    style_id,
+                    allow_local_fallback=not self.ai_strict_mode,
+                )
             else:
                 ai_b = _apply_local_ai_style(img_b, style_id)
             ai_b.convert("RGB").save(out_b, format="JPEG", quality=95)
@@ -5854,6 +6171,10 @@ class SelectDesignScreen(ImageScreen):
             ai_source_b=ai_source_b,
             ai_session_dir=ai_session_dir,
             ai_remote_allowed=True,
+            ai_strict_mode=bool(
+                hasattr(self.main_window, "is_ai_strict_mode_enabled")
+                and self.main_window.is_ai_strict_mode_enabled()
+            ),
             parent=self,
         )
         worker.preview_ready.connect(self._on_preview_ready)
@@ -6187,10 +6508,31 @@ class SelectDesignScreen(ImageScreen):
         return mode == "ai" and str(self.layout_id or "").strip() == AI_LAYOUT_ID
 
     def _resolve_ai_style_id(self) -> str:
-        raw = str(getattr(self.main_window, "ai_style_id", "") or "").strip().lower()
-        if raw in AI_STYLE_PRESETS:
-            return raw
-        return next(iter(AI_STYLE_PRESETS.keys()))
+        current_raw = str(getattr(self.main_window, "ai_style_id", "") or "").strip().lower()
+        if current_raw in AI_STYLE_PRESETS:
+            return current_raw
+
+        session = None
+        if hasattr(self.main_window, "get_active_session"):
+            session = self.main_window.get_active_session()
+        if session is not None:
+            session_raw = str(getattr(session, "ai_style_id", "") or "").strip().lower()
+            if session_raw in AI_STYLE_PRESETS:
+                return session_raw
+
+        for path in self.selected_print_paths:
+            parsed = _extract_ai_style_id_from_path(path)
+            if parsed in AI_STYLE_PRESETS:
+                return parsed
+
+        for raw in list(getattr(self.main_window, "selected_print_paths", []) or []):
+            parsed = _extract_ai_style_id_from_path(raw)
+            if parsed in AI_STYLE_PRESETS:
+                return parsed
+
+        fallback = _resolve_preferred_ai_style_id(current_raw)
+        print(f"[AI_MODE] style fallback -> {fallback}")
+        return fallback
 
     def _resolve_ai_source_pair(self) -> tuple[Path, Path]:
         candidates: list[Path] = []
@@ -6259,6 +6601,15 @@ class SelectDesignScreen(ImageScreen):
             return None
         return selected[0], selected[1]
 
+    @staticmethod
+    def _ai_pair_style_ids(pair: tuple[Path, Path]) -> set[str]:
+        styles: set[str] = set()
+        for item in pair:
+            parsed = _extract_ai_style_id_from_path(item)
+            if parsed:
+                styles.add(parsed)
+        return styles
+
     def _resolve_ai_original_pair(self) -> tuple[Path, Path]:
         originals: list[Path] = []
         preferred_originals = list(getattr(self.main_window, "ai_selected_source_paths", []) or [])
@@ -6286,6 +6637,14 @@ class SelectDesignScreen(ImageScreen):
         first = originals[0]
         second = originals[1] if len(originals) > 1 else originals[0]
         return first, second
+
+    def _is_ai_strict_mode_enabled(self) -> bool:
+        if hasattr(self.main_window, "is_ai_strict_mode_enabled"):
+            try:
+                return bool(self.main_window.is_ai_strict_mode_enabled())
+            except Exception:
+                return True
+        return True
 
     def _generate_ai_variants(
         self,
@@ -6317,10 +6676,15 @@ class SelectDesignScreen(ImageScreen):
             return out_a, out_b
 
         self._emit_compose_progress(progress_cb, 28, "AI 변환 시작", "Starting AI transform")
+        strict_mode = self._is_ai_strict_mode_enabled()
         with Image.open(source_a) as img_a:
             self._emit_compose_progress(progress_cb, 40, "AI 사진 1/2 생성중", "Generating AI photo 1/2")
             if remote_allowed:
-                ai_a = _generate_ai_variant_image(img_a, style_id)
+                ai_a = _generate_ai_variant_image(
+                    img_a,
+                    style_id,
+                    allow_local_fallback=not strict_mode,
+                )
             else:
                 ai_a = _apply_local_ai_style(img_a, style_id)
             ai_a.convert("RGB").save(out_a, format="JPEG", quality=95)
@@ -6328,7 +6692,11 @@ class SelectDesignScreen(ImageScreen):
         with Image.open(source_b) as img_b:
             self._emit_compose_progress(progress_cb, 72, "AI 사진 2/2 생성중", "Generating AI photo 2/2")
             if remote_allowed:
-                ai_b = _generate_ai_variant_image(img_b, style_id)
+                ai_b = _generate_ai_variant_image(
+                    img_b,
+                    style_id,
+                    allow_local_fallback=not strict_mode,
+                )
             else:
                 ai_b = _apply_local_ai_style(img_b, style_id)
             ai_b.convert("RGB").save(out_b, format="JPEG", quality=95)
@@ -6341,20 +6709,25 @@ class SelectDesignScreen(ImageScreen):
         return out_a, out_b
 
     def _build_preview_paths_ai_4641(self) -> list[Path]:
+        style_id = self._resolve_ai_style_id()
         selected_pair = self._resolve_ai_selected_pair()
         if (
             selected_pair is not None
             and self._is_ai_generated_path(selected_pair[0])
             and self._is_ai_generated_path(selected_pair[1])
         ):
-            source_a, source_b = self._resolve_ai_original_pair()
+            selected_styles = self._ai_pair_style_ids(selected_pair)
+            if style_id in selected_styles and len(selected_styles) == 1:
+                source_a, source_b = self._resolve_ai_original_pair()
+                print(
+                    "[AI_MODE] preview map 4641 slots=LT:orig1 RT:selected1 LB:selected2 RB:orig2 "
+                    f"s1={selected_pair[0].name} s2={selected_pair[1].name}"
+                )
+                return [source_a, selected_pair[0], selected_pair[1], source_b]
             print(
-                "[AI_MODE] preview map 4641 slots=LT:orig1 RT:selected1 LB:selected2 RB:orig2 "
-                f"s1={selected_pair[0].name} s2={selected_pair[1].name}"
+                "[AI_MODE] preview selected-style mismatch -> regenerate "
+                f"selected={','.join(sorted(selected_styles)) or 'unknown'} target={style_id}"
             )
-            return [source_a, selected_pair[0], selected_pair[1], source_b]
-
-        style_id = self._resolve_ai_style_id()
         source_a, source_b = self._resolve_ai_source_pair()
         ai_a, ai_b = self._generate_ai_variants(
             source_a=source_a,
@@ -6381,13 +6754,29 @@ class SelectDesignScreen(ImageScreen):
             and self._is_ai_generated_path(selected_pair[0])
             and self._is_ai_generated_path(selected_pair[1])
         ):
-            source_a, source_b = self._resolve_ai_original_pair()
-            ai_a, ai_b = selected_pair
-            self._emit_compose_progress(progress_cb, 74, "선택 AI 반영중", "Applying selected AI photos")
-            print(
-                "[AI_MODE] reuse selected ai purpose=final "
-                f"style={style_id} ai1={ai_a.name} ai2={ai_b.name}"
-            )
+            selected_styles = self._ai_pair_style_ids(selected_pair)
+            if style_id in selected_styles and len(selected_styles) == 1:
+                source_a, source_b = self._resolve_ai_original_pair()
+                ai_a, ai_b = selected_pair
+                self._emit_compose_progress(progress_cb, 74, "선택 AI 반영중", "Applying selected AI photos")
+                print(
+                    "[AI_MODE] reuse selected ai purpose=final "
+                    f"style={style_id} ai1={ai_a.name} ai2={ai_b.name}"
+                )
+            else:
+                print(
+                    "[AI_MODE] selected-style mismatch -> regenerate final "
+                    f"selected={','.join(sorted(selected_styles)) or 'unknown'} target={style_id}"
+                )
+                source_a, source_b = self._resolve_ai_source_pair()
+                ai_a, ai_b = self._generate_ai_variants(
+                    source_a=source_a,
+                    source_b=source_b,
+                    style_id=style_id,
+                    purpose="final",
+                    remote_allowed=True,
+                    progress_cb=progress_cb,
+                )
         else:
             source_a, source_b = self._resolve_ai_source_pair()
             ai_a, ai_b = self._generate_ai_variants(
@@ -6686,10 +7075,23 @@ class AppPaymentMethodScreen(PaymentMethodScreen):
 
     @staticmethod
     def _normalize_enabled(enabled: Optional[dict]) -> dict[str, bool]:
+        def _to_bool(value: object, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return int(value) != 0
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {"1", "true", "yes", "on", "y", "t"}:
+                    return True
+                if text in {"0", "false", "no", "off", "n", "f", ""}:
+                    return False
+            return bool(default)
+
         normalized = dict(DEFAULT_PAYMENT_METHODS)
         if isinstance(enabled, dict):
             for key in ("cash", "card", "coupon"):
-                normalized[key] = bool(enabled.get(key, normalized[key]))
+                normalized[key] = _to_bool(enabled.get(key), bool(normalized[key]))
         if not (normalized["cash"] or normalized["card"] or normalized["coupon"]):
             normalized["cash"] = True
         return normalized
@@ -7389,8 +7791,16 @@ class CouponInputScreen(ImageScreen):
 
     def _go_back(self) -> None:
         self._hide_invalid_overlay(clear_input=True)
-        print("[COUPON] back -> payment_method")
-        self.main_window.goto_screen("payment_method")
+        back_target = "payment_method"
+        try:
+            single_method = self.main_window._single_enabled_payment_method()
+            if single_method == "coupon":
+                # Avoid coupon-only loop: coupon_input -> payment_method -> coupon_input.
+                back_target = "how_many_prints"
+        except Exception:
+            pass
+        print(f"[COUPON] back -> {back_target}")
+        self.main_window.goto_screen(back_target)
 
     @staticmethod
     def _point_in_rect(x: int, y: int, rect: tuple[int, int, int, int]) -> bool:
@@ -7676,10 +8086,12 @@ class BootHealthCheckWorker(QObject):
         camera_dll_path: str,
         printer_ds620_candidates: list[str],
         printer_rx1hs_candidates: list[str],
+        internet_api_base_url: str = "",
     ) -> None:
         super().__init__()
         self.camera_backend = str(camera_backend or "auto")
         self.camera_dll_path = str(camera_dll_path or "")
+        self.internet_api_base_url = _normalize_kiosk_api_base_url(internet_api_base_url)
         self.printer_ds620_candidates = [
             str(item).strip()
             for item in list(printer_ds620_candidates or [])
@@ -7727,7 +8139,10 @@ class BootHealthCheckWorker(QObject):
             rx_ok, rx_msg = self._check_printer_candidates(self.printer_rx1hs_candidates)
             results["printer_rx1hs"] = {"ok": bool(rx_ok), "msg": str(rx_msg)}
 
-            net_ok, net_msg = check_internet(timeout=1.0)
+            net_ok, net_msg = check_internet(
+                timeout=1.0,
+                api_base_url=self.internet_api_base_url,
+            )
             results["internet"] = {"ok": bool(net_ok), "msg": str(net_msg)}
             self.completed.emit(results)
         except Exception as exc:
@@ -7901,6 +8316,14 @@ class BootHealthCheckScreen(ImageScreen):
 
     def _collect_check_inputs(self) -> dict:
         printing = self.main_window.get_printing_settings() if hasattr(self.main_window, "get_printing_settings") else {}
+        share = self.main_window.get_share_settings() if hasattr(self.main_window, "get_share_settings") else {}
+        internet_api_base_url = ""
+        if isinstance(share, dict):
+            internet_api_base_url = _normalize_kiosk_api_base_url(share.get("api_base_url", ""))
+        if not internet_api_base_url:
+            internet_api_base_url = _normalize_kiosk_api_base_url(
+                DEFAULT_SHARE_SETTINGS.get("api_base_url", "")
+            )
         ds620_candidates: list[str] = []
         rx1hs_candidates: list[str] = []
         if hasattr(self.main_window, "_resolve_printer_candidates_for_model"):
@@ -7945,6 +8368,7 @@ class BootHealthCheckScreen(ImageScreen):
             "camera_dll_path": self.main_window._resolve_canon_edsdk_dll_path()
             if hasattr(self.main_window, "_resolve_canon_edsdk_dll_path")
             else "",
+            "internet_api_base_url": internet_api_base_url,
             "printer_ds620_candidates": ds620_candidates,
             "printer_rx1hs_candidates": rx1hs_candidates,
         }
@@ -7970,6 +8394,7 @@ class BootHealthCheckScreen(ImageScreen):
             camera_dll_path=str(payload.get("camera_dll_path", "")),
             printer_ds620_candidates=list(payload.get("printer_ds620_candidates", [])),
             printer_rx1hs_candidates=list(payload.get("printer_rx1hs_candidates", [])),
+            internet_api_base_url=str(payload.get("internet_api_base_url", "")),
         )
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -9741,7 +10166,14 @@ class AdminScreen(QWidget):
         printer_names: Optional[list[str]] = None,
     ) -> None:
         self.test_mode_cb.setChecked(bool(settings.get("test_mode", False)))
-        self.allow_dummy_cb.setChecked(bool(settings.get("allow_dummy_when_camera_fail", True)))
+        self.allow_dummy_cb.setChecked(
+            bool(
+                settings.get(
+                    "allow_dummy_when_camera_fail",
+                    bool(DEFAULT_ADMIN_SETTINGS["allow_dummy_when_camera_fail"]),
+                )
+            )
+        )
         self.debug_fullscreen_shutter_cb.setChecked(
             bool(settings.get("debug_fullscreen_shutter", False))
         )
@@ -10018,22 +10450,29 @@ class AdminScreen(QWidget):
         ds620_form_2x6 = self.print_form_ds620_2x6_combo.currentText().strip() or "2x6"
         rx1hs_form_4x6 = self.print_form_rx1hs_4x6_combo.currentText().strip() or "4x6"
         rx1hs_form_2x6 = self.print_form_rx1hs_2x6_combo.currentText().strip() or "2x6"
+        default_model = str(current.get("default_model", "DS620")).strip().upper()
+        if default_model not in {"DS620", "RX1HS"}:
+            default_model = "DS620"
+        ds620_name = self.print_printer_ds620_combo.currentText().strip()
+        rx1hs_name = self.print_printer_rx1hs_combo.currentText().strip()
+        if default_model == "DS620" and (not ds620_name) and rx1hs_name:
+            default_model = "RX1HS"
         return {
             "enabled": self.printing_enabled_cb.isChecked(),
             "dry_run": self.printing_dry_run_cb.isChecked(),
             "printers": {
                 "DS620": {
-                    "win_name": self.print_printer_ds620_combo.currentText().strip(),
+                    "win_name": ds620_name,
                     "form_4x6": ds620_form_4x6 or str(current_ds620.get("form_4x6", "4x6")),
                     "form_2x6": ds620_form_2x6 or str(current_ds620.get("form_2x6", "2x6")),
                 },
                 "RX1HS": {
-                    "win_name": self.print_printer_rx1hs_combo.currentText().strip(),
+                    "win_name": rx1hs_name,
                     "form_4x6": rx1hs_form_4x6 or str(current_rx1hs.get("form_4x6", "4x6")),
                     "form_2x6": rx1hs_form_2x6 or str(current_rx1hs.get("form_2x6", "2x6")),
                 },
             },
-            "default_model": "DS620",
+            "default_model": default_model,
         }
 
     def _load_pricing_controls(self, pricing: Optional[dict], layout_ids: Optional[list[str]]) -> None:
@@ -11749,6 +12188,8 @@ class CameraScreen(ImageScreen):
         self._capture_target_index: Optional[int] = None
         self._capture_target_path: Optional[Path] = None
         self._pending_dummy_fallback_reason: Optional[str] = None
+        self._pending_restart_after_liveview_stop = False
+        self._capture_timeout_streak = 0
         self._shutter_locked = False
         self._auto_next_pending = False
         self.auto_mode = True
@@ -11803,6 +12244,14 @@ class CameraScreen(ImageScreen):
         self._shots_raw_dir: Optional[Path] = None
         self._overlay_sequence_cache: dict[str, list[Path]] = {}
         self._overlay_pixmap_cache: dict[tuple[str, int, int, int], QPixmap] = {}
+        runtime_sessions = getattr(main_window, "_runtime_sessions_dir", None)
+        try:
+            if runtime_sessions:
+                self._runtime_sessions_dir = Path(runtime_sessions)
+            else:
+                self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
+        except Exception:
+            self._runtime_sessions_dir = _default_runtime_data_dir() / "sessions"
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
@@ -12157,14 +12606,22 @@ class CameraScreen(ImageScreen):
         self._camera_connection_blocked = False
         self._camera_error_label.hide()
 
+    def _halt_capture_for_operator(self, error_message: str, notice: str) -> None:
+        # In operation mode, do not auto-continue after camera transfer/capture failures.
+        self._finish_capture_cycle()
+        self.cancel_countdown()
+        self.auto_mode = False
+        self.auto_wait_frame = False
+        self._show_camera_connection_error(notice)
+        print(f"[CAMERA] capture halted operator_intervention=1 reason={error_message}")
+
     def _is_dummy_fallback_allowed(self) -> bool:
-        allow_dummy = False
-        test_mode = False
         if hasattr(self.main_window, "allow_dummy_when_camera_fail"):
-            allow_dummy = bool(self.main_window.allow_dummy_when_camera_fail())
+            return bool(self.main_window.allow_dummy_when_camera_fail())
+        # Legacy fallback: if runtime method is unavailable, allow only in test mode.
         if hasattr(self.main_window, "is_test_mode"):
-            test_mode = bool(self.main_window.is_test_mode())
-        return allow_dummy or test_mode
+            return bool(self.main_window.is_test_mode())
+        return False
 
     def _log_backend(self, backend: str, reason: str) -> None:
         self._backend_active = backend
@@ -12260,6 +12717,7 @@ class CameraScreen(ImageScreen):
         self._liveview_worker = worker
         self._liveview_thread = thread
         self._liveview_running = True
+        self._pending_restart_after_liveview_stop = False
         self._liveview_frame_received = False
         self._clear_camera_connection_error()
         self._log_backend(backend, reason)
@@ -12318,7 +12776,6 @@ class CameraScreen(ImageScreen):
         image = QImage.fromData(jpeg_bytes, "JPG")
         if image.isNull():
             return
-        self._last_liveview_image = image.copy()
         if len(jpeg_bytes) <= (2 * 1024 * 1024):
             self._last_liveview_jpeg = bytes(jpeg_bytes)
         else:
@@ -12331,6 +12788,7 @@ class CameraScreen(ImageScreen):
         if self.capture_slots > 0:
             shot_index = max(1, min(int(shot_index), int(self.capture_slots)))
         pixmap = self._apply_liveview_overlay(pixmap, int(shot_index))
+        self._last_liveview_image = pixmap.toImage()
         self._liveview_frame_received = True
         self._clear_camera_connection_error()
         self._liveview_pixmap = pixmap
@@ -12365,11 +12823,26 @@ class CameraScreen(ImageScreen):
             worker.stop()
 
     def _on_liveview_thread_finished(self) -> None:
+        sender_thread = self.sender()
+        if (
+            sender_thread is not None
+            and self._liveview_thread is not None
+            and sender_thread is not self._liveview_thread
+        ):
+            print("[CAMERA] liveview worker finished from stale thread -> ignored")
+            return
         self._liveview_worker = None
         self._liveview_thread = None
         self._liveview_running = False
         print("[CAMERA] liveview worker stopped")
         self._capture_pending_after_liveview_stop = False
+        if self._pending_restart_after_liveview_stop:
+            if self.isVisible():
+                print("[CAMERA] timeout recovery resume -> restart liveview/edsdk")
+                self._resume_edsdk_timeout_recovery()
+            else:
+                self._pending_restart_after_liveview_stop = False
+            return
         if self._pending_dummy_fallback_reason and self.isVisible():
             reason = self._pending_dummy_fallback_reason
             self._pending_dummy_fallback_reason = None
@@ -12408,6 +12881,15 @@ class CameraScreen(ImageScreen):
         worker = self._liveview_worker
         thread = self._liveview_thread
         if worker is None or thread is None or not thread.isRunning():
+            if self._pending_restart_after_liveview_stop and self._backend_active == "edsdk":
+                print("[CAMERA] capture deferred: timeout recovery still in progress")
+                self._finish_capture_cycle()
+                self._show_retry_overlay(
+                    "Transfer recovery in progress\nPlease retry",
+                    duration_ms=1200,
+                )
+                self._schedule_auto_continue(1300)
+                return
             if self._is_dummy_fallback_allowed():
                 try:
                     saved = self.capture_still(index)
@@ -12449,6 +12931,7 @@ class CameraScreen(ImageScreen):
         if index is None:
             self._finish_capture_cycle()
             return
+        self._capture_timeout_streak = 0
 
         source = Path(out_path)
         saved = source
@@ -12473,7 +12956,16 @@ class CameraScreen(ImageScreen):
             self._schedule_auto_continue(1700)
             return
         if "TIMEOUT" in normalized or "DIR ITEM" in normalized:
+            self._capture_timeout_streak += 1
+            if not self._is_dummy_fallback_allowed():
+                self._halt_capture_for_operator(
+                    error_message,
+                    "카메라 전송 실패\n관리자를 호출해주세요",
+                )
+                return
             self._finish_capture_cycle()
+            if self._capture_timeout_streak >= 1:
+                self._recover_edsdk_after_capture_timeout()
             self._show_retry_overlay(
                 "Transfer failed (USB/settings)\nPlease retry",
                 duration_ms=1500,
@@ -12481,10 +12973,7 @@ class CameraScreen(ImageScreen):
             self._schedule_auto_continue(1700)
             return
 
-        allow_dummy = False
-        if hasattr(self.main_window, "allow_dummy_when_camera_fail"):
-            allow_dummy = bool(self.main_window.allow_dummy_when_camera_fail())
-        if allow_dummy and index is not None:
+        if self._is_dummy_fallback_allowed() and index is not None:
             try:
                 saved = self.capture_still(index)
                 print(f"[CAMERA] capture failed -> dummy fallback path={saved}")
@@ -12493,9 +12982,37 @@ class CameraScreen(ImageScreen):
             except Exception as exc:
                 print(f"[CAMERA] dummy fallback failed: {exc}")
 
-        self._finish_capture_cycle()
-        self._show_retry_overlay("Capture failed\nPlease retry", duration_ms=1500)
-        self._schedule_auto_continue(1700)
+        self._halt_capture_for_operator(
+            error_message,
+            "카메라 촬영 실패\n관리자를 호출해주세요",
+        )
+
+    def _recover_edsdk_after_capture_timeout(self) -> None:
+        if self._backend_active != "edsdk":
+            return
+        print(
+            f"[CAMERA] timeout recovery start streak={self._capture_timeout_streak} "
+            "-> restart liveview/edsdk"
+        )
+        self.cancel_countdown()
+        self._stop_capture_worker(wait=False)
+        self._pending_restart_after_liveview_stop = True
+        self._stop_liveview_worker(wait=True)
+        thread = self._liveview_thread
+        if thread is not None and thread.isRunning():
+            print("[CAMERA] timeout recovery deferred: waiting for liveview worker to stop")
+            return
+        self._resume_edsdk_timeout_recovery()
+
+    def _resume_edsdk_timeout_recovery(self) -> None:
+        self._pending_restart_after_liveview_stop = False
+        try:
+            terminate_edsdk_once()
+        except Exception as exc:
+            print(f"[CAMERA] timeout recovery terminate failed: {exc}")
+        self.auto_wait_frame = True
+        self._liveview_frame_received = False
+        self._start_liveview_worker()
 
     def _on_capture_thread_finished(self) -> None:
         self._capture_worker = None
@@ -12856,6 +13373,7 @@ class CameraScreen(ImageScreen):
         self._shots_raw_dir = self.session.session_dir / "shots_raw"
         setattr(self.session, "current_shot_index", 1)
         self._auto_next_pending = False
+        self._capture_timeout_streak = 0
         self.auto_wait_frame = True
         self.countdown_running = False
         self.capture_inflight = False
@@ -13465,11 +13983,21 @@ class KioskMainWindow(QMainWindow):
         self._frame_select_price_labels: dict[str, QLabel] = {}
         self._frame_select_mode_buttons: dict[str, QPushButton] = {}
         self._frame_select_mode_price_labels: dict[str, QLabel] = {}
+        self._last_ai_runtime_ready: Optional[bool] = None
         self.ui_sound = UiSoundManager(self)
         self._suppress_nav_sound_until: float = 0.0
         self._runtime_out_dir = _resolve_runtime_out_dir()
         self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
         self._ensure_runtime_dirs()
+        self._apply_startup_runtime_defaults()
+        try:
+            print(
+                "[BOOT] runtime config "
+                f"path={self.config_path} "
+                f"preferred={1 if self._is_preferred_runtime_config_path(self.config_path) else 0}"
+            )
+        except Exception:
+            pass
         self._license_state_lock = threading.Lock()
         self._license_state_path = self._runtime_out_dir / "license_state.json"
         self._first_seen_ts = 0.0
@@ -13630,6 +14158,29 @@ class KioskMainWindow(QMainWindow):
             self.goto_screen("boot_healthcheck")
 
     def _ensure_runtime_dirs(self) -> None:
+        for preferred_root in _preferred_runtime_data_dirs():
+            preferred_root = Path(preferred_root)
+            for path in (
+                preferred_root,
+                preferred_root / "config",
+                preferred_root / "out",
+                preferred_root / "sessions",
+                preferred_root / "logs",
+            ):
+                try:
+                    path.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    _safe_boot_write(f"[BOOT] preferred runtime dir prepare failed: {path} ({exc})\n")
+            try:
+                out_ok = _is_directory_writable(preferred_root / "out")
+                sessions_ok = _is_directory_writable(preferred_root / "sessions")
+                print(
+                    f"[BOOT] runtime preferred root={preferred_root} "
+                    f"writable_out={1 if out_ok else 0} writable_sessions={1 if sessions_ok else 0}"
+                )
+            except Exception:
+                pass
+
         candidates = [
             _default_runtime_data_dir(),
             Path(self._runtime_out_dir),
@@ -13655,7 +14206,44 @@ class KioskMainWindow(QMainWindow):
             pass
 
     def _switch_runtime_storage_to_fallback(self, reason: str) -> None:
+        current_root: Optional[Path] = None
+        try:
+            current_root = Path(self._runtime_out_dir).parent.resolve(strict=False)
+        except Exception:
+            current_root = None
+
         fallback_data = _default_runtime_data_dir()
+        for candidate in _iter_runtime_data_dir_candidates():
+            try:
+                resolved_candidate = candidate.resolve(strict=False)
+            except Exception:
+                resolved_candidate = candidate
+            if (
+                current_root is not None
+                and str(resolved_candidate).strip().lower() == str(current_root).strip().lower()
+            ):
+                continue
+            candidate_out = candidate / "out"
+            candidate_sessions = candidate / "sessions"
+            try:
+                candidate_out.mkdir(parents=True, exist_ok=True)
+                candidate_sessions.mkdir(parents=True, exist_ok=True)
+                probe_path = candidate_out / f".vf_runtime_switch_probe_{os.getpid()}.json"
+                _write_json_atomic(
+                    probe_path,
+                    {
+                        "reason": str(reason or ""),
+                        "ts": time.time(),
+                    },
+                )
+                try:
+                    probe_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                fallback_data = candidate
+                break
+            except Exception:
+                continue
         fallback_out = fallback_data / "out"
         fallback_sessions = fallback_data / "sessions"
         for path in [fallback_data, fallback_out, fallback_sessions]:
@@ -13670,6 +14258,9 @@ class KioskMainWindow(QMainWindow):
         self._film_state_path = fallback_out / "film_remaining_state.json"
         self._ota_download_dir = fallback_out / "updates"
         self._ota_state_path = fallback_out / "ota_state.json"
+        camera_screen = self.screens.get("camera")
+        if isinstance(camera_screen, CameraScreen):
+            camera_screen._runtime_sessions_dir = Path(self._runtime_sessions_dir)
         _safe_boot_write(
             "[BOOT] runtime storage switched to fallback "
             f"reason={reason} data={fallback_data}\n"
@@ -13748,6 +14339,7 @@ class KioskMainWindow(QMainWindow):
             payment_screen = self.screens.get("payment_method")
             if isinstance(payment_screen, AppPaymentMethodScreen):
                 enabled = self.get_payment_methods()
+                single_method = self._single_enabled_payment_method(enabled)
                 payment_screen.apply_payment_methods(enabled)
                 self._apply_payment_hotspot_overrides()
                 payment_screen.set_default_method()
@@ -13763,6 +14355,10 @@ class KioskMainWindow(QMainWindow):
                 )
                 if self.current_required_amount <= 0:
                     self._refresh_required_amount()
+                if single_method:
+                    print(f"[PAYMENT] single enabled method={single_method} -> skip payment_method")
+                    if self._enter_single_payment_flow(single_method):
+                        return
             else:
                 self.current_payment_method = "cash"
                 self.payment_method = self.current_payment_method
@@ -13935,16 +14531,30 @@ class KioskMainWindow(QMainWindow):
         if not isinstance(camera_screen, CameraScreen):
             print("[CAMERA] enter blocked: camera screen missing")
             return False
+        if self.is_ai_mode_active() and not self._is_ai_mode_runtime_ready(
+            stage="camera_entry",
+            probe_once=True,
+        ):
+            self._block_ai_mode_missing_key(
+                stage="camera_entry",
+                notice="AI 서버 키가 없어 촬영을 시작할 수 없습니다",
+            )
+            return False
         requested_backend = self._resolve_requested_camera_backend()
         effective_backend = requested_backend
+        if requested_backend == "dummy" and not self.is_test_mode():
+            # Do not allow dummy backend in operation mode.
+            print("[CAMERA] dummy backend blocked: test_mode required -> auto")
+            requested_backend = "auto"
+            effective_backend = "auto"
         if not skip_health_check:
             health_ok, health_msg = self.check_runtime_camera_health(requested_backend)
             if not health_ok:
-                allow_dummy = bool(self.allow_dummy_when_camera_fail() or self.is_test_mode())
+                allow_dummy = bool(self.allow_dummy_when_camera_fail())
                 if requested_backend in {"auto", "edsdk"} and allow_dummy:
                     effective_backend = "dummy"
                     print(f"[CAMERA] health failed -> fallback dummy ({health_msg})")
-                    self._show_runtime_notice("카메라 연결 실패: 더미 모드로 진행합니다", duration_ms=1200)
+                    self._show_runtime_notice("카메라 연결 실패: 테스트 더미 모드로 진행합니다", duration_ms=1200)
                 else:
                     print(f"[CAMERA] enter blocked: {health_msg}")
                     self._show_runtime_notice("카메라 연결 실패", duration_ms=1200)
@@ -13955,6 +14565,7 @@ class KioskMainWindow(QMainWindow):
             self.current_design_index,
             self.current_design_path,
         )
+        camera_screen._runtime_sessions_dir = Path(self._runtime_sessions_dir)
         try:
             camera_screen.start_session(
                 self.current_layout_id,
@@ -14129,8 +14740,9 @@ class KioskMainWindow(QMainWindow):
             bool(self.is_ai_mode_active())
             and str(self.current_layout_id or "").strip() == AI_LAYOUT_ID
         )
-        ai_style_for_preload = str(self.ai_style_id or "").strip().lower()
+        ai_style_for_preload = _resolve_preferred_ai_style_id(self.ai_style_id)
         ai_remote_allowed = True
+        ai_strict_mode = self.is_ai_strict_mode_enabled()
         worker = PreloadSelectPhotoWorker(
             session_dir=session_dir,
             layout_id=self.current_layout_id,
@@ -14144,6 +14756,7 @@ class KioskMainWindow(QMainWindow):
             ai_mode_4641=ai_mode_for_preload,
             ai_style_id=ai_style_for_preload,
             ai_remote_allowed=ai_remote_allowed,
+            ai_strict_mode=ai_strict_mode,
             parent=self,
         )
         worker.success.connect(self._on_select_photo_preload_success)
@@ -14225,6 +14838,12 @@ class KioskMainWindow(QMainWindow):
         video_gif_path = payload_dict.get("video_gif_path")
         if error_message:
             print(f"[AFTER_LOADING] preload failed: {error_message}")
+            if self.is_ai_mode_active() and self.is_ai_strict_mode_enabled():
+                print("[AI_MODE] preload failed strict -> block select_photo")
+                self._show_runtime_notice("AI 생성 실패: 관리자에게 문의해주세요", duration_ms=1300)
+                self._clear_ai_mode_runtime_state()
+                self.goto_screen("frame_select")
+                return
         print(
             f"[AFTER_LOADING] done ms={elapsed_ms} left={left_count} right={right_count} "
             f"gif={'yes' if video_gif_path else 'no'} "
@@ -14393,7 +15012,7 @@ class KioskMainWindow(QMainWindow):
         return data
 
     def _write_config_dict_atomic(self, data: dict) -> None:
-        target_path = self.config_path
+        target_path = Path(self.config_path)
         payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
         def _write(path: Path) -> None:
@@ -14402,25 +15021,46 @@ class KioskMainWindow(QMainWindow):
             tmp_path.write_text(payload, encoding="utf-8")
             os.replace(tmp_path, path)
 
-        try:
-            _write(target_path)
-            return
-        except Exception as exc:
-            fallback_path = _default_runtime_data_dir() / "config" / "config.json"
-            _safe_boot_write(
-                f"[CONFIG] write denied at {target_path} ({exc}) -> fallback {fallback_path}\n"
-            )
+        candidate_paths: list[Path] = [target_path]
+        for root in _preferred_runtime_data_dirs():
+            candidate_paths.append(Path(root) / "config" / "config.json")
+        for root in _iter_runtime_data_dir_candidates():
+            candidate_paths.append(Path(root) / "config" / "config.json")
+
+        dedup_candidates: list[Path] = []
+        seen: set[str] = set()
+        for path in candidate_paths:
+            key = self._normalize_path_token(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup_candidates.append(path)
+
+        for idx, candidate in enumerate(dedup_candidates):
             try:
-                _write(fallback_path)
-                self.config_path = fallback_path
+                _write(candidate)
+                self.config_path = candidate
+                if idx > 0:
+                    _safe_boot_write(
+                        f"[CONFIG] write fallback selected: {candidate}\n"
+                    )
                 return
-            except Exception as fallback_exc:
-                temp_fallback = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "config.json"
-                _safe_boot_write(
-                    f"[CONFIG] fallback write failed at {fallback_path} ({fallback_exc}) -> temp {temp_fallback}\n"
-                )
-                _write(temp_fallback)
-                self.config_path = temp_fallback
+            except Exception as exc:
+                if idx == 0:
+                    _safe_boot_write(
+                        f"[CONFIG] write denied at {candidate} ({exc})\n"
+                    )
+                else:
+                    _safe_boot_write(
+                        f"[CONFIG] write fallback failed at {candidate} ({exc})\n"
+                    )
+
+        temp_fallback = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "config.json"
+        _safe_boot_write(
+            f"[CONFIG] all write candidates failed -> temp {temp_fallback}\n"
+        )
+        _write(temp_fallback)
+        self.config_path = temp_fallback
 
     @staticmethod
     def _parse_layout_id_from_action(action: object) -> Optional[str]:
@@ -14907,6 +15547,63 @@ class KioskMainWindow(QMainWindow):
     def get_payment_methods(self) -> dict[str, bool]:
         return dict(self.payment_methods)
 
+    def _enabled_payment_method_list(self, methods: Optional[dict[str, bool]] = None) -> list[str]:
+        source = methods if isinstance(methods, dict) else self.get_payment_methods()
+        enabled: list[str] = []
+        for key in ("cash", "card", "coupon"):
+            if bool(source.get(key, False)):
+                enabled.append(key)
+        return enabled
+
+    def _single_enabled_payment_method(self, methods: Optional[dict[str, bool]] = None) -> Optional[str]:
+        enabled = self._enabled_payment_method_list(methods)
+        if len(enabled) == 1:
+            return enabled[0]
+        return None
+
+    def _enter_single_payment_flow(self, method: str) -> bool:
+        target_method = str(method or "").strip().lower()
+        enabled = self.get_payment_methods()
+        if target_method not in {"cash", "card", "coupon"}:
+            return False
+        if not bool(enabled.get(target_method, False)):
+            return False
+
+        if target_method == "cash":
+            self.current_payment_method = "cash"
+            self.payment_method = self.current_payment_method
+            self.current_coupon_value = 0
+            self.current_coupon_code = None
+            self.pending_coupon_code = None
+            if self.current_required_amount <= 0:
+                self._refresh_required_amount()
+            print("[PAYMENT] single mode auto -> pay_cash")
+            self.goto_screen("pay_cash")
+            return True
+
+        if target_method == "coupon":
+            coupon_settings = self.get_coupon_settings()
+            if not bool(coupon_settings.get("enabled", True)):
+                print("[PAYMENT] single mode coupon blocked: coupon disabled")
+                return False
+            self.current_payment_method = "coupon"
+            self.payment_method = self.current_payment_method
+            print("[PAYMENT] single mode auto -> coupon_input")
+            self.goto_screen("coupon_input")
+            return True
+
+        if target_method == "card":
+            if self.is_test_mode():
+                self.current_payment_method = "card"
+                self.payment_method = self.current_payment_method
+                print("[PAYMENT] single mode auto(test) -> payment_complete_success")
+                self.goto_screen("payment_complete_success")
+                return True
+            print("[PAYMENT] single mode card unsupported -> keep payment_method")
+            return False
+
+        return False
+
     def _set_hotspot_rect(self, screen: str, hotspot_id: str, rect: list[int]) -> bool:
         hotspots = list(self.hotspot_map.get(screen, []))
         if not hotspots:
@@ -15238,6 +15935,8 @@ class KioskMainWindow(QMainWindow):
         modes = self.get_modes_settings()
         celebrity_enabled = bool(modes.get("celebrity_enabled", DEFAULT_MODE_SETTINGS["celebrity_enabled"]))
         ai_enabled = bool(modes.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"]))
+        ai_runtime_ready = self._has_runtime_gemini_api_key()
+        ai_enabled = ai_enabled and ai_runtime_ready
         celebrity_btn = self._frame_select_mode_buttons.get("celebrity")
         ai_btn = self._frame_select_mode_buttons.get("ai")
         celebrity_price = self._frame_select_mode_price_labels.get("celebrity")
@@ -15262,6 +15961,12 @@ class KioskMainWindow(QMainWindow):
                 amount_value = default_price
             ai_price.setText(format_price(prefix, amount_value))
             ai_price.setVisible(ai_enabled)
+        if self._last_ai_runtime_ready is None or self._last_ai_runtime_ready != ai_runtime_ready:
+            print(
+                "[AI_MODE] frame_select ai_button "
+                f"visible={1 if ai_enabled else 0} key_ready={1 if ai_runtime_ready else 0}"
+            )
+            self._last_ai_runtime_ready = ai_runtime_ready
         # Re-layout after text updates so width fits the current price text.
         self._layout_frame_select_mode_buttons()
 
@@ -15279,6 +15984,13 @@ class KioskMainWindow(QMainWindow):
         self._suppress_nav_sound_until = time.monotonic() + 0.35
         if not bool(self.mode_settings.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"])):
             self._show_runtime_notice("AI 합성모드는 비활성화되었습니다", duration_ms=1000)
+            return
+        if not self._is_ai_mode_runtime_ready(stage="mode_button", probe_once=True):
+            self._block_ai_mode_missing_key(
+                stage="mode_button",
+                notice="AI 서버 키가 없어 사용할 수 없습니다",
+            )
+            self.goto_screen("frame_select")
             return
         print("[MODE] click ai -> goto ai_style_select")
         self.goto_screen("ai_style_select")
@@ -15395,6 +16107,83 @@ class KioskMainWindow(QMainWindow):
             body = body[:200] + "..."
         return False, f"인증 실패: HTTP {resp.status_code} {body}".strip()
 
+    def _is_bundled_default_device_credentials(self, device_code: str, device_token: str) -> bool:
+        if not getattr(sys, "frozen", False):
+            return False
+        code = str(device_code or "").strip()
+        token = str(device_token or "").strip()
+        if not code or not token:
+            return False
+        bundled_path = ROOT_DIR / "config" / "config.json"
+        if not bundled_path.is_file():
+            return False
+        try:
+            raw = json.loads(bundled_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return False
+        share = raw.get("share") if isinstance(raw, dict) else None
+        if not isinstance(share, dict):
+            return False
+        bundled_code = str(share.get("device_code", "")).strip()
+        bundled_token = str(share.get("device_token", "")).strip()
+        if not bundled_code or not bundled_token:
+            return False
+        return code == bundled_code and token == bundled_token
+
+    @staticmethod
+    def _normalize_path_token(path: Path) -> str:
+        try:
+            return str(Path(path).resolve(strict=False)).strip().lower().replace("/", "\\")
+        except Exception:
+            return str(path).strip().lower().replace("/", "\\")
+
+    @staticmethod
+    def _current_runtime_machine_id() -> str:
+        host = str(os.environ.get("COMPUTERNAME", "") or socket.gethostname() or "").strip().lower()
+        try:
+            mac = f"{uuid.getnode():012x}"
+        except Exception:
+            mac = ""
+        seed = f"{host}|{mac}"
+        if not seed.strip("|"):
+            return ""
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+    def _is_preferred_runtime_config_path(self, config_path: Path) -> bool:
+        target = self._normalize_path_token(config_path)
+        for root in _preferred_runtime_data_dirs():
+            try:
+                candidate = self._normalize_path_token(root / "config" / "config.json")
+                if target == candidate:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _is_untrusted_runtime_credential_source(self, device_code: str, device_token: str) -> bool:
+        if not getattr(sys, "frozen", False):
+            return False
+        code = str(device_code or "").strip()
+        token = str(device_token or "").strip()
+        if not code or not token:
+            return False
+        config = self._read_config_dict()
+        share = config.get("share") if isinstance(config, dict) else None
+        if not isinstance(share, dict):
+            return True
+        trusted_path = str(share.get("runtime_trusted_config_path", "")).strip()
+        if not trusted_path:
+            return True
+        if self._normalize_path_token(Path(trusted_path)) != self._normalize_path_token(self.config_path):
+            return True
+        trusted_machine = str(share.get("runtime_machine_id", "")).strip().lower()
+        current_machine = str(self._current_runtime_machine_id() or "").strip().lower()
+        if not trusted_machine or not current_machine:
+            return True
+        if trusted_machine != current_machine:
+            return True
+        return False
+
     def _persist_device_credentials(
         self,
         *,
@@ -15418,8 +16207,17 @@ class KioskMainWindow(QMainWindow):
                 pass
         share["device_code"] = str(device_code or "").strip()
         share["device_token"] = str(device_token or "").strip()
+        share["runtime_trusted_config_path"] = str(self.config_path)
+        share["runtime_machine_id"] = str(self._current_runtime_machine_id() or "").strip()
+        share["runtime_trusted_at"] = datetime.now().isoformat(timespec="seconds")
         config["share"] = share
         self._write_config_dict_atomic(config)
+        trusted_after_write = str(self.config_path)
+        if str(share.get("runtime_trusted_config_path", "")).strip() != trusted_after_write:
+            share["runtime_trusted_config_path"] = trusted_after_write
+            share["runtime_trusted_at"] = datetime.now().isoformat(timespec="seconds")
+            config["share"] = share
+            self._write_config_dict_atomic(config)
         self.share_settings = self._resolve_share_settings()
 
     def _show_device_registration_dialog(
@@ -15515,18 +16313,35 @@ class KioskMainWindow(QMainWindow):
         api_base = str(self.share_settings.get("api_base_url", DEFAULT_SHARE_SETTINGS.get("api_base_url", ""))).strip()
         code = str(self.share_settings.get("device_code", "")).strip()
         token = str(self.share_settings.get("device_token", "")).strip()
+        force_dialog = self._env_bool(os.environ.get("KIOSK_FORCE_DEVICE_AUTH", "0"), False)
 
-        ok, reason = self._probe_device_credentials(
-            api_base_url=api_base,
-            device_code=code,
-            device_token=token,
-            timeout_sec=6.0,
-        )
+        if force_dialog:
+            ok = False
+            reason = "환경변수(KIOSK_FORCE_DEVICE_AUTH=1)로 재등록이 강제되었습니다."
+            print("[DEVICE_AUTH] force registration requested by env")
+        elif self._is_bundled_default_device_credentials(code, token):
+            ok = False
+            reason = "새 설치 장비 등록이 필요합니다. 디바이스 코드/토큰을 입력하세요."
+            print("[DEVICE_AUTH] bundled default credentials detected -> force registration")
+        elif self._is_untrusted_runtime_credential_source(code, token):
+            ok = False
+            reason = "사용자 경로의 기존 인증정보가 감지되어 재등록이 필요합니다."
+            print(
+                "[DEVICE_AUTH] untrusted runtime credential source detected "
+                f'config="{self.config_path}" -> force registration'
+            )
+        else:
+            ok, reason = self._probe_device_credentials(
+                api_base_url=api_base,
+                device_code=code,
+                device_token=token,
+                timeout_sec=6.0,
+            )
         if ok:
-            print(f"[DEVICE_AUTH] startup credentials verified code={code}")
+            print(f"[DEVICE_AUTH] startup credentials verified code={code} config={self.config_path}")
             return
 
-        print(f"[DEVICE_AUTH] startup verification failed: {reason}")
+        print(f"[DEVICE_AUTH] startup verification failed: {reason} config={self.config_path}")
         while True:
             entered = self._show_device_registration_dialog(
                 reason=reason,
@@ -15606,6 +16421,221 @@ class KioskMainWindow(QMainWindow):
         config = self._read_config_dict()
         raw = config.get("printing") if isinstance(config, dict) else None
         return self._normalize_printing_settings(raw)
+
+    @staticmethod
+    def _get_configured_gemini_api_key(config: object) -> str:
+        if not isinstance(config, dict):
+            return ""
+        ai_section = config.get("ai") if isinstance(config.get("ai"), dict) else {}
+        admin_section = config.get("admin") if isinstance(config.get("admin"), dict) else {}
+        for candidate in (
+            config.get("gemini_api_key"),
+            config.get("google_api_key"),
+            ai_section.get("gemini_api_key"),
+            ai_section.get("google_api_key"),
+            admin_section.get("gemini_api_key"),
+            admin_section.get("google_api_key"),
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _set_configured_gemini_api_key(config: dict, api_key: str) -> bool:
+        key = str(api_key or "").strip()
+        if not key:
+            return False
+        current = str(config.get("gemini_api_key", "")).strip()
+        if current == key:
+            return False
+        config["gemini_api_key"] = key
+        return True
+
+    def _apply_server_gemini_api_key(self, config_payload: object, trigger: str) -> bool:
+        key = self._get_configured_gemini_api_key(config_payload)
+        if not key:
+            print(f"[AI] gemini api_key missing from server trigger={trigger}")
+            return False
+
+        changed = False
+        env_key = str(os.environ.get("GEMINI_API_KEY", "")).strip()
+        if env_key != key:
+            os.environ["GEMINI_API_KEY"] = key
+            changed = True
+
+        config = self._read_config_dict()
+        if not isinstance(config, dict):
+            config = {}
+        if self._set_configured_gemini_api_key(config, key):
+            try:
+                self._write_config_dict_atomic(config)
+                changed = True
+                print(
+                    f"[AI] gemini api_key synced from server trigger={trigger} "
+                    f"path={self.config_path}"
+                )
+            except Exception as exc:
+                print(f"[AI] gemini api_key sync failed trigger={trigger} err={exc}")
+        elif changed:
+            print(f"[AI] gemini api_key set from server env trigger={trigger}")
+        return changed
+
+    def _has_runtime_gemini_api_key(self) -> bool:
+        env_key = str(
+            os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+        ).strip()
+        if env_key:
+            return True
+        config = self._read_config_dict()
+        return bool(self._get_configured_gemini_api_key(config))
+
+    def _sync_gemini_api_key_from_server_once(self, stage: str) -> bool:
+        ok, msg = self._probe_server_lock_state()
+        ready = self._has_runtime_gemini_api_key()
+        print(
+            f"[AI] key probe stage={stage} ok={1 if ok else 0} "
+            f"key_ready={1 if ready else 0} msg={str(msg or '').strip()}"
+        )
+        return ok
+
+    def _is_ai_mode_runtime_ready(self, stage: str, probe_once: bool = True) -> bool:
+        if self._has_runtime_gemini_api_key():
+            return True
+        print(f"[AI] key missing stage={stage} local=0")
+        if probe_once:
+            self._sync_gemini_api_key_from_server_once(stage=stage)
+        return self._has_runtime_gemini_api_key()
+
+    def _clear_ai_mode_runtime_state(self) -> None:
+        self.compose_mode = "normal"
+        self.ai_style_id = None
+        self.current_layout_id = None
+        self.layout_id = None
+        self.current_capture_slots = 0
+        self.current_print_slots = 0
+        self.current_captured_paths = []
+        self.selected_print_paths = []
+        self.ai_selected_source_paths = []
+        self.current_design_index = None
+        self.current_design_path = None
+        self.current_design_is_gray = False
+        self.current_design_flip_horizontal = False
+        self.current_design_qr_enabled = True
+        self.current_print_path = None
+        self.current_print_job_path = None
+
+    def _block_ai_mode_missing_key(self, stage: str, notice: str) -> None:
+        print(f"[AI_MODE] ai_blocked:key_missing stage={stage}")
+        self._clear_ai_mode_runtime_state()
+        self._show_runtime_notice(notice, duration_ms=1300)
+
+    @classmethod
+    def _printer_name_matches_model(cls, model: str, printer_name: str) -> bool:
+        token = cls._normalize_printer_name_token(printer_name)
+        if not token:
+            return False
+        model_key = str(model or "").strip().upper()
+        if model_key == "DS620":
+            return "ds620" in token and "strip" not in token
+        if model_key == "DS620_STRIP":
+            return "strip" in token and ("ds620" in token or "rx1" in token)
+        if model_key == "RX1HS":
+            return ("rx1hs" in token or "dsrx1" in token or "rx1" in token) and ("strip" not in token)
+        return False
+
+    def _detect_auto_printer_mapping(self, installed_names: list[str]) -> dict[str, str]:
+        mapped = {"DS620": "", "DS620_STRIP": "", "RX1HS": ""}
+        physical = [name for name in (installed_names or []) if not self._is_virtual_printer_name(name)]
+        for name in physical:
+            token = self._normalize_printer_name_token(name)
+            if not token:
+                continue
+            if "strip" in token and ("ds620" in token or "rx1" in token):
+                if not mapped["DS620_STRIP"]:
+                    mapped["DS620_STRIP"] = name
+                continue
+            if "ds620" in token and not mapped["DS620"]:
+                mapped["DS620"] = name
+                continue
+            if ("rx1hs" in token or "dsrx1" in token or "rx1" in token) and not mapped["RX1HS"]:
+                mapped["RX1HS"] = name
+                continue
+        return mapped
+
+    def _should_auto_replace_printer(self, model: str, current_name: str, installed_names: list[str]) -> bool:
+        name = str(current_name or "").strip()
+        if not name:
+            return True
+        if not self._is_installed_printer_name(name, installed_names):
+            return True
+        if self._is_virtual_printer_name(name):
+            return True
+        if not self._printer_name_matches_model(model, name):
+            return True
+        return False
+
+    def _apply_startup_runtime_defaults(self) -> None:
+        config = self._read_config_dict()
+        if not isinstance(config, dict):
+            config = {}
+        changed = False
+
+        env_key = str(os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+        config_key = self._get_configured_gemini_api_key(config)
+        startup_key = env_key or config_key
+        if startup_key:
+            if not env_key:
+                os.environ["GEMINI_API_KEY"] = startup_key
+            if env_key and not config_key:
+                if self._set_configured_gemini_api_key(config, startup_key):
+                    changed = True
+                    print("[AI] startup default gemini api_key applied")
+        else:
+            print("[AI] startup gemini api_key missing -> waiting for server config")
+
+        printing = self._normalize_printing_settings(config.get("printing"))
+        installed = self.list_windows_printers()
+        auto_map = self._detect_auto_printer_mapping(installed)
+        printers = printing.get("printers", {}) if isinstance(printing.get("printers"), dict) else {}
+
+        for model_key in ("DS620", "DS620_STRIP", "RX1HS"):
+            item = printers.get(model_key, {}) if isinstance(printers.get(model_key), dict) else {}
+            current_name = str(item.get("win_name", "")).strip()
+            detected_name = str(auto_map.get(model_key, "")).strip()
+            if detected_name and self._should_auto_replace_printer(model_key, current_name, installed):
+                item["win_name"] = detected_name
+                printers[model_key] = item
+                changed = True
+                print(
+                    f"[PRINT_AUTO] mapped model={model_key} "
+                    f"from=\"{current_name}\" to=\"{detected_name}\""
+                )
+
+        ds620_ready = bool(str(printers.get("DS620", {}).get("win_name", "")).strip()) if isinstance(printers.get("DS620"), dict) else False
+        rx1hs_ready = bool(str(printers.get("RX1HS", {}).get("win_name", "")).strip()) if isinstance(printers.get("RX1HS"), dict) else False
+        current_default = str(printing.get("default_model", "DS620")).strip().upper()
+        desired_default = current_default if current_default in {"DS620", "RX1HS"} else "DS620"
+        if ds620_ready and not rx1hs_ready:
+            desired_default = "DS620"
+        elif rx1hs_ready and not ds620_ready:
+            desired_default = "RX1HS"
+        if desired_default != current_default:
+            printing["default_model"] = desired_default
+            changed = True
+            print(f"[PRINT_AUTO] default_model {current_default}->{desired_default}")
+
+        printing["printers"] = printers
+        config["printing"] = printing
+
+        if changed:
+            try:
+                self._write_config_dict_atomic(config)
+                print(f"[STARTUP] runtime defaults saved config={self.config_path}")
+            except Exception as exc:
+                print(f"[STARTUP] runtime defaults save failed: {exc}")
+
+        self.printing_settings = self._normalize_printing_settings(config.get("printing"))
 
     def _normalize_pricing_settings(
         self,
@@ -15813,6 +16843,26 @@ class KioskMainWindow(QMainWindow):
     def _normalize_printer_name_token(value: str) -> str:
         text = str(value or "").strip().lower()
         return re.sub(r"[^a-z0-9]+", "", text)
+
+    @classmethod
+    def _is_virtual_printer_name(cls, value: str) -> bool:
+        token = cls._normalize_printer_name_token(value)
+        if not token:
+            return False
+        virtual_tokens = (
+            "microsoftprinttopdf",
+            "microsoftxpsdocumentwriter",
+            "onenoteforwindows10",
+            "fax",
+            "adobepdf",
+            "pdfcreator",
+            "printtopdf",
+            "xpsdocumentwriter",
+        )
+        for marker in virtual_tokens:
+            if marker in token:
+                return True
+        return False
 
     def _match_installed_printer_name(self, requested: str, model_hint: str = "") -> str:
         wanted = str(requested or "").strip()
@@ -16895,7 +17945,9 @@ class KioskMainWindow(QMainWindow):
         self._heartbeat_tick()
 
     def check_runtime_internet_health(self) -> tuple[bool, str]:
-        ok, msg = check_internet(timeout=1.0)
+        share = self.get_share_settings()
+        api_base = _normalize_kiosk_api_base_url(share.get("api_base_url", "")) if isinstance(share, dict) else ""
+        ok, msg = check_internet(timeout=1.0, api_base_url=api_base)
         print(f"[HEALTH] internet={'OK' if ok else 'FAIL'} msg={msg}")
         return ok, msg
 
@@ -17015,12 +18067,31 @@ class KioskMainWindow(QMainWindow):
                 f"matched=\"{matched}\""
             )
 
-        # 2) Auto-detect dedicated strip queue by canonical names.
-        for probe in ("DS620_STRIP", "DS620 STRIP", "DP-DS620 STRIP", "DS620STRIP"):
-            matched = self._match_installed_printer_name(probe, "DS620_STRIP")
-            found = _installed_member(matched or probe)
-            if found:
-                return found
+        # 2) Optional auto-detect: disabled by default to avoid accidental routing
+        # to *_STRIP queues where driver split/cut settings are unknown.
+        auto_detect = str(os.environ.get("KIOSK_STRIP_QUEUE_AUTODETECT", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if auto_detect:
+            for probe in (
+                "DS620_STRIP",
+                "DS620 STRIP",
+                "DP-DS620 STRIP",
+                "DS620STRIP",
+                "RX1HS_STRIP",
+                "RX1HS STRIP",
+                "RX1_STRIP",
+                "RX1 STRIP",
+                "DS-RX1_STRIP",
+                "DS-RX1 STRIP",
+            ):
+                matched = self._match_installed_printer_name(probe, "DS620_STRIP")
+                found = _installed_member(matched or probe)
+                if found:
+                    return found
         return ""
 
     def _is_installed_printer_name(self, name: str, installed: Optional[list[str]] = None) -> bool:
@@ -17077,7 +18148,18 @@ class KioskMainWindow(QMainWindow):
         _push(self._resolve_printer_name_for_model(model_key, cfg))
         if model_key == "DS620_STRIP":
             _push(self._resolve_dedicated_strip_queue_name(cfg))
-            for probe in ("DS620_STRIP", "DS620 STRIP", "DP-DS620 STRIP", "DS620STRIP"):
+            for probe in (
+                "DS620_STRIP",
+                "DS620 STRIP",
+                "DP-DS620 STRIP",
+                "DS620STRIP",
+                "RX1HS_STRIP",
+                "RX1HS STRIP",
+                "RX1_STRIP",
+                "RX1 STRIP",
+                "DS-RX1_STRIP",
+                "DS-RX1 STRIP",
+            ):
                 _push(probe)
         elif model_key == "DS620":
             for probe in ("DP-DS620", "DS620"):
@@ -17085,6 +18167,15 @@ class KioskMainWindow(QMainWindow):
         elif model_key == "RX1HS":
             for probe in ("DNP RX1HS", "RX1HS", "RX1"):
                 _push(probe)
+        if candidates:
+            physical = [name for name in candidates if not self._is_virtual_printer_name(name)]
+            virtual = [name for name in candidates if self._is_virtual_printer_name(name)]
+            if physical and virtual:
+                candidates = physical + virtual
+                print(
+                    f"[PRINT] virtual queues deprioritized model={model_key} "
+                    f"virtual={', '.join(virtual)}"
+                )
         return candidates
 
     def _resolve_printer_form_name_for_job(
@@ -17154,10 +18245,21 @@ class KioskMainWindow(QMainWindow):
         return None
 
     def allow_dummy_when_camera_fail(self) -> bool:
-        return bool(self.admin_settings.get("allow_dummy_when_camera_fail", True))
+        enabled = bool(
+            self.admin_settings.get(
+                "allow_dummy_when_camera_fail",
+                bool(DEFAULT_ADMIN_SETTINGS["allow_dummy_when_camera_fail"]),
+            )
+        )
+        # Dummy fallback is allowed only in test mode.
+        return bool(self.is_test_mode() and enabled)
 
     def is_test_mode(self) -> bool:
         return bool(self.admin_settings.get("test_mode", False))
+
+    def is_ai_strict_mode_enabled(self) -> bool:
+        # In operation mode, AI must be Gemini-only (no local fallback).
+        return not self.is_test_mode()
 
     def is_debug_fullscreen_shutter(self) -> bool:
         return bool(self.admin_settings.get("debug_fullscreen_shutter", False))
@@ -17288,6 +18390,7 @@ class KioskMainWindow(QMainWindow):
             self.stop_bill_acceptor_test(wait_ms=3000)
             if bool(normalized_bill.get("enabled", False)):
                 self.start_bill_acceptor_test(normalized_bill)
+        print(f"[ADMIN] config_path={self.config_path}")
         print(f"[ADMIN] saved {json.dumps(normalized, ensure_ascii=False, separators=(',', ':'))}")
         print(
             "[ADMIN] payment_methods set "
@@ -18097,6 +19200,28 @@ class KioskMainWindow(QMainWindow):
         self.current_print_job_mode = job_mode
         printing_settings = self.get_printing_settings()
         model = self._resolve_print_model(printing_settings)
+
+        def _has_model_candidates(check_model: str) -> bool:
+            primary = self._resolve_printer_name_for_model(check_model, printing_settings)
+            items = self._resolve_printer_candidates_for_model(
+                model=check_model,
+                primary_name=primary,
+                settings=printing_settings,
+            )
+            if strip_split and items:
+                physical_only = [name for name in items if not self._is_virtual_printer_name(name)]
+                if physical_only:
+                    items = physical_only
+            return bool(items)
+
+        # New installations can be RX1HS-only. Avoid pinning to DS620 default
+        # when the alternate printer model is the only one installed.
+        if model in {"DS620", "RX1HS"}:
+            alt_model = "RX1HS" if model == "DS620" else "DS620"
+            if not _has_model_candidates(model) and _has_model_candidates(alt_model):
+                print(f"[PRINT] default model auto-switch {model}->{alt_model} reason=no_candidates")
+                model = alt_model
+
         forced_printer_name: Optional[str] = None
         use_driver_default_form = False
         if strip_split:
@@ -18105,12 +19230,9 @@ class KioskMainWindow(QMainWindow):
                 model = "DS620_STRIP"
                 forced_printer_name = strip_name
                 print(f"[PRINT] strip queue override model={model} win_name=\"{strip_name}\"")
-                # Dedicated strip queue should handle 2x6x2 cut in driver settings.
-                # Send full composed sheet and preserve queue default form/cut options.
-                strip_split = False
-                job_size = "4x6"
-                use_driver_default_form = True
-                print("[PRINT_MODE] dedicated strip queue active -> disable app split")
+                # Keep app-side strip split to guarantee small-frame output even
+                # when driver queue default form/cut settings differ by machine.
+                print("[PRINT_MODE] dedicated strip queue active -> keep app split")
             else:
                 print("[PRINT_MODE] strip queue override skipped: dedicated DS620_STRIP queue not found")
         printer_name = forced_printer_name or self._resolve_printer_name_for_model(model, printing_settings)
@@ -18144,11 +19266,75 @@ class KioskMainWindow(QMainWindow):
         should_check_printer = should_check_printer and not bool(printing_settings.get("dry_run", False))
         should_check_printer = should_check_printer and not bool(self.is_test_mode())
         if should_check_printer:
+            def _reselect_model_candidates(reason: str) -> list[str]:
+                nonlocal model, printer_name, form_name
+                if strip_split:
+                    if model == "DS620_STRIP":
+                        alt_model = "RX1HS"
+                    elif model == "RX1HS":
+                        alt_model = "DS620"
+                    elif model == "DS620":
+                        alt_model = "RX1HS"
+                    else:
+                        alt_model = ""
+                else:
+                    alt_model = "RX1HS" if model in {"DS620", "DS620_STRIP"} else "DS620"
+                if alt_model == model:
+                    return []
+                if not alt_model:
+                    return []
+                alt_candidates = self._resolve_printer_candidates_for_model(
+                    model=alt_model,
+                    primary_name=self._resolve_printer_name_for_model(alt_model, printing_settings),
+                    settings=printing_settings,
+                )
+                if not alt_candidates:
+                    return []
+
+                previous_model = model
+                model = alt_model
+                printer_name = str(alt_candidates[0]).strip() or printer_name
+                fallback_form_size = "2x6" if strip_split else job_size
+                form_name = self._resolve_printer_form_name_for_job(model, fallback_form_size, printing_settings)
+                if use_driver_default_form:
+                    form_name = ""
+                    print("[PRINT_FORM] dedicated strip queue -> use driver default form/cut")
+                if strip_split and not _is_likely_2x6_form_name(form_name):
+                    print(
+                        "[PRINT_MODE] strip form override: "
+                        f"invalid configured 2x6 form \"{form_name}\" -> \"2x6\""
+                    )
+                    form_name = "2x6"
+                print(
+                    f"[PRINT] route fallback model={previous_model}->{model} "
+                    f"reason={reason} printer=\"{printer_name}\""
+                )
+                print(f"[PRINT_FORM] selected model={model} size={job_size} form=\"{form_name}\"")
+                return alt_candidates
+
             candidates = self._resolve_printer_candidates_for_model(
                 model=model,
                 primary_name=printer_name,
                 settings=printing_settings,
             )
+            if strip_split and candidates:
+                physical_only = [name for name in candidates if not self._is_virtual_printer_name(name)]
+                if physical_only:
+                    candidates = physical_only
+            if not candidates:
+                candidates = _reselect_model_candidates("no_candidates")
+            if strip_split and candidates:
+                physical_only = [name for name in candidates if not self._is_virtual_printer_name(name)]
+                if physical_only:
+                    candidates = physical_only
+            if not candidates:
+                if strip_split:
+                    self._show_runtime_notice("소형프레임용 프린터(STRIP)를 찾을 수 없습니다.", duration_ms=1800)
+                    print("[PRINT] blocked: no strip printer candidates (physical)")
+                    return False
+                self._show_runtime_notice("사용 가능한 프린터를 찾을 수 없습니다.", duration_ms=1500)
+                print(f"[PRINT] blocked: no installed printer candidates model={model}")
+                return False
             if candidates:
                 printer_name = str(candidates[0]).strip() or printer_name
             first_fail_msg = ""
@@ -19136,7 +20322,9 @@ class KioskMainWindow(QMainWindow):
         return f"{api_base}/kiosk/heartbeat"
 
     def _build_heartbeat_payload(self) -> dict[str, Any]:
-        internet_ok, _internet_msg = check_internet(timeout=0.8)
+        share_cfg = self.get_share_settings()
+        api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", "")) if isinstance(share_cfg, dict) else ""
+        internet_ok, _internet_msg = check_internet(timeout=0.8, api_base_url=api_base)
         printing_settings = self.get_printing_settings()
         printers = printing_settings.get("printers", {}) if isinstance(printing_settings, dict) else {}
 
@@ -19250,6 +20438,7 @@ class KioskMainWindow(QMainWindow):
             self._apply_server_lock_payload(data.get("device_lock"), trigger="config_probe")
             config_payload = data.get("config") if isinstance(data.get("config"), dict) else {}
             if isinstance(config_payload, dict):
+                self._apply_server_gemini_api_key(config_payload, trigger="config_probe")
                 mode_perms = config_payload.get("device_mode_permissions")
                 if isinstance(mode_perms, dict):
                     event = {"permissions": dict(mode_perms), "trigger": "config_probe"}
@@ -19567,11 +20756,16 @@ class KioskMainWindow(QMainWindow):
         self.goto_screen("how_many_prints")
 
     def apply_ai_style_selection(self, style_id: str) -> None:
-        style_key = str(style_id or "").strip().lower()
-        if style_key not in AI_STYLE_PRESETS:
-            style_key = next(iter(AI_STYLE_PRESETS.keys()), next(iter(DEFAULT_AI_STYLE_PRESETS.keys())))
+        style_key = _resolve_preferred_ai_style_id(style_id)
         style_info = AI_STYLE_PRESETS.get(style_key) or {}
         label_ko = str(style_info.get("label_ko", style_key))
+        if not self._is_ai_mode_runtime_ready(stage="style_select", probe_once=True):
+            self._block_ai_mode_missing_key(
+                stage="style_select",
+                notice="AI 서버 키가 없어 사용할 수 없습니다",
+            )
+            self.goto_screen("frame_select")
+            return
 
         self.compose_mode = "ai"
         self.celebrity_template_dir = None
@@ -19657,9 +20851,12 @@ class KioskMainWindow(QMainWindow):
 
         if screen.screen_name == "pay_cash":
             if self._rect_contains(x, y, PayCashScreen.BACK_RECT):
-                print("[PAYMENT_CASH] back -> payment_method")
+                back_target = "payment_method"
+                if self._single_enabled_payment_method() == "cash":
+                    back_target = "how_many_prints"
+                print(f"[PAYMENT_CASH] back -> {back_target}")
                 self._stop_bill_acceptor_for_payment()
-                self.goto_screen("payment_method")
+                self.goto_screen(back_target)
                 return
 
         if screen.screen_name == "coupon_remaining_method":
@@ -19916,7 +21113,25 @@ class KioskMainWindow(QMainWindow):
                     if not self._prepare_camera_entry():
                         return
                 if screen.screen_name == "how_many_prints" and target == "payment_method":
+                    if self.is_ai_mode_active() and not self._is_ai_mode_runtime_ready(
+                        stage="before_payment",
+                        probe_once=True,
+                    ):
+                        self._block_ai_mode_missing_key(
+                            stage="before_payment",
+                            notice="AI 서버 키가 없어 결제를 진행할 수 없습니다",
+                        )
+                        self.goto_screen("frame_select")
+                        return
                     self._save_selected_print_count()
+                    single_method = self._single_enabled_payment_method()
+                    if single_method:
+                        print(
+                            f"[PAYMENT] single enabled method={single_method} "
+                            "-> direct entry from how_many_prints"
+                        )
+                        if self._enter_single_payment_flow(single_method):
+                            return
                 if target == "select_photo":
                     self._prepare_select_photo_screen()
                 if target == "preview":

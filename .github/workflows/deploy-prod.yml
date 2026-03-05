@@ -20,6 +20,10 @@ jobs:
             echo "::error::Missing PROD_SSH_KEY or PROD_PASSWORD secret"
             exit 1
           fi
+          if [ -z "${{ secrets.KIOSK_GEMINI_API_KEY }}" ]; then
+            echo "::error::Missing KIOSK_GEMINI_API_KEY secret"
+            exit 1
+          fi
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -29,13 +33,14 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           R2_PREFIX: ${{ secrets.R2_PREFIX }}
+          KIOSK_GEMINI_API_KEY: ${{ secrets.KIOSK_GEMINI_API_KEY }}
         with:
           host: ${{ secrets.PROD_HOST }}
           username: ${{ secrets.PROD_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           password: ${{ secrets.PROD_PASSWORD }}
           port: ${{ secrets.PROD_PORT || '22' }}
-          envs: R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_BUCKET_NAME,R2_PREFIX
+          envs: R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_BUCKET_NAME,R2_PREFIX,KIOSK_GEMINI_API_KEY
           script_stop: true
           script: |
             set -euo pipefail
@@ -68,6 +73,7 @@ jobs:
             update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
             update_env "R2_BUCKET_NAME" "${R2_BUCKET_NAME:-}"
             update_env "R2_PREFIX" "${R2_PREFIX:-}"
+            update_env "KIOSK_GEMINI_API_KEY" "${KIOSK_GEMINI_API_KEY:-}"
 
             git fetch origin main
             git checkout main
@@ -76,3 +82,14 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py migrate
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python - <<'PY'
+            import os
+            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+            import django
+            django.setup()
+            from django.conf import settings
+            key = str(getattr(settings, "KIOSK_GEMINI_API_KEY", "") or "").strip()
+            print(f"[DEPLOY] KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}")
+            if not key:
+                raise SystemExit("KIOSK_GEMINI_API_KEY missing in runtime settings")
+            PY
