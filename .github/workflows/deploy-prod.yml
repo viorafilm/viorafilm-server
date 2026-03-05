@@ -73,7 +73,16 @@ jobs:
             update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
             update_env "R2_BUCKET_NAME" "${R2_BUCKET_NAME:-}"
             update_env "R2_PREFIX" "${R2_PREFIX:-}"
-            update_env "KIOSK_GEMINI_API_KEY" "${KIOSK_GEMINI_API_KEY:-}"
+            KIOSK_GEMINI_API_KEY_VALUE="${KIOSK_GEMINI_API_KEY:-${{ secrets.KIOSK_GEMINI_API_KEY }}}"
+            if [ -z "${KIOSK_GEMINI_API_KEY_VALUE}" ]; then
+              echo "::error::KIOSK_GEMINI_API_KEY not available in deploy runtime"
+              exit 1
+            fi
+            update_env "KIOSK_GEMINI_API_KEY" "${KIOSK_GEMINI_API_KEY_VALUE}"
+            export KIOSK_GEMINI_API_KEY="${KIOSK_GEMINI_API_KEY_VALUE}"
+            HOST_KEY_LINE="$(grep '^KIOSK_GEMINI_API_KEY=' .env | head -n 1 || true)"
+            HOST_KEY_VALUE="${HOST_KEY_LINE#KIOSK_GEMINI_API_KEY=}"
+            echo "[DEPLOY] host .env KIOSK_GEMINI_API_KEY configured=$([ -n "${HOST_KEY_VALUE}" ] && echo 1 || echo 0) len=${#HOST_KEY_VALUE}"
 
             git fetch origin main
             git checkout main
@@ -82,4 +91,5 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py migrate
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python -c "import os,sys; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings'); import django; django.setup(); from django.conf import settings; key=str(getattr(settings,'KIOSK_GEMINI_API_KEY','') or '').strip(); print(f'[DEPLOY] KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}'); key or sys.exit('KIOSK_GEMINI_API_KEY missing in runtime settings')"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python -c "import os,sys; key=str(os.environ.get('KIOSK_GEMINI_API_KEY','') or '').strip(); print(f'[DEPLOY] container env KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}'); key or sys.exit('KIOSK_GEMINI_API_KEY missing in container env')"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python -c "import os,sys; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings'); import django; django.setup(); from django.conf import settings; key=str(getattr(settings,'KIOSK_GEMINI_API_KEY','') or '').strip(); print(f'[DEPLOY] settings KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}'); key or sys.exit('KIOSK_GEMINI_API_KEY missing in runtime settings')"
