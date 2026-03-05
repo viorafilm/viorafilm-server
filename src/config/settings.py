@@ -145,6 +145,11 @@ DEVICE_AUTO_LOCK_ENABLED = env.bool("DEVICE_AUTO_LOCK_ENABLED", default=True)
 DEVICE_AUTO_LOCK_OFFLINE_DAYS = env.int("DEVICE_AUTO_LOCK_OFFLINE_DAYS", default=3)
 KIOSK_OFFLINE_GUARD_ENABLED = env.bool("KIOSK_OFFLINE_GUARD_ENABLED", default=True)
 KIOSK_OFFLINE_GRACE_DAYS = env.int("KIOSK_OFFLINE_GRACE_DAYS", default=3)
+KIOSK_GEMINI_API_KEY = (
+    env("KIOSK_GEMINI_API_KEY", default="")
+    or env("GEMINI_API_KEY", default="")
+    or env("GOOGLE_API_KEY", default="")
+).strip()
 
 CELERY_BEAT_SCHEDULE = {
     "alerts_check_device_offline": {
