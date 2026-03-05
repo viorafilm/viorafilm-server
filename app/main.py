@@ -979,20 +979,29 @@ PRINT_QR_ANCHOR_BY_LAYOUT = {
     "2462": "rb",
 }
 
-# 2641 users requested a visibly larger QR on print/preview.
+# Print QR sizing (layout-specific).
 PRINT_QR_SIZE_MULTIPLIER_BY_LAYOUT = {
-    "2641": 1.3,
+    "2641": 2.0,
+    "6241": 2.0,
+    "2461": 2.0,
+    "2462": 2.0,
 }
 
 # Preview should stay smaller than print to avoid visual overlap in design UI.
 PREVIEW_QR_RECT_SCALE_BY_LAYOUT = {
-    "2641": 1.0,
+    "2641": 0.62,
+    "6241": 0.62,
+    "2461": 0.62,
+    "2462": 0.62,
     "4641": 0.62,
 }
 
-# Printer trim-safe margin (2641 was clipping near paper edge).
+# Printer trim-safe margin.
 PRINT_QR_MARGIN_MULTIPLIER_BY_LAYOUT = {
-    "2641": 3.0,
+    "2641": 3.6,
+    "6241": 3.2,
+    "2461": 3.2,
+    "2462": 3.2,
 }
 
 DEFAULT_ADMIN_SETTINGS = {
@@ -12731,6 +12740,14 @@ class CameraScreen(ImageScreen):
         if requested not in {"auto", "edsdk", "dummy"}:
             requested = "auto"
         self._pending_dummy_fallback_reason = None
+        capture_timeout_ms = 8500
+        try:
+            capture_timeout_ms = int(
+                float(os.environ.get("KIOSK_CAPTURE_TIMEOUT_MS", str(capture_timeout_ms)) or capture_timeout_ms)
+            )
+        except Exception:
+            capture_timeout_ms = 8500
+        capture_timeout_ms = max(5000, min(int(capture_timeout_ms), 20000))
 
         if requested == "dummy":
             self._start_liveview_worker_instance(
@@ -12754,7 +12771,11 @@ class CameraScreen(ImageScreen):
             return
 
         self._start_liveview_worker_instance(
-            LiveViewWorker(self.liveview_dll_path, retries=200, capture_timeout_ms=5000),
+            LiveViewWorker(
+                self.liveview_dll_path,
+                retries=200,
+                capture_timeout_ms=capture_timeout_ms,
+            ),
             "edsdk",
             f"requested_{requested}",
         )
@@ -12957,20 +12978,33 @@ class CameraScreen(ImageScreen):
             return
         if "TIMEOUT" in normalized or "DIR ITEM" in normalized:
             self._capture_timeout_streak += 1
-            if not self._is_dummy_fallback_allowed():
-                self._halt_capture_for_operator(
-                    error_message,
-                    "카메라 전송 실패\n관리자를 호출해주세요",
-                )
-                return
             self._finish_capture_cycle()
-            if self._capture_timeout_streak >= 1:
+            auto_recover_limit = 2
+            if self._backend_active == "edsdk" and self._capture_timeout_streak <= auto_recover_limit:
+                print(
+                    f"[CAMERA] timeout auto-recovery attempt="
+                    f"{self._capture_timeout_streak}/{auto_recover_limit}"
+                )
                 self._recover_edsdk_after_capture_timeout()
-            self._show_retry_overlay(
-                "Transfer failed (USB/settings)\nPlease retry",
-                duration_ms=1500,
+                self._show_retry_overlay(
+                    "Transfer recovering\nAuto retry",
+                    duration_ms=1400,
+                )
+                self._schedule_auto_continue(1900)
+                return
+            if self._is_dummy_fallback_allowed():
+                if self._backend_active == "edsdk":
+                    self._recover_edsdk_after_capture_timeout()
+                self._show_retry_overlay(
+                    "Transfer failed (USB/settings)\nPlease retry",
+                    duration_ms=1500,
+                )
+                self._schedule_auto_continue(1700)
+                return
+            self._halt_capture_for_operator(
+                error_message,
+                "카메라 전송 실패\n관리자를 호출해주세요",
             )
-            self._schedule_auto_continue(1700)
             return
 
         if self._is_dummy_fallback_allowed() and index is not None:
