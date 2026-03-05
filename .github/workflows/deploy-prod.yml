@@ -82,14 +82,4 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py migrate
             docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python - <<'PY'
-            import os
-            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
-            import django
-            django.setup()
-            from django.conf import settings
-            key = str(getattr(settings, "KIOSK_GEMINI_API_KEY", "") or "").strip()
-            print(f"[DEPLOY] KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}")
-            if not key:
-                raise SystemExit("KIOSK_GEMINI_API_KEY missing in runtime settings")
-            PY
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python -c "import os,sys; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings'); import django; django.setup(); from django.conf import settings; key=str(getattr(settings,'KIOSK_GEMINI_API_KEY','') or '').strip(); print(f'[DEPLOY] KIOSK_GEMINI_API_KEY configured={1 if key else 0} len={len(key)}'); key or sys.exit('KIOSK_GEMINI_API_KEY missing in runtime settings')"
