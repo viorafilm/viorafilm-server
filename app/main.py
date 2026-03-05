@@ -19230,9 +19230,13 @@ class KioskMainWindow(QMainWindow):
                 model = "DS620_STRIP"
                 forced_printer_name = strip_name
                 print(f"[PRINT] strip queue override model={model} win_name=\"{strip_name}\"")
-                # Keep app-side strip split to guarantee small-frame output even
-                # when driver queue default form/cut settings differ by machine.
-                print("[PRINT_MODE] dedicated strip queue active -> keep app split")
+                # Dedicated strip queues are configured to output 2x6x2 at driver level.
+                # If app-side split is also enabled, one set(2 prints) can become 4 pieces
+                # and center-cut artifacts can appear on some DS620/RX1HS setups.
+                strip_split = False
+                use_driver_default_form = True
+                print("[PRINT_MODE] dedicated strip queue active -> app split disabled")
+                print("[PRINT_FORM] dedicated strip queue -> use driver default form/cut")
             else:
                 print("[PRINT_MODE] strip queue override skipped: dedicated DS620_STRIP queue not found")
         printer_name = forced_printer_name or self._resolve_printer_name_for_model(model, printing_settings)
