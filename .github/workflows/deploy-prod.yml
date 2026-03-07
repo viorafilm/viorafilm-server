@@ -52,11 +52,23 @@ jobs:
             DEPLOY_STAGE="init"
             trap 'rc=$?; echo "::error::Deploy failed at stage ${DEPLOY_STAGE} while running: ${BASH_COMMAND}"; exit $rc' ERR
             APP_DIR="${{ secrets.PROD_APP_DIR }}"
+            DEFAULT_ALLOWED_HOSTS="${PROD_ALLOWED_HOSTS:-api.viorafilm.com}"
+            DEFAULT_CSRF_TRUSTED_ORIGINS="${PROD_CSRF_TRUSTED_ORIGINS:-https://api.viorafilm.com}"
+            DEFAULT_PUBLIC_BASE_URL="${PROD_PUBLIC_BASE_URL:-https://api.viorafilm.com}"
             if [ -z "${APP_DIR}" ]; then
               APP_DIR="/opt/viorafilm-server"
             fi
             DEPLOY_STAGE="change directory"
             cd "${APP_DIR}"
+
+            generate_secret_key() {
+              DEPLOY_STAGE="generate secret key"
+              if command -v python3 >/dev/null 2>&1; then
+                python3 -c "import secrets,string; alphabet=string.ascii_letters+string.digits+'!@#$%^&*(-_=+)'; print(''.join(secrets.choice(alphabet) for _ in range(64)))"
+              else
+                openssl rand -hex 32
+              fi
+            }
 
             ensure_env_file() {
               if [ -f ".env" ]; then
@@ -80,28 +92,19 @@ jobs:
                 return 0
               fi
 
-              if [ -n "${PROD_SECRET_KEY:-}" ] && [ -n "${PROD_ALLOWED_HOSTS:-}" ]; then
-                DEPLOY_STAGE="bootstrap env from minimal PROD secrets"
-                tmp_env="$(mktemp)"
-                {
-                  printf 'DEBUG=0\n'
-                  printf 'SECRET_KEY=%s\n' "${PROD_SECRET_KEY}"
-                  printf 'ALLOWED_HOSTS=%s\n' "${PROD_ALLOWED_HOSTS}"
-                  if [ -n "${PROD_CSRF_TRUSTED_ORIGINS:-}" ]; then
-                    printf 'CSRF_TRUSTED_ORIGINS=%s\n' "${PROD_CSRF_TRUSTED_ORIGINS}"
-                  fi
-                  if [ -n "${PROD_PUBLIC_BASE_URL:-}" ]; then
-                    printf 'PUBLIC_BASE_URL=%s\n' "${PROD_PUBLIC_BASE_URL}"
-                  fi
-                } > "${tmp_env}"
-                mv "${tmp_env}" .env
-                chmod 600 .env
-                echo "[DEPLOY] bootstrapped .env from minimal PROD_* secrets"
-                return 0
-              fi
-
-              echo "::error::.env is missing on host and no bootstrap secrets were provided. Set PROD_ENV_B64 or PROD_SECRET_KEY plus PROD_ALLOWED_HOSTS."
-              exit 1
+              DEPLOY_STAGE="bootstrap env from generated defaults"
+              GENERATED_SECRET_KEY="$(generate_secret_key)"
+              tmp_env="$(mktemp)"
+              {
+                printf 'DEBUG=0\n'
+                printf 'SECRET_KEY=%s\n' "${PROD_SECRET_KEY:-${GENERATED_SECRET_KEY}}"
+                printf 'ALLOWED_HOSTS=%s\n' "${DEFAULT_ALLOWED_HOSTS}"
+                printf 'CSRF_TRUSTED_ORIGINS=%s\n' "${DEFAULT_CSRF_TRUSTED_ORIGINS}"
+                printf 'PUBLIC_BASE_URL=%s\n' "${DEFAULT_PUBLIC_BASE_URL}"
+              } > "${tmp_env}"
+              mv "${tmp_env}" .env
+              chmod 600 .env
+              echo "[DEPLOY] bootstrapped .env from generated defaults"
             }
 
             update_env() {
@@ -151,9 +154,9 @@ jobs:
             update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
             update_env "R2_BUCKET_NAME" "${R2_BUCKET_NAME:-}"
             update_env "R2_PREFIX" "${R2_PREFIX:-}"
-            update_env "ALLOWED_HOSTS" "${PROD_ALLOWED_HOSTS:-}"
-            update_env "CSRF_TRUSTED_ORIGINS" "${PROD_CSRF_TRUSTED_ORIGINS:-}"
-            update_env "PUBLIC_BASE_URL" "${PROD_PUBLIC_BASE_URL:-}"
+            update_env "ALLOWED_HOSTS" "${DEFAULT_ALLOWED_HOSTS}"
+            update_env "CSRF_TRUSTED_ORIGINS" "${DEFAULT_CSRF_TRUSTED_ORIGINS}"
+            update_env "PUBLIC_BASE_URL" "${DEFAULT_PUBLIC_BASE_URL}"
             update_env "DEBUG" "0"
             update_env "CORS_ALLOW_ALL" "0"
             update_env "SESSION_COOKIE_SECURE" "1"
@@ -171,20 +174,12 @@ jobs:
             export KIOSK_GEMINI_API_KEY="${KIOSK_GEMINI_API_KEY_VALUE}"
 
             SECRET_KEY_VALUE="$(current_env_value "SECRET_KEY")"
-            if [ -z "${SECRET_KEY_VALUE}" ] && [ -n "${PROD_SECRET_KEY:-}" ]; then
-              update_env "SECRET_KEY" "${PROD_SECRET_KEY}"
-              SECRET_KEY_VALUE="${PROD_SECRET_KEY}"
-              echo "[DEPLOY] provisioned missing SECRET_KEY from PROD_SECRET_KEY"
-            fi
-            if [ "${SECRET_KEY_VALUE}" = "dev-secret-change-me" ]; then
-              if [ -n "${PROD_SECRET_KEY:-}" ]; then
-                update_env "SECRET_KEY" "${PROD_SECRET_KEY}"
-                SECRET_KEY_VALUE="${PROD_SECRET_KEY}"
-                echo "[DEPLOY] replaced development SECRET_KEY from PROD_SECRET_KEY"
-              else
-                echo "::error::Refusing deploy with development SECRET_KEY. Set PROD_SECRET_KEY or update host .env."
-                exit 1
-              fi
+            if [ -z "${SECRET_KEY_VALUE}" ] || [ "${SECRET_KEY_VALUE}" = "dev-secret-change-me" ]; then
+              DEPLOY_STAGE="provision SECRET_KEY"
+              EFFECTIVE_SECRET_KEY="${PROD_SECRET_KEY:-$(generate_secret_key)}"
+              update_env "SECRET_KEY" "${EFFECTIVE_SECRET_KEY}"
+              SECRET_KEY_VALUE="${EFFECTIVE_SECRET_KEY}"
+              echo "[DEPLOY] provisioned production SECRET_KEY on host"
             fi
 
             require_env_value "SECRET_KEY"
