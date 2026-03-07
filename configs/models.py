@@ -57,22 +57,22 @@ class ConfigProfile(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=("scope", "version"),
-                condition=Q(scope=SCOPE_GLOBAL),
+                condition=Q(scope="GLOBAL"),
                 name="configs_profile_global_unique_version",
             ),
             models.UniqueConstraint(
                 fields=("scope", "org", "version"),
-                condition=Q(scope=SCOPE_ORG),
+                condition=Q(scope="ORG"),
                 name="configs_profile_org_unique_version",
             ),
             models.UniqueConstraint(
                 fields=("scope", "branch", "version"),
-                condition=Q(scope=SCOPE_BRANCH),
+                condition=Q(scope="BRANCH"),
                 name="configs_profile_branch_unique_version",
             ),
             models.UniqueConstraint(
                 fields=("scope", "device", "version"),
-                condition=Q(scope=SCOPE_DEVICE),
+                condition=Q(scope="DEVICE"),
                 name="configs_profile_device_unique_version",
             ),
         ]

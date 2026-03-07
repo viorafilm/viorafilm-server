@@ -50,8 +50,9 @@ jobs:
             fi
             cd "${APP_DIR}"
 
-            if [ ! -f ".env" ] && [ -f ".env.example" ]; then
-              cp .env.example .env
+            if [ ! -f ".env" ]; then
+              echo "::error::.env is missing on host. Provision the production env file before deploy."
+              exit 1
             fi
 
             update_env() {
@@ -68,11 +69,28 @@ jobs:
               mv "$tmp" .env
             }
 
+            require_env_value() {
+              key="$1"
+              value="$(grep "^${key}=" .env | head -n 1 | cut -d= -f2- || true)"
+              if [ -z "${value}" ]; then
+                echo "::error::.env is missing required key ${key}"
+                exit 1
+              fi
+            }
+
             update_env "R2_ACCOUNT_ID" "${R2_ACCOUNT_ID:-}"
             update_env "R2_ACCESS_KEY_ID" "${R2_ACCESS_KEY_ID:-}"
             update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
             update_env "R2_BUCKET_NAME" "${R2_BUCKET_NAME:-}"
             update_env "R2_PREFIX" "${R2_PREFIX:-}"
+            update_env "DEBUG" "0"
+            update_env "CORS_ALLOW_ALL" "0"
+            update_env "SESSION_COOKIE_SECURE" "1"
+            update_env "CSRF_COOKIE_SECURE" "1"
+            update_env "SECURE_SSL_REDIRECT" "1"
+            update_env "SECURE_HSTS_SECONDS" "31536000"
+            update_env "SECURE_HSTS_INCLUDE_SUBDOMAINS" "1"
+            update_env "SECURE_HSTS_PRELOAD" "1"
             KIOSK_GEMINI_API_KEY_VALUE="${KIOSK_GEMINI_API_KEY:-${{ secrets.KIOSK_GEMINI_API_KEY }}}"
             if [ -z "${KIOSK_GEMINI_API_KEY_VALUE}" ]; then
               echo "::error::KIOSK_GEMINI_API_KEY not available in deploy runtime"
@@ -80,6 +98,12 @@ jobs:
             fi
             update_env "KIOSK_GEMINI_API_KEY" "${KIOSK_GEMINI_API_KEY_VALUE}"
             export KIOSK_GEMINI_API_KEY="${KIOSK_GEMINI_API_KEY_VALUE}"
+            require_env_value "SECRET_KEY"
+            require_env_value "ALLOWED_HOSTS"
+            if grep -q '^SECRET_KEY=dev-secret-change-me$' .env; then
+              echo "::error::Refusing deploy with development SECRET_KEY"
+              exit 1
+            fi
             HOST_KEY_LINE="$(grep '^KIOSK_GEMINI_API_KEY=' .env | head -n 1 || true)"
             HOST_KEY_VALUE="${HOST_KEY_LINE#KIOSK_GEMINI_API_KEY=}"
             echo "[DEPLOY] host .env KIOSK_GEMINI_API_KEY configured=$([ -n "${HOST_KEY_VALUE}" ] && echo 1 || echo 0) len=${#HOST_KEY_VALUE}"

@@ -1227,6 +1227,7 @@ AI_LAYOUT_ID = "4641"
 AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
+AI_FRAME_SELECT_SLOTS = AI_OUTPUT_SLOTS
 AI_CAMERA_OVERLAY_PATH = ROOT_DIR / "assets" / "ui" / "14_ai_mode" / "4641_AImode.png"
 # Locked model: Nano Banana 2 tier (Gemini 3.1 Flash image preview).
 # Do not allow runtime override to prevent expensive/slow model drift.
@@ -4029,6 +4030,7 @@ class SelectPhotoScreen(ImageScreen):
         self._right_labels: list[QLabel] = []
         self._right_buttons: list[QToolButton] = []
         self._ai_original_labels: list[QLabel] = []
+        self._ai_original_buttons: list[QToolButton] = []
         self._ai_original_rects: list[tuple[int, int, int, int]] = []
         self._ai_original_paths: list[Optional[Path]] = []
         self._ai_compare_labels: list[QLabel] = []
@@ -4685,6 +4687,8 @@ class SelectPhotoScreen(ImageScreen):
             widget.deleteLater()
         for widget in self._ai_original_labels:
             widget.deleteLater()
+        for widget in self._ai_original_buttons:
+            widget.deleteLater()
         for widget in self._ai_compare_labels:
             widget.deleteLater()
         self._left_labels = []
@@ -4692,6 +4696,7 @@ class SelectPhotoScreen(ImageScreen):
         self._right_labels = []
         self._right_buttons = []
         self._ai_original_labels = []
+        self._ai_original_buttons = []
         self._ai_compare_labels = []
 
     def _rebuild_slot_widgets(self) -> None:
@@ -4723,7 +4728,11 @@ class SelectPhotoScreen(ImageScreen):
             label.setAlignment(ALIGN_CENTER)
             label.setScaledContents(False)
             label.setAttribute(WA_TRANSPARENT, True)
+            button = QToolButton(self)
+            button.setStyleSheet("QToolButton { background: transparent; border: 0px; }")
+            button.clicked.connect(lambda _checked=False, idx=_idx: self._on_ai_original_clicked(idx))
             self._ai_original_labels.append(label)
+            self._ai_original_buttons.append(button)
 
         for _idx, _rect in enumerate(self._ai_compare_rects):
             label = QLabel("", self)
@@ -4741,6 +4750,9 @@ class SelectPhotoScreen(ImageScreen):
             widget_rect = self.design_rect_to_widget(rect)
             self._ai_original_labels[index].setGeometry(widget_rect)
             self._ai_original_labels[index].raise_()
+            if index < len(self._ai_original_buttons):
+                self._ai_original_buttons[index].setGeometry(widget_rect)
+                self._ai_original_buttons[index].raise_()
         for index, rect in enumerate(self.left_rects):
             if index >= len(self._left_labels):
                 break
@@ -4809,8 +4821,70 @@ class SelectPhotoScreen(ImageScreen):
                     return
         label.setText(empty_text)
 
+    def _selection_path_for_source(self, source_path: Optional[Path], prefer_ai: bool) -> Optional[Path]:
+        if source_path is None or not source_path.is_file():
+            return None
+        if prefer_ai:
+            candidate = self._ai_candidate_by_source_key.get(str(source_path))
+            if candidate is not None and candidate.is_file():
+                return candidate
+        return source_path
+
+    def _selection_key_for_source(self, source_path: Optional[Path], prefer_ai: bool) -> Optional[str]:
+        selected_path = self._selection_path_for_source(source_path, prefer_ai=prefer_ai)
+        return str(selected_path) if selected_path is not None else None
+
+    def _toggle_selected_path(
+        self,
+        selected_path: Optional[Path],
+        source_path: Optional[Path],
+        label_name: str,
+    ) -> None:
+        if selected_path is None or not selected_path.is_file():
+            return
+        selected_key = str(selected_path)
+        if selected_key in self.shot_to_slot:
+            slot = self.shot_to_slot.pop(selected_key)
+            if 0 <= slot < len(self.selected_paths):
+                self.selected_paths[slot] = None
+                if slot < len(self.selected_source_keys):
+                    self.selected_source_keys[slot] = None
+            print(f"[SELECT_PHOTO] unselect {label_name}={selected_path.name} from slot={slot + 1}")
+            self._refresh_views()
+            return
+
+        slot = self._first_empty_slot()
+        if slot is None:
+            print("[SELECT_PHOTO] blocked: slots full")
+            self.show_notice("슬롯이 가득 찼습니다", duration_ms=800)
+            return
+
+        self.selected_paths[slot] = selected_path
+        if slot >= len(self.selected_source_keys):
+            self.selected_source_keys.extend([None] * (slot - len(self.selected_source_keys) + 1))
+        source_key = str(source_path) if source_path is not None and source_path.is_file() else None
+        self.selected_source_keys[slot] = source_key
+        self.shot_to_slot[selected_key] = slot
+        print(f"[SELECT_PHOTO] select {label_name}={selected_path.name} -> slot={slot + 1}")
+        self._refresh_views()
+
     def _reconcile_selection(self) -> None:
-        valid_keys = {str(path) for path in self._left_source_paths if path is not None}
+        valid_source_keys = {str(path) for path in self._left_source_paths if path is not None}
+        valid_selection_keys: set[str] = set()
+        if self._is_ai_mode_4641():
+            for source_path in self._left_source_paths:
+                selection_key = self._selection_key_for_source(source_path, prefer_ai=True)
+                if selection_key:
+                    valid_selection_keys.add(selection_key)
+            for source_path in self._ai_original_paths:
+                selection_key = self._selection_key_for_source(source_path, prefer_ai=False)
+                if selection_key:
+                    valid_selection_keys.add(selection_key)
+        else:
+            for source_path in self._left_source_paths:
+                selection_key = self._selection_key_for_source(source_path, prefer_ai=False)
+                if selection_key:
+                    valid_selection_keys.add(selection_key)
         if len(self.selected_source_keys) != len(self.selected_paths):
             self.selected_source_keys = list(self.selected_source_keys[: len(self.selected_paths)])
             while len(self.selected_source_keys) < len(self.selected_paths):
@@ -4828,21 +4902,25 @@ class SelectPhotoScreen(ImageScreen):
                 if index < len(self.selected_source_keys):
                     self.selected_source_keys[index] = None
                 continue
+            selected_key = str(shot_path)
             source_key = self.selected_source_keys[index] if index < len(self.selected_source_keys) else None
             if source_key is None:
-                raw_key = str(shot_path)
-                if raw_key in valid_keys:
-                    source_key = raw_key
+                if selected_key in valid_source_keys:
+                    source_key = selected_key
                 else:
-                    source_key = self._source_key_by_ai_candidate.get(raw_key)
-            if source_key is None or source_key not in valid_keys or source_key in next_map:
+                    source_key = self._source_key_by_ai_candidate.get(selected_key)
+            if (
+                selected_key not in valid_selection_keys
+                or selected_key in next_map
+                or (source_key is not None and source_key not in valid_source_keys)
+            ):
                 self.selected_paths[index] = None
                 if index < len(self.selected_source_keys):
                     self.selected_source_keys[index] = None
                 continue
             if index < len(self.selected_source_keys):
                 self.selected_source_keys[index] = source_key
-            next_map[source_key] = index
+            next_map[selected_key] = index
         self.shot_to_slot = next_map
 
     def _refresh_left_views(self) -> None:
@@ -4858,8 +4936,8 @@ class SelectPhotoScreen(ImageScreen):
                     "border: 2px dashed rgba(255,255,255,70); }"
                 )
                 continue
-            shot_key = str(shot_path)
-            if shot_key in self.shot_to_slot:
+            selected_key = self._selection_key_for_source(shot_path, prefer_ai=self._is_ai_mode_4641())
+            if selected_key and selected_key in self.shot_to_slot:
                 label.setStyleSheet(
                     "QLabel { color: white; background-color: rgba(0,0,0,30); "
                     "border: 4px solid rgb(96, 240, 96); }"
@@ -4884,10 +4962,17 @@ class SelectPhotoScreen(ImageScreen):
                     "border: 2px dashed rgba(255,255,255,120); }"
                 )
             else:
-                label.setStyleSheet(
-                    "QLabel { color: white; background-color: rgba(0,0,0,24); "
-                    "border: 2px solid rgba(0,0,0,120); }"
-                )
+                selected_key = self._selection_key_for_source(source, prefer_ai=False)
+                if selected_key and selected_key in self.shot_to_slot:
+                    label.setStyleSheet(
+                        "QLabel { color: white; background-color: rgba(0,0,0,24); "
+                        "border: 4px solid rgb(96, 240, 96); }"
+                    )
+                else:
+                    label.setStyleSheet(
+                        "QLabel { color: white; background-color: rgba(0,0,0,24); "
+                        "border: 2px solid rgba(0,0,0,120); }"
+                    )
             label.show()
 
     def _refresh_ai_compare_views(self) -> None:
@@ -4975,37 +5060,17 @@ class SelectPhotoScreen(ImageScreen):
         shot_path = self._left_source_paths[index]
         if shot_path is None:
             return
-        shot_name = shot_path.name
-        shot_key = str(shot_path)
-        if shot_key in self.shot_to_slot:
-            slot = self.shot_to_slot.pop(shot_key)
-            if 0 <= slot < len(self.selected_paths):
-                self.selected_paths[slot] = None
-                if slot < len(self.selected_source_keys):
-                    self.selected_source_keys[slot] = None
-            print(f"[SELECT_PHOTO] unselect shot={shot_name} from slot={slot + 1}")
-            self._refresh_views()
-            return
+        selected_path = self._selection_path_for_source(shot_path, prefer_ai=self._is_ai_mode_4641())
+        self._toggle_selected_path(selected_path, shot_path, "shot")
 
-        slot = self._first_empty_slot()
-        if slot is None:
-            print("[SELECT_PHOTO] blocked: slots full")
-            self.show_notice("슬롯이 가득 찼습니다", duration_ms=800)
+    def _on_ai_original_clicked(self, index: int) -> None:
+        if index < 0 or index >= len(self._ai_original_paths):
             return
-        selected_path = self._ai_candidate_by_source_key.get(shot_key, shot_path)
-        self.selected_paths[slot] = selected_path
-        if slot >= len(self.selected_source_keys):
-            self.selected_source_keys.extend([None] * (slot - len(self.selected_source_keys) + 1))
-        self.selected_source_keys[slot] = shot_key
-        self.shot_to_slot[shot_key] = slot
-        if selected_path != shot_path:
-            print(
-                f"[SELECT_PHOTO] select shot={shot_name} -> slot={slot + 1} "
-                f"mapped_ai={selected_path.name}"
-            )
-        else:
-            print(f"[SELECT_PHOTO] select shot={shot_name} -> slot={slot + 1}")
-        self._refresh_views()
+        source_path = self._ai_original_paths[index]
+        if source_path is None:
+            return
+        selected_path = self._selection_path_for_source(source_path, prefer_ai=False)
+        self._toggle_selected_path(selected_path, source_path, "original")
 
     def _on_right_slot_clicked(self, slot: int) -> None:
         if slot < 0 or slot >= len(self.selected_paths):
@@ -5014,14 +5079,10 @@ class SelectPhotoScreen(ImageScreen):
         if shot_path is None:
             return
         shot_name = shot_path.name
-        source_key = self.selected_source_keys[slot] if slot < len(self.selected_source_keys) else None
         self.selected_paths[slot] = None
         if slot < len(self.selected_source_keys):
             self.selected_source_keys[slot] = None
-        if source_key:
-            self.shot_to_slot.pop(source_key, None)
-        else:
-            self.shot_to_slot.pop(str(shot_path), None)
+        self.shot_to_slot.pop(str(shot_path), None)
         print(f"[SELECT_PHOTO] cancel slot={slot + 1} shot={shot_name}")
         self._refresh_views()
 
@@ -6112,7 +6173,7 @@ class SelectDesignScreen(ImageScreen):
         ai_source_a = ""
         ai_source_b = ""
         ai_session_dir = ""
-        if self._is_ai_mode_4641():
+        if self._is_ai_mode_4641() and len(selected_paths_for_preview) < AI_FRAME_SELECT_SLOTS:
             try:
                 selected_pair = self._resolve_ai_selected_pair()
                 if (
@@ -6823,6 +6884,22 @@ class SelectDesignScreen(ImageScreen):
         if not self.layout_id:
             raise RuntimeError("layout_id missing")
         if self._is_ai_mode_4641():
+            valid_selected = [Path(p) for p in self.selected_print_paths if Path(p).is_file()]
+            if len(valid_selected) >= AI_FRAME_SELECT_SLOTS:
+                self._emit_compose_progress(progress_cb, 22, "선택 사진 합성중", "Composing selected photos")
+                composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
+                    layout_id=self.layout_id,
+                    frame_index=self.frame_index,
+                    selected_paths=self.selected_print_paths,
+                    is_gray=self.is_gray,
+                    flip_horizontal=self.flip_horizontal,
+                )
+                print(f"[AI_MODE] compose selected mix count={len(valid_selected)} frame={self.frame_index}")
+                if self.qr_enabled:
+                    self._emit_compose_progress(progress_cb, 92, "QR 배치중", "Applying QR")
+                    composed = self._apply_qr_overlay_to_print(composed, used_slots)
+                self._emit_compose_progress(progress_cb, 99, "합성 마무리", "Finalizing composition")
+                return composed, frame2_path, slot_count, copies_per_page
             return self._build_final_print_ai_4641(progress_cb=progress_cb)
         self._emit_compose_progress(progress_cb, 22, "합성 준비중", "Preparing composition")
         composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
@@ -8554,6 +8631,92 @@ class AppQrUploadWorker(QObject):
             timeout = float(DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
         return min(60.0, max(3.0, timeout))
 
+    def _request_timeout(self, phase: str) -> tuple[float, float]:
+        base = self._timeout_sec()
+        connect_timeout = min(20.0, max(3.0, base))
+        if phase == "file":
+            read_timeout = min(180.0, max(45.0, base * 5.0))
+        else:
+            read_timeout = min(90.0, max(15.0, base * 2.0))
+        return connect_timeout, read_timeout
+
+    def _request_retry_count(self, phase: str) -> int:
+        default_attempts = 2 if phase == "json" else 3
+        raw = self.share_settings.get("retry_count")
+        try:
+            attempts = int(raw)
+        except Exception:
+            attempts = default_attempts
+        return max(1, min(4, attempts))
+
+    @staticmethod
+    def _is_retryable_request_error(message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return True
+        non_retryable_markers = (
+            "device_locked",
+            "http 400",
+            "http 401",
+            "http 403",
+            "http 404",
+            "http 409",
+            "invalid token",
+            "expired",
+            "missing token",
+            "missing",
+            "not configured",
+        )
+        if any(marker in text for marker in non_retryable_markers):
+            return False
+        retryable_markers = (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "connection aborted",
+            "connection reset",
+            "connection refused",
+            "nameresolutionerror",
+            "max retries exceeded",
+            "remote end closed",
+            "proxyerror",
+            "ssl",
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "invalid json response",
+            "invalid json payload",
+        )
+        return any(marker in text for marker in retryable_markers)
+
+    def _run_request_with_retry(
+        self,
+        label: str,
+        phase: str,
+        request_fn,
+    ) -> dict[str, Any]:
+        attempts = self._request_retry_count(phase)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return request_fn()
+            except Exception as exc:
+                last_error = exc
+                message = str(exc)
+                retryable = self._is_retryable_request_error(message)
+                print(
+                    f"[UPLOAD] {label} fail attempt={attempt}/{attempts} "
+                    f"retryable={1 if retryable else 0} reason={message}"
+                )
+                if not retryable or attempt >= attempts:
+                    raise
+                time.sleep(min(2.5, 0.75 * attempt))
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"{label} failed without response")
+
     def _api_base_url(self) -> str:
         configured = _normalize_kiosk_api_base_url(self.share_settings.get("api_base_url", ""))
         if configured:
@@ -8620,7 +8783,7 @@ class AppQrUploadWorker(QObject):
         return False, payload
 
     def _post_json(self, client: Any, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
-        response = client.post(url, json=payload, headers=headers, timeout=self._timeout_sec())
+        response = client.post(url, json=payload, headers=headers, timeout=self._request_timeout("json"))
         lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="share_api")
         if lock_hit:
             raise RuntimeError(f"{url} HTTP {response.status_code}: DEVICE_LOCKED")
@@ -8651,7 +8814,7 @@ class AppQrUploadWorker(QObject):
         with file_path.open("rb") as handle:
             files = {"file": (file_path.name, handle, content_type)}
             data = {"token": token, "kind": kind}
-            response = client.post(url, data=data, files=files, headers=headers, timeout=self._timeout_sec())
+            response = client.post(url, data=data, files=files, headers=headers, timeout=self._request_timeout("file"))
         lock_hit, parsed_payload = self._consume_server_lock_response(response, trigger="share_api")
         if lock_hit:
             raise RuntimeError(f"{url} HTTP {response.status_code}: DEVICE_LOCKED")
@@ -8702,7 +8865,11 @@ class AppQrUploadWorker(QObject):
         with requests.Session() as client:
             # Use kiosk session_id as share token so printed QR(/s/<session_id>) matches final share link.
             init_payload = {"session_id": session_id, "token": session_id}
-            init_data = self._post_json(client, init_url, init_payload, headers)
+            init_data = self._run_request_with_retry(
+                "init",
+                "json",
+                lambda: self._post_json(client, init_url, init_payload, headers),
+            )
             token = str(init_data.get("token", "")).strip()
             page_url = str(init_data.get("share_url", "")).strip()
             if not token:
@@ -8718,7 +8885,18 @@ class AppQrUploadWorker(QObject):
             for kind, file_path, local_key in upload_specs:
                 if not file_path.is_file():
                     continue
-                upload_data = self._post_file(client, upload_url, token, kind, file_path, headers)
+                upload_data = self._run_request_with_retry(
+                    f"file {kind}",
+                    "file",
+                    lambda kind=kind, file_path=file_path: self._post_file(
+                        client,
+                        upload_url,
+                        token,
+                        kind,
+                        file_path,
+                        headers,
+                    ),
+                )
                 entry: dict[str, Any] = {"name": file_path.name}
                 key_value = str(upload_data.get("key", "")).strip()
                 if key_value:
@@ -8738,10 +8916,24 @@ class AppQrUploadWorker(QObject):
                     "layout_id": self.layout_id,
                     "print_slots": self.print_slots,
                     "capture_slots": self.capture_slots,
-                    "design_index": self.design_index,
+                "design_index": self.design_index,
                 },
             }
-            finalize_data = self._post_json(client, finalize_url, finalize_payload, headers)
+            try:
+                finalize_data = self._run_request_with_retry(
+                    "finalize",
+                    "json",
+                    lambda: self._post_json(client, finalize_url, finalize_payload, headers),
+                )
+            except Exception as exc:
+                if not page_url or not files_meta:
+                    raise
+                print(
+                    "[UPLOAD] finalize soft-fail -> use init share_url "
+                    f"uploaded={','.join(sorted(files_meta.keys()))} err={exc}"
+                )
+                finalize_data = {}
+
             finalized_share_url = str(finalize_data.get("share_url", "")).strip()
             if finalized_share_url:
                 page_url = finalized_share_url
@@ -11503,7 +11695,7 @@ class LiveViewWorker(QObject):
                 f"result: {_hex_err(fallback_result)}"
             )
             if fallback_result in (EDS_ERR_OK, EDS_ERR_TAKE_PICTURE_AF_NG):
-                self._capture_deadline = now + max(2.5, self.capture_timeout_ms / 2000.0)
+                self._capture_deadline = now + max(4.0, self.capture_timeout_ms / 1000.0)
             return
         if now < self._capture_deadline:
             return
@@ -13361,7 +13553,7 @@ class CameraScreen(ImageScreen):
                 and bool(self.main_window.is_ai_mode_active())
                 and str(layout_id or "").strip() == AI_LAYOUT_ID
             ):
-                self.print_slots = AI_SELECT_SLOTS
+                self.print_slots = AI_FRAME_SELECT_SLOTS
                 self.capture_slots = AI_CAPTURE_SLOTS
                 ai_rects = self._pick_ai_mode_capture_rects(self.slot_rects, self.capture_slots)
                 if len(ai_rects) >= self.capture_slots:
@@ -14914,8 +15106,6 @@ class KioskMainWindow(QMainWindow):
             self._complete_after_loading(token, self.prepared_select_photo, "preload finished without payload")
 
     def _prepare_select_design_screen(self) -> None:
-        if self.is_ai_mode_active() and len(self.selected_print_paths) < AI_SELECT_SLOTS:
-            self._prepare_ai_selected_paths_from_captures()
         screen = self.screens.get("select_design")
         if isinstance(screen, SelectDesignScreen):
             screen.set_context(
@@ -18865,14 +19055,18 @@ class KioskMainWindow(QMainWindow):
             selected_source_paths = [
                 p for p in select_photo_screen.get_selected_source_paths() if isinstance(p, Path) and p.is_file()
             ]
-            if len(selected_paths) < AI_SELECT_SLOTS:
-                print(f"[SELECT_PHOTO] ai_mode blocked: incomplete {len(selected_paths)}/{AI_SELECT_SLOTS}")
-                select_photo_screen.show_notice("사진 2장을 선택해주세요", duration_ms=1000)
+            if len(selected_paths) < AI_FRAME_SELECT_SLOTS:
+                print(
+                    f"[SELECT_PHOTO] ai_mode blocked: incomplete "
+                    f"{len(selected_paths)}/{AI_FRAME_SELECT_SLOTS}"
+                )
+                select_photo_screen.show_notice("사진 4장을 선택해주세요", duration_ms=1000)
                 return False
-            if not self._prepare_ai_selected_paths_from_captures(selected_paths, selected_source_paths):
-                select_photo_screen.show_notice("촬영 원본이 부족합니다", duration_ms=1000)
-                return False
-            print("[SELECT_PHOTO] ai_mode -> select_design (2 selected)")
+            self.selected_print_paths = [str(path) for path in selected_paths]
+            self.ai_selected_source_paths = [str(path) for path in selected_source_paths]
+            self.current_print_slots = len(selected_paths)
+            self.print_slots = len(selected_paths)
+            print(f"[SELECT_PHOTO] ai_mode -> select_design ({len(selected_paths)} selected)")
             self.goto_screen("select_design")
             return True
 

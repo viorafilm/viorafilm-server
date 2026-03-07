@@ -3,13 +3,13 @@ from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import login
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.paginator import Paginator
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
-from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
+from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -552,6 +552,31 @@ def login_view(request):
     return render(request, "dashboard/login.html", {"form": form})
 
 
+@never_cache
+def logout_view(request):
+    if request.method not in {"GET", "POST"}:
+        return HttpResponseNotAllowed(["GET", "POST"])
+    logout(request)
+    response = redirect("dashboard_login")
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    response["Clear-Site-Data"] = '"cache", "cookies", "storage"'
+    response.delete_cookie(
+        settings.SESSION_COOKIE_NAME,
+        path=getattr(settings, "SESSION_COOKIE_PATH", "/"),
+        domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+        samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", None),
+    )
+    response.delete_cookie(
+        settings.CSRF_COOKIE_NAME,
+        path=getattr(settings, "CSRF_COOKIE_PATH", "/"),
+        domain=getattr(settings, "CSRF_COOKIE_DOMAIN", None),
+        samesite=getattr(settings, "CSRF_COOKIE_SAMESITE", None),
+    )
+    return response
+
+
 @login_required(login_url="/dashboard/login")
 @never_cache
 def index_view(request):
@@ -878,8 +903,15 @@ def coupons_view(request):
         "batch__branch_id",
         filters,
     )
-    coupon_total_count = int(Coupon.objects.count())
-    coupon_remaining_capacity = max(0, int(MAX_TOTAL_COUPONS - coupon_total_count))
+    global_coupon_total_count = int(Coupon.objects.count())
+    scoped_coupon_total_count = int(coupons.count())
+    coupon_global_capacity_visible = _is_super(user)
+    coupon_total_count = global_coupon_total_count if coupon_global_capacity_visible else scoped_coupon_total_count
+    coupon_remaining_capacity = (
+        max(0, int(MAX_TOTAL_COUPONS - global_coupon_total_count))
+        if coupon_global_capacity_visible
+        else None
+    )
     per_page_raw = request.GET.get("per_page") or request.POST.get("per_page") or 30
     try:
         per_page = int(per_page_raw)
@@ -1045,6 +1077,7 @@ def coupons_view(request):
             "coupon_remaining_capacity": coupon_remaining_capacity,
             "coupon_max_total": int(MAX_TOTAL_COUPONS),
             "coupon_max_per_issue": int(MAX_COUPON_BATCH_COUNT),
+            "coupon_global_capacity_visible": coupon_global_capacity_visible,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
@@ -1109,13 +1142,10 @@ def coupons_export_view(request):
 def photos_view(request):
     filters = _resolve_scope_filters(request.user, request)
     q = (request.GET.get("q") or "").strip()
-    now = timezone.now()
     devices_qs = _apply_org_branch_filter(_scoped_devices(request.user), "org_id", "branch_id", filters)
     device_ids = list(devices_qs.values_list("id", flat=True))
-    sessions_qs = ShareSession.objects.select_related("device").filter(
-        device_id__in=device_ids,
-        expires_at__gt=now,
-    )
+    now = timezone.now()
+    sessions_qs = ShareSession.objects.select_related("device").filter(device_id__in=device_ids)
     if q:
         sessions_qs = sessions_qs.filter(token__icontains=q)
     else:

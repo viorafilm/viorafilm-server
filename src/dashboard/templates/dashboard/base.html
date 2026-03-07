@@ -104,7 +104,10 @@
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
       <hr>
       <a class="menu-link" href="/admin/password_change/">비밀번호 변경</a>
-      <a class="menu-link" href="/dashboard/logout">로그아웃</a>
+      <form method="post" action="{% url 'dashboard_logout' %}" class="m-0">
+        {% csrf_token %}
+        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">로그아웃</button>
+      </form>
     </div>
   </div>
 
@@ -122,7 +125,10 @@
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
       <hr class="border-secondary-subtle">
       <a class="menu-link" href="/admin/password_change/">비밀번호 변경</a>
-      <a class="menu-link" href="/dashboard/logout">로그아웃</a>
+      <form method="post" action="{% url 'dashboard_logout' %}" class="m-0">
+        {% csrf_token %}
+        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">로그아웃</button>
+      </form>
     </aside>
 
     <main class="content">
