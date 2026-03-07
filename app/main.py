@@ -102,6 +102,90 @@ if load_dotenv is not None:
 
 _LOGGING_INITIALIZED = False
 _LOG_FILE_PATH: Optional[Path] = None
+_DEVICE_AUTH_DPAPI_ENTROPY = b"ViorafilmKiosk.DeviceAuth.v1"
+_DEVICE_AUTH_STORE_VERSION = 1
+_CRYPTPROTECT_UI_FORBIDDEN = 0x01
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_byte)),
+    ]
+
+
+def _data_blob_from_bytes(data: bytes) -> tuple[_DATA_BLOB, Optional[ctypes.Array]]:
+    raw = bytes(data or b"")
+    if not raw:
+        return _DATA_BLOB(0, None), None
+    buffer = ctypes.create_string_buffer(raw, len(raw))
+    blob = _DATA_BLOB(
+        len(raw),
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)),
+    )
+    return blob, buffer
+
+
+def _dpapi_protect_bytes(plaintext: bytes, *, entropy: bytes = b"") -> bytes:
+    raw = bytes(plaintext or b"")
+    if not raw:
+        return b""
+    in_blob, in_buffer = _data_blob_from_bytes(raw)
+    entropy_blob = None
+    entropy_buffer = None
+    entropy_ptr = None
+    if entropy:
+        entropy_blob, entropy_buffer = _data_blob_from_bytes(entropy)
+        entropy_ptr = ctypes.byref(entropy_blob)
+    out_blob = _DATA_BLOB()
+    _ = in_buffer, entropy_buffer
+    ok = ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(in_blob),
+        "Viorafilm Device Token",
+        entropy_ptr,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        if out_blob.pbData:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
+
+
+def _dpapi_unprotect_bytes(ciphertext: bytes, *, entropy: bytes = b"") -> bytes:
+    raw = bytes(ciphertext or b"")
+    if not raw:
+        return b""
+    in_blob, in_buffer = _data_blob_from_bytes(raw)
+    entropy_blob = None
+    entropy_buffer = None
+    entropy_ptr = None
+    if entropy:
+        entropy_blob, entropy_buffer = _data_blob_from_bytes(entropy)
+        entropy_ptr = ctypes.byref(entropy_blob)
+    out_blob = _DATA_BLOB()
+    _ = in_buffer, entropy_buffer
+    ok = ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob),
+        None,
+        entropy_ptr,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(out_blob),
+    )
+    if not ok:
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        if out_blob.pbData:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
 
 
 def _safe_boot_write(message: str) -> None:
@@ -16263,6 +16347,116 @@ class KioskMainWindow(QMainWindow):
             )
         return forced_cash
 
+    def _device_auth_store_path(self) -> Path:
+        env_override = str(os.environ.get("VIORAFILM_DEVICE_AUTH_STORE", "")).strip()
+        default_root = _default_runtime_data_dir()
+        fallback = default_root / "secure" / "device_auth.json"
+        if env_override:
+            path = Path(env_override)
+            if not path.is_absolute():
+                base = default_root if getattr(sys, "frozen", False) else ROOT_DIR
+                path = (base / path).resolve()
+            return _sanitize_runtime_path(path, fallback, "device_auth_store")
+
+        candidate_root = default_root
+        try:
+            config_path = Path(self.config_path)
+            if (
+                str(config_path.name).strip().lower() == "config.json"
+                and str(config_path.parent.name).strip().lower() == "config"
+            ):
+                candidate_root = config_path.parent.parent
+        except Exception:
+            pass
+        return _sanitize_runtime_path(
+            candidate_root / "secure" / "device_auth.json",
+            fallback,
+            "device_auth_store",
+        )
+
+    def _read_secure_device_credentials(self) -> dict[str, str]:
+        path = self._device_auth_store_path()
+        if not path.is_file():
+            return {}
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(envelope, dict):
+                raise ValueError("invalid envelope")
+            ciphertext_b64 = str(envelope.get("ciphertext", "")).strip()
+            if not ciphertext_b64:
+                return {}
+            payload_raw = _dpapi_unprotect_bytes(
+                base64.b64decode(ciphertext_b64),
+                entropy=_DEVICE_AUTH_DPAPI_ENTROPY,
+            )
+            payload = json.loads(payload_raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            return {
+                "device_code": str(payload.get("device_code", "")).strip(),
+                "device_token": str(payload.get("device_token", "")).strip(),
+            }
+        except Exception as exc:
+            print(f"[DEVICE_AUTH] secure store read failed path={path} reason={exc}")
+            return {}
+
+    def _write_secure_device_credentials(
+        self,
+        *,
+        device_code: str,
+        device_token: str,
+    ) -> None:
+        path = self._device_auth_store_path()
+        code = str(device_code or "").strip()
+        token = str(device_token or "").strip()
+        if not token:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+
+        payload = {
+            "version": _DEVICE_AUTH_STORE_VERSION,
+            "device_code": code,
+            "device_token": token,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        encrypted = _dpapi_protect_bytes(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            entropy=_DEVICE_AUTH_DPAPI_ENTROPY,
+        )
+        envelope = {
+            "version": _DEVICE_AUTH_STORE_VERSION,
+            "scheme": "dpapi_current_user",
+            "ciphertext": base64.b64encode(encrypted).decode("ascii"),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps(envelope, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+        print(f"[DEVICE_AUTH] secure store saved path={path}")
+
+    def _scrub_plaintext_device_token_from_config(self, config: Optional[dict] = None) -> None:
+        current = dict(config) if isinstance(config, dict) else self._read_config_dict()
+        share = current.get("share") if isinstance(current, dict) else None
+        if not isinstance(share, dict):
+            return
+        plaintext = str(share.get("device_token", "")).strip()
+        storage = str(share.get("device_token_storage", "")).strip()
+        if (not plaintext) and storage == "dpapi_current_user":
+            return
+        share = dict(share)
+        share["device_token"] = ""
+        share["device_token_storage"] = "dpapi_current_user"
+        current["share"] = share
+        self._write_config_dict_atomic(current)
+        if plaintext:
+            print(f"[DEVICE_AUTH] scrubbed plaintext token from config path={self.config_path}")
+
     def _resolve_share_settings(self) -> dict:
         config = self._read_config_dict()
         raw = config.get("share") if isinstance(config, dict) else None
@@ -16290,6 +16484,41 @@ class KioskMainWindow(QMainWindow):
                 except Exception:
                     timeout_value = float(DEFAULT_SHARE_SETTINGS.get("timeout_sec", 12.0))
                 result["timeout_sec"] = min(60.0, max(3.0, timeout_value))
+        plaintext_token = str(result.get("device_token", "")).strip()
+        secure = self._read_secure_device_credentials()
+        secure_code = str(secure.get("device_code", "")).strip()
+        secure_token = str(secure.get("device_token", "")).strip()
+
+        if secure_token and result["device_code"] and secure_code and secure_code != result["device_code"]:
+            print(
+                "[DEVICE_AUTH] secure credential code mismatch "
+                f'config="{result["device_code"]}" secure="{secure_code}" -> ignore secure token'
+            )
+            secure_token = ""
+
+        if not result["device_code"] and secure_code:
+            result["device_code"] = secure_code
+
+        if secure_token:
+            result["device_token"] = secure_token
+            if plaintext_token:
+                self._scrub_plaintext_device_token_from_config(config)
+            return result
+
+        if plaintext_token:
+            try:
+                self._write_secure_device_credentials(
+                    device_code=str(result.get("device_code", "")).strip(),
+                    device_token=plaintext_token,
+                )
+                result["device_token"] = plaintext_token
+                self._scrub_plaintext_device_token_from_config(config)
+                print(
+                    "[DEVICE_AUTH] migrated plaintext token to secure store "
+                    f"path={self._device_auth_store_path()}"
+                )
+            except Exception as exc:
+                print(f"[DEVICE_AUTH] secure store migrate failed: {exc}")
         return result
 
     def _probe_device_credentials(
@@ -16415,6 +16644,10 @@ class KioskMainWindow(QMainWindow):
         device_code: str,
         device_token: str,
     ) -> None:
+        self._write_secure_device_credentials(
+            device_code=device_code,
+            device_token=device_token,
+        )
         config = self._read_config_dict()
         share = config.get("share") if isinstance(config.get("share"), dict) else {}
         share = dict(share)
@@ -16430,7 +16663,8 @@ class KioskMainWindow(QMainWindow):
             except Exception:
                 pass
         share["device_code"] = str(device_code or "").strip()
-        share["device_token"] = str(device_token or "").strip()
+        share["device_token"] = ""
+        share["device_token_storage"] = "dpapi_current_user"
         share["runtime_trusted_config_path"] = str(self.config_path)
         share["runtime_machine_id"] = str(self._current_runtime_machine_id() or "").strip()
         share["runtime_trusted_at"] = datetime.now().isoformat(timespec="seconds")

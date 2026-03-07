@@ -49,6 +49,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Dirs]
 Name: "{commonappdata}\ViorafilmKiosk"; Permissions: users-modify
 Name: "{commonappdata}\ViorafilmKiosk\config"; Permissions: users-modify
+Name: "{commonappdata}\ViorafilmKiosk\secure"; Permissions: users-modify
 Name: "{commonappdata}\ViorafilmKiosk\out"; Permissions: users-modify
 Name: "{commonappdata}\ViorafilmKiosk\sessions"; Permissions: users-modify
 Name: "{commonappdata}\ViorafilmKiosk\logs"; Permissions: users-modify
@@ -57,7 +58,7 @@ Name: "{commonappdata}\ViorafilmKiosk\logs"; Permissions: users-modify
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{commonappdata}\ViorafilmKiosk\config"
+Type: filesandordirs; Name: "{commonappdata}\ViorafilmKiosk\secure"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"
