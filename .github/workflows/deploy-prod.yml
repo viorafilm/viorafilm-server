@@ -49,10 +49,13 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
+            DEPLOY_STAGE="init"
+            trap 'rc=$?; echo "::error::Deploy failed at stage ${DEPLOY_STAGE} while running: ${BASH_COMMAND}"; exit $rc' ERR
             APP_DIR="${{ secrets.PROD_APP_DIR }}"
             if [ -z "${APP_DIR}" ]; then
               APP_DIR="/opt/viorafilm-server"
             fi
+            DEPLOY_STAGE="change directory"
             cd "${APP_DIR}"
 
             ensure_env_file() {
@@ -61,6 +64,7 @@ jobs:
               fi
 
               if [ -n "${PROD_ENV_B64:-}" ]; then
+                DEPLOY_STAGE="bootstrap env from PROD_ENV_B64"
                 tmp_raw="$(mktemp)"
                 tmp_clean="$(mktemp)"
                 if ! printf '%s' "${PROD_ENV_B64}" | base64 --decode > "${tmp_raw}"; then
@@ -77,6 +81,7 @@ jobs:
               fi
 
               if [ -n "${PROD_SECRET_KEY:-}" ] && [ -n "${PROD_ALLOWED_HOSTS:-}" ]; then
+                DEPLOY_STAGE="bootstrap env from minimal PROD secrets"
                 tmp_env="$(mktemp)"
                 {
                   printf 'DEBUG=0\n'
@@ -105,6 +110,7 @@ jobs:
               if [ -z "$value" ]; then
                 return 0
               fi
+              DEPLOY_STAGE="update env ${key}"
               tmp="$(mktemp)"
               if [ -f ".env" ]; then
                 grep -v "^${key}=" .env > "$tmp" || true
@@ -115,6 +121,7 @@ jobs:
 
             require_env_value() {
               key="$1"
+              DEPLOY_STAGE="validate env ${key}"
               value="$(grep "^${key}=" .env | head -n 1 | cut -d= -f2- || true)"
               if [ -z "${value}" ]; then
                 echo "::error::.env is missing required key ${key}"
@@ -136,7 +143,9 @@ jobs:
               fi
             }
 
+            DEPLOY_STAGE="ensure env file"
             ensure_env_file
+            DEPLOY_STAGE="synchronize env values"
             update_env "R2_ACCOUNT_ID" "${R2_ACCOUNT_ID:-}"
             update_env "R2_ACCESS_KEY_ID" "${R2_ACCESS_KEY_ID:-}"
             update_env "R2_SECRET_ACCESS_KEY" "${R2_SECRET_ACCESS_KEY:-}"
@@ -184,10 +193,12 @@ jobs:
             HOST_KEY_VALUE="${HOST_KEY_LINE#KIOSK_GEMINI_API_KEY=}"
             echo "[DEPLOY] host .env KIOSK_GEMINI_API_KEY configured=$([ -n "${HOST_KEY_VALUE}" ] && echo 1 || echo 0) len=${#HOST_KEY_VALUE}"
 
+            DEPLOY_STAGE="git sync"
             run_checked "git fetch origin main" git fetch origin main
             run_checked "git checkout main" git checkout main
             run_checked "git pull --ff-only origin main" git pull --ff-only origin main
 
+            DEPLOY_STAGE="docker deploy"
             run_checked "docker compose up" docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             run_checked "manage.py migrate" docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py migrate
             run_checked "collectstatic" docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py collectstatic --noinput
