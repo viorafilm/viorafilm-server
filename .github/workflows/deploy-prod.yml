@@ -122,6 +122,11 @@ jobs:
               fi
             }
 
+            current_env_value() {
+              key="$1"
+              grep "^${key}=" .env | head -n 1 | cut -d= -f2- || true
+            }
+
             ensure_env_file
             update_env "R2_ACCOUNT_ID" "${R2_ACCOUNT_ID:-}"
             update_env "R2_ACCESS_KEY_ID" "${R2_ACCESS_KEY_ID:-}"
@@ -146,12 +151,26 @@ jobs:
             fi
             update_env "KIOSK_GEMINI_API_KEY" "${KIOSK_GEMINI_API_KEY_VALUE}"
             export KIOSK_GEMINI_API_KEY="${KIOSK_GEMINI_API_KEY_VALUE}"
+
+            SECRET_KEY_VALUE="$(current_env_value "SECRET_KEY")"
+            if [ -z "${SECRET_KEY_VALUE}" ] && [ -n "${PROD_SECRET_KEY:-}" ]; then
+              update_env "SECRET_KEY" "${PROD_SECRET_KEY}"
+              SECRET_KEY_VALUE="${PROD_SECRET_KEY}"
+              echo "[DEPLOY] provisioned missing SECRET_KEY from PROD_SECRET_KEY"
+            fi
+            if [ "${SECRET_KEY_VALUE}" = "dev-secret-change-me" ]; then
+              if [ -n "${PROD_SECRET_KEY:-}" ]; then
+                update_env "SECRET_KEY" "${PROD_SECRET_KEY}"
+                SECRET_KEY_VALUE="${PROD_SECRET_KEY}"
+                echo "[DEPLOY] replaced development SECRET_KEY from PROD_SECRET_KEY"
+              else
+                echo "::error::Refusing deploy with development SECRET_KEY. Set PROD_SECRET_KEY or update host .env."
+                exit 1
+              fi
+            fi
+
             require_env_value "SECRET_KEY"
             require_env_value "ALLOWED_HOSTS"
-            if grep -q '^SECRET_KEY=dev-secret-change-me$' .env; then
-              echo "::error::Refusing deploy with development SECRET_KEY"
-              exit 1
-            fi
             HOST_KEY_LINE="$(grep '^KIOSK_GEMINI_API_KEY=' .env | head -n 1 || true)"
             HOST_KEY_VALUE="${HOST_KEY_LINE#KIOSK_GEMINI_API_KEY=}"
             echo "[DEPLOY] host .env KIOSK_GEMINI_API_KEY configured=$([ -n "${HOST_KEY_VALUE}" ] && echo 1 || echo 0) len=${#HOST_KEY_VALUE}"
