@@ -1106,6 +1106,7 @@ DEFAULT_SHARE_SETTINGS = {
     "api_base_url": "https://api.viorafilm.com/api",
     "device_code": "",
     "device_token": "",
+    "device_install_key": "",
     "timeout_sec": 12.0,
 }
 
@@ -8820,15 +8821,19 @@ class AppQrUploadWorker(QObject):
         device_token = str(self.share_settings.get("device_token", "")).strip() or str(
             os.environ.get("KIOSK_DEVICE_TOKEN", "")
         ).strip()
+        device_install_key = str(self.share_settings.get("device_install_key", "")).strip()
         if not device_code:
             raise RuntimeError("share.device_code missing")
         if not device_token:
             raise RuntimeError("share.device_token missing")
-        return {
+        headers = {
             "X-Device-Code": device_code,
             "X-Device-Token": device_token,
             "Accept": "application/json",
         }
+        if device_install_key:
+            headers["X-Device-Install-Key"] = device_install_key
+        return headers
 
     @staticmethod
     def _response_error_text(response: Any) -> str:
@@ -9341,6 +9346,9 @@ class AppQrGeneratingScreen(ImageScreen):
         session = self.main_window.get_active_session() if hasattr(self.main_window, "get_active_session") else None
         if session is not None:
             try:
+                if hasattr(self.main_window, "clear_share_upload_retry"):
+                    session_id = str(session.session_id or session.session_dir.name).strip()
+                    self.main_window.clear_share_upload_retry(session_id)
                 if qr_path.is_file():
                     qr_path = session.save_qr(qr_path)
                 session.set_share_url(page_url)
@@ -9357,6 +9365,8 @@ class AppQrGeneratingScreen(ImageScreen):
         if self._active_token != self._token:
             return
         print(f"[UPLOAD] fail: {error_message}")
+        if hasattr(self.main_window, "queue_share_upload_retry"):
+            self.main_window.queue_share_upload_retry(error_message)
         self._show_notice("업로드 실패", duration_ms=self.FAIL_NOTICE_MS)
         self._upload_completed = True
         self._pending_page_url = None
@@ -16395,6 +16405,7 @@ class KioskMainWindow(QMainWindow):
             return {
                 "device_code": str(payload.get("device_code", "")).strip(),
                 "device_token": str(payload.get("device_token", "")).strip(),
+                "device_install_key": str(payload.get("device_install_key", "")).strip(),
             }
         except Exception as exc:
             print(f"[DEVICE_AUTH] secure store read failed path={path} reason={exc}")
@@ -16405,21 +16416,29 @@ class KioskMainWindow(QMainWindow):
         *,
         device_code: str,
         device_token: str,
-    ) -> None:
+        device_install_key: str = "",
+    ) -> str:
         path = self._device_auth_store_path()
         code = str(device_code or "").strip()
         token = str(device_token or "").strip()
-        if not token:
+        existing = self._read_secure_device_credentials()
+        install_key = (
+            str(device_install_key or "").strip()
+            or str(existing.get("device_install_key", "")).strip()
+            or secrets.token_urlsafe(32)
+        )
+        if not token and not code and not install_key:
             try:
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
-            return
+            return ""
 
         payload = {
             "version": _DEVICE_AUTH_STORE_VERSION,
             "device_code": code,
             "device_token": token,
+            "device_install_key": install_key,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
         encrypted = _dpapi_protect_bytes(
@@ -16439,6 +16458,7 @@ class KioskMainWindow(QMainWindow):
         )
         os.replace(tmp_path, path)
         print(f"[DEVICE_AUTH] secure store saved path={path}")
+        return install_key
 
     def _scrub_plaintext_device_token_from_config(self, config: Optional[dict] = None) -> None:
         current = dict(config) if isinstance(config, dict) else self._read_config_dict()
@@ -16488,6 +16508,7 @@ class KioskMainWindow(QMainWindow):
         secure = self._read_secure_device_credentials()
         secure_code = str(secure.get("device_code", "")).strip()
         secure_token = str(secure.get("device_token", "")).strip()
+        secure_install_key = str(secure.get("device_install_key", "")).strip()
 
         if secure_token and result["device_code"] and secure_code and secure_code != result["device_code"]:
             print(
@@ -16499,6 +16520,18 @@ class KioskMainWindow(QMainWindow):
         if not result["device_code"] and secure_code:
             result["device_code"] = secure_code
 
+        if not secure_install_key:
+            try:
+                secure_install_key = self._write_secure_device_credentials(
+                    device_code=str(result.get("device_code", "")).strip() or secure_code,
+                    device_token=secure_token or plaintext_token,
+                )
+            except Exception as exc:
+                print(f"[DEVICE_AUTH] install key bootstrap failed: {exc}")
+                secure_install_key = ""
+        if secure_install_key:
+            result["device_install_key"] = secure_install_key
+
         if secure_token:
             result["device_token"] = secure_token
             if plaintext_token:
@@ -16507,11 +16540,13 @@ class KioskMainWindow(QMainWindow):
 
         if plaintext_token:
             try:
-                self._write_secure_device_credentials(
+                secure_install_key = self._write_secure_device_credentials(
                     device_code=str(result.get("device_code", "")).strip(),
                     device_token=plaintext_token,
                 )
                 result["device_token"] = plaintext_token
+                if secure_install_key:
+                    result["device_install_key"] = secure_install_key
                 self._scrub_plaintext_device_token_from_config(config)
                 print(
                     "[DEVICE_AUTH] migrated plaintext token to secure store "
@@ -16543,6 +16578,9 @@ class KioskMainWindow(QMainWindow):
             "X-Device-Code": code,
             "X-Device-Token": token,
         }
+        install_key = str(self._resolve_share_settings().get("device_install_key", "")).strip()
+        if install_key:
+            headers["X-Device-Install-Key"] = install_key
         try:
             resp = requests.get(url, headers=headers, timeout=max(3.0, min(20.0, float(timeout_sec))))
         except Exception as exc:
@@ -16644,9 +16682,11 @@ class KioskMainWindow(QMainWindow):
         device_code: str,
         device_token: str,
     ) -> None:
+        existing_secure = self._read_secure_device_credentials()
         self._write_secure_device_credentials(
             device_code=device_code,
             device_token=device_token,
+            device_install_key=str(existing_secure.get("device_install_key", "")).strip(),
         )
         config = self._read_config_dict()
         share = config.get("share") if isinstance(config.get("share"), dict) else {}
@@ -17600,6 +17640,7 @@ class KioskMainWindow(QMainWindow):
             return None
 
     def _offline_telemetry_snapshot(self) -> dict[str, Any]:
+        queue_stats = self._offline_queue_stats()
         with self._license_state_lock:
             enabled = bool(self._offline_guard_enabled)
             grace_seconds = int(self._offline_grace_seconds)
@@ -17626,6 +17667,10 @@ class KioskMainWindow(QMainWindow):
             "offline_reference_source": reference_source,
             "offline_last_online_at": self._iso_from_ts(last_online_ts),
             "offline_first_seen_at": self._iso_from_ts(first_seen_ts),
+            "offline_queue_total": int(queue_stats.get("total", 0)),
+            "offline_queue_sale_pending": int(queue_stats.get("sale_complete", 0)),
+            "offline_queue_share_pending": int(queue_stats.get("share_upload", 0)),
+            "offline_queue_heartbeat_pending": int(queue_stats.get("heartbeat", 0)),
         }
 
     def _load_license_state_unlocked(self) -> dict[str, Any]:
@@ -20302,14 +20347,18 @@ class KioskMainWindow(QMainWindow):
         share_cfg = self.get_share_settings()
         device_code = str(share_cfg.get("device_code", "")).strip() or str(os.environ.get("KIOSK_DEVICE_CODE", "")).strip()
         device_token = str(share_cfg.get("device_token", "")).strip() or str(os.environ.get("KIOSK_DEVICE_TOKEN", "")).strip()
+        device_install_key = str(share_cfg.get("device_install_key", "")).strip()
         if not device_code or not device_token:
             raise RuntimeError("share.device_code/device_token missing")
-        return {
+        headers = {
             "X-Device-Code": device_code,
             "X-Device-Token": device_token,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        if device_install_key:
+            headers["X-Device-Install-Key"] = device_install_key
+        return headers
 
     def _sales_complete_url(self) -> str:
         share_cfg = self.get_share_settings()
@@ -20490,6 +20539,16 @@ class KioskMainWindow(QMainWindow):
         with self._offline_queue_lock:
             return len(self._load_offline_queue_unlocked())
 
+    def _offline_queue_stats(self) -> dict[str, int]:
+        with self._offline_queue_lock:
+            items = self._load_offline_queue_unlocked()
+        stats = {"total": len(items), "sale_complete": 0, "share_upload": 0, "heartbeat": 0}
+        for item in items:
+            kind = str(item.get("kind", "")).strip().lower()
+            if kind in stats:
+                stats[kind] += 1
+        return stats
+
     def _load_offline_queue_unlocked(self) -> list[dict[str, Any]]:
         path = Path(self._offline_queue_path)
         if not path.is_file():
@@ -20508,7 +20567,7 @@ class KioskMainWindow(QMainWindow):
                 continue
             kind = str(item.get("kind", "")).strip().lower()
             payload = item.get("payload")
-            if kind not in {"sale_complete", "heartbeat"} or not isinstance(payload, dict):
+            if kind not in {"sale_complete", "heartbeat", "share_upload"} or not isinstance(payload, dict):
                 continue
             dedupe_key = str(item.get("dedupe_key", "")).strip()
             retry_count = self._safe_int(item.get("retry_count"), 0)
@@ -20573,9 +20632,18 @@ class KioskMainWindow(QMainWindow):
             hours = 24.0
         return float(max(1.0, min(168.0, hours)) * 3600.0)
 
+    @staticmethod
+    def _share_queue_max_age_sec() -> float:
+        raw = str(os.environ.get("KIOSK_SHARE_QUEUE_MAX_AGE_HOURS", "168")).strip()
+        try:
+            hours = float(raw)
+        except Exception:
+            hours = 168.0
+        return float(max(1.0, min(720.0, hours)) * 3600.0)
+
     def _enqueue_offline_event(self, *, kind: str, payload: dict[str, Any], dedupe_key: str) -> None:
         event_kind = str(kind or "").strip().lower()
-        if event_kind not in {"sale_complete", "heartbeat"}:
+        if event_kind not in {"sale_complete", "heartbeat", "share_upload"}:
             return
         safe_payload = dict(payload) if isinstance(payload, dict) else {}
         now_ts = time.time()
@@ -20616,6 +20684,22 @@ class KioskMainWindow(QMainWindow):
                 f"size={len(items)}"
             )
 
+    def _remove_offline_event_by_dedupe_key(self, dedupe_key: str) -> None:
+        key = str(dedupe_key or "").strip()
+        if not key:
+            return
+        with self._offline_queue_lock:
+            items = self._load_offline_queue_unlocked()
+            filtered = [
+                item
+                for item in items
+                if str(item.get("dedupe_key", "")).strip() != key
+            ]
+            if len(filtered) == len(items):
+                return
+            self._save_offline_queue_unlocked(filtered)
+            print(f"[QUEUE] remove key={key} size={len(filtered)}")
+
     def _flush_offline_queue_once(self) -> tuple[int, int]:
         now_ts = time.time()
         delivered = 0
@@ -20639,6 +20723,7 @@ class KioskMainWindow(QMainWindow):
 
         requeue_items: list[dict[str, Any]] = []
         stale_age_sec = self._sale_queue_max_age_sec()
+        share_stale_age_sec = self._share_queue_max_age_sec()
         for item in due_items:
             kind = str(item.get("kind", "")).strip().lower()
             payload = item.get("payload")
@@ -20655,6 +20740,13 @@ class KioskMainWindow(QMainWindow):
                     f"reason=stale age_h={age_hours:.1f} limit_h={stale_age_sec / 3600.0:.1f}"
                 )
                 continue
+            if kind == "share_upload" and (now_ts - created_ts) > share_stale_age_sec:
+                age_hours = (now_ts - created_ts) / 3600.0
+                print(
+                    f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
+                    f"reason=stale age_h={age_hours:.1f} limit_h={share_stale_age_sec / 3600.0:.1f}"
+                )
+                continue
             ok = False
             reason = "unknown"
             if kind == "sale_complete":
@@ -20663,6 +20755,8 @@ class KioskMainWindow(QMainWindow):
                     session_id = str(payload.get("session_id", "")).strip()
                     if session_id:
                         self._mark_sale_reported(session_id)
+            elif kind == "share_upload":
+                ok, reason = self._send_share_upload_request(payload)
             elif kind == "heartbeat":
                 ok, reason = self._send_heartbeat_request(payload=payload)
             else:
@@ -20674,6 +20768,12 @@ class KioskMainWindow(QMainWindow):
                 )
                 continue
             if kind == "sale_complete" and self._is_non_retryable_sale_error(reason):
+                print(
+                    f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
+                    f"reason=non-retryable({reason})"
+                )
+                continue
+            if kind == "share_upload" and not AppQrUploadWorker._is_retryable_request_error(reason):
                 print(
                     f"[QUEUE] drop kind={kind} key={str(item.get('dedupe_key', '')).strip() or '-'} "
                     f"reason=non-retryable({reason})"
@@ -21013,6 +21113,131 @@ class KioskMainWindow(QMainWindow):
 
         threading.Thread(target=_runner, daemon=True, name=f"sale-report-{session_id}").start()
 
+    def _build_share_upload_retry_payload(self, session: Session) -> Optional[dict[str, Any]]:
+        if session is None:
+            return None
+        session_id = str(session.session_id or session.session_dir.name).strip()
+        session_dir = Path(session.session_dir)
+        if not session_id or not session_dir.is_dir():
+            return None
+        return {
+            "session_id": session_id,
+            "session_dir": str(session_dir),
+            "layout_id": str(self.current_layout_id or ""),
+            "print_slots": int(self.current_print_slots or 0),
+            "capture_slots": int(self.current_capture_slots or 0),
+            "design_index": self.current_design_index,
+        }
+
+    def queue_share_upload_retry(self, reason: str = "") -> None:
+        session = self.get_active_session()
+        if session is None:
+            print("[QUEUE] skip share upload enqueue: session missing")
+            return
+        payload = self._build_share_upload_retry_payload(session)
+        if not isinstance(payload, dict):
+            print("[QUEUE] skip share upload enqueue: invalid payload")
+            return
+        session_id = str(payload.get("session_id", "")).strip()
+        self._enqueue_offline_event(
+            kind="share_upload",
+            payload=payload,
+            dedupe_key=f"share:{session_id}",
+        )
+        if reason:
+            print(f"[QUEUE] share upload queued session={session_id} reason={reason}")
+        self._flush_offline_queue_async(reason="share_fail")
+
+    def clear_share_upload_retry(self, session_id: str) -> None:
+        cleaned = str(session_id or "").strip()
+        if not cleaned:
+            return
+        self._remove_offline_event_by_dedupe_key(f"share:{cleaned}")
+
+    def _send_share_upload_request(self, payload: dict[str, Any]) -> tuple[bool, str]:
+        if requests is None:
+            return False, "requests module not installed"
+        session_id = str(payload.get("session_id", "")).strip()
+        session_dir_raw = str(payload.get("session_dir", "")).strip()
+        if not session_id:
+            return False, "session id missing"
+        if not session_dir_raw:
+            return False, "session dir missing"
+
+        session_dir = Path(session_dir_raw)
+        if not session_dir.is_dir():
+            return False, "session dir missing"
+
+        share_dir = ensure_share_dir(session_dir)
+        frame_local = share_dir / "frame.png"
+        image_local = share_dir / "print.jpg"
+        video_local = share_dir / "video.gif"
+        if not image_local.is_file():
+            return False, "print file missing"
+
+        share_settings = self.get_share_settings()
+        worker = AppQrUploadWorker(
+            session=None,
+            share_settings=share_settings,
+            layout_id=str(payload.get("layout_id", "")).strip() or None,
+            print_slots=int(self._safe_int(payload.get("print_slots"), 0)),
+            capture_slots=int(self._safe_int(payload.get("capture_slots"), 0)),
+            design_index=payload.get("design_index"),
+        )
+
+        try:
+            if worker._upload_dry_run_enabled():
+                page_url, frame_url, image_url, video_url = worker._build_dummy_urls(session_id)
+                file_entries: dict[str, dict[str, Any]] = {}
+                if frame_local.is_file():
+                    file_entries["frame"] = {"name": "frame.png", "url": frame_url}
+                if image_local.is_file():
+                    file_entries["image"] = {"name": "print.jpg", "url": image_url}
+                if video_local.is_file():
+                    file_entries["video"] = {"name": "video.gif", "url": video_url}
+                server_token = ""
+            else:
+                page_url, file_entries, server_token = worker._upload_via_server(
+                    session_id=session_id,
+                    image_local=image_local,
+                    frame_local=frame_local,
+                    video_local=video_local,
+                )
+
+            share_json_path = share_dir / "share.json"
+            share_payload: dict[str, Any] = {
+                "session_id": session_id,
+                "page_url": page_url,
+                "files": file_entries,
+                "layout_id": payload.get("layout_id"),
+                "print_slots": int(self._safe_int(payload.get("print_slots"), 0)),
+                "capture_slots": int(self._safe_int(payload.get("capture_slots"), 0)),
+                "design_index": payload.get("design_index"),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "upload_mode": "dry_run" if worker._upload_dry_run_enabled() else "server",
+            }
+            if server_token:
+                share_payload["share_token"] = server_token
+            _write_json_atomic(share_json_path, share_payload)
+            qr_dir = Path(session_dir) / "qr"
+            qr_dir.mkdir(parents=True, exist_ok=True)
+            qr_path = generate_qr_png(page_url, qr_dir / "qr.png")
+            print(
+                f"[QUEUE] share upload delivered session={session_id} "
+                f"page_url={page_url} qr={qr_path}"
+            )
+
+            active = self.get_active_session()
+            if active is not None and str(active.session_id or active.session_dir.name).strip() == session_id:
+                try:
+                    active.set_share_url(page_url)
+                    active.save_qr(qr_path)
+                except Exception as exc:
+                    print(f"[QUEUE] active session sync failed session={session_id} err={exc}")
+            return True, page_url
+        except Exception as exc:
+            return False, str(exc)
+
     def _write_share_json(self, session: Session, urls: dict) -> Optional[Path]:
         try:
             share_dir = ensure_share_dir(session.session_dir)
@@ -21127,6 +21352,7 @@ class KioskMainWindow(QMainWindow):
         if session is None:
             self.handle_qr_generating_done(None)
             return
+        self.clear_share_upload_retry(str(session.session_id or session.session_dir.name).strip())
         urls = self._build_share_urls(session)
         page_url = str(urls.get("page_url"))
         self._write_share_json(session, urls)
@@ -21138,6 +21364,7 @@ class KioskMainWindow(QMainWindow):
 
     def on_upload_fail(self, error_message: str) -> None:
         print(f"[UPLOAD] fail: {error_message}")
+        self.queue_share_upload_retry(error_message)
         self.handle_qr_generating_done(None)
 
     def _on_print_failure(self, error_message: str) -> None:

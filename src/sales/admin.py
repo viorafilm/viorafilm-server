@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from django.contrib import admin
 from django.utils import timezone
 
-from .models import SaleTransaction
+from .models import BranchMonthlyBilling, SaleTransaction
 
 AI_EST_USD_PER_IMAGE = 0.039
 AI_EST_KRW_PER_USD = 1400.0
@@ -147,3 +147,18 @@ class SaleTransactionAdmin(admin.ModelAdmin):
             }
         )
         return response
+
+
+@admin.register(BranchMonthlyBilling)
+class BranchMonthlyBillingAdmin(admin.ModelAdmin):
+    list_display = (
+        "billing_month",
+        "org",
+        "branch",
+        "status",
+        "paid_at",
+        "updated_by",
+        "updated_at",
+    )
+    list_filter = ("billing_month", "status", "org", "branch")
+    search_fields = ("org__code", "branch__code", "branch__name", "note")

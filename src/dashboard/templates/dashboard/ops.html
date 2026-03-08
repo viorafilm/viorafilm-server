@@ -1,0 +1,179 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+<div class="card card-soft mb-3">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <h5 class="mb-0">관측성</h5>
+      <div class="text-muted small">생성 시각: {{ ops_generated_at }}</div>
+    </div>
+
+    <form class="row g-2 mb-3" method="get">
+      <div class="col-12 col-md-4 col-lg-3">
+        <label class="form-label mb-1">조직</label>
+        <select class="form-select form-select-sm" name="org_id">
+          <option value="">전체 조직</option>
+          {% for o in filter_orgs %}
+          <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-3">
+        <label class="form-label mb-1">지점</label>
+        <select class="form-select form-select-sm" name="branch_id">
+          <option value="">전체 지점</option>
+          {% for b in filter_branches %}
+          <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-12 d-flex align-items-end gap-2">
+        <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_ops' %}">필터 초기화</a>
+      </div>
+    </form>
+
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">장치 수</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.device_count }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">온라인 장치</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.online_count }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">잠금 장치</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.locked_count }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">업로드 대기 장치</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.share_queue_device_count }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">Heartbeat 1시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.heartbeat_1h }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-2">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">Heartbeat 24시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.heartbeat_24h }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-3">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">공유 세션 24시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.share_24h }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-3">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">완료 공유 24시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.share_finalized_24h }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-3">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">업로드 파일 24시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.upload_24h }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4 col-xl-3">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">매출 전송 24시간</div>
+          <div class="fw-semibold fs-5">{{ ops_summary.sales_24h }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-soft mb-3">
+      <div class="card-body">
+        <h6 class="mb-3">장치 관측성</h6>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle">
+            <thead>
+              <tr>
+                <th>Device</th>
+                <th>조직/지점</th>
+                <th>마지막 통신</th>
+                <th>온라인</th>
+                <th>인터넷</th>
+                <th>카메라</th>
+                <th>프린터</th>
+                <th>잠금</th>
+                <th>대기 업로드</th>
+                <th>대기 매출</th>
+                <th>대기 heartbeat</th>
+                <th>총 큐</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in ops_device_rows %}
+              <tr>
+                <td><code>{{ row.device.device_code }}</code></td>
+                <td>{{ row.device.org.code }}/{{ row.device.branch.code }}</td>
+                <td>{% if row.device.last_seen_at %}{{ row.device.last_seen_at }}{% else %}-{% endif %}</td>
+                <td>{% if row.online %}<span class="badge text-bg-success">ONLINE</span>{% else %}<span class="badge text-bg-secondary">OFFLINE</span>{% endif %}</td>
+                <td>{% if row.internet_ok == True %}정상{% elif row.internet_ok == False %}오류{% else %}-{% endif %}</td>
+                <td>{% if row.camera_ok == True %}정상{% elif row.camera_ok == False %}오류{% else %}-{% endif %}</td>
+                <td>{% if row.printer_ok == True %}정상{% elif row.printer_ok == False %}오류{% else %}-{% endif %}</td>
+                <td>{% if row.server_lock_active %}<span class="badge text-bg-danger">LOCKED</span>{% else %}<span class="badge text-bg-light">정상</span>{% endif %}</td>
+                <td>{{ row.offline_queue_share_pending }}</td>
+                <td>{{ row.offline_queue_sale_pending }}</td>
+                <td>{{ row.offline_queue_heartbeat_pending }}</td>
+                <td>{{ row.offline_queue_total }}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="12" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card-soft">
+      <div class="card-body">
+        <h6 class="mb-3">최근 공유 세션</h6>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle">
+            <thead>
+              <tr>
+                <th>시간</th>
+                <th>Device</th>
+                <th>토큰</th>
+                <th>상태</th>
+                <th>파일 키</th>
+                <th>업로드 파일 수</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in ops_recent_share_rows %}
+              <tr>
+                <td>{{ row.share.created_at }}</td>
+                <td>{{ row.share.device.device_code }}</td>
+                <td><code>{{ row.share.token }}</code></td>
+                <td>{{ row.share.status }}</td>
+                <td>{{ row.file_keys|join:", " }}</td>
+                <td>{{ row.upload_count }}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="6" class="text-center text-muted py-4">최근 공유 세션이 없습니다.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

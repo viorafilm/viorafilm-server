@@ -30,6 +30,9 @@ class DeviceAdmin(admin.ModelAdmin):
         "last_seen_at",
         "last_app_version",
         "token_hint",
+        "install_key_hint",
+        "install_bound_at",
+        "last_install_seen_at",
     )
     list_editable = ("allow_celebrity_mode", "allow_ai_mode")
     list_filter = ("org", "branch", "is_active", "allow_celebrity_mode", "allow_ai_mode", "is_locked")
@@ -42,6 +45,7 @@ class DeviceAdmin(admin.ModelAdmin):
         "disable_celebrity_mode",
         "enable_ai_mode",
         "disable_ai_mode",
+        "reset_install_binding",
     ]
 
     @admin.action(description="Rotate device token (shows new token once)")
@@ -53,6 +57,16 @@ class DeviceAdmin(admin.ModelAdmin):
                 f"[{device.device_code}] NEW TOKEN (save now): {raw}",
                 level=messages.WARNING,
             )
+
+    @admin.action(description="Reset install binding for selected devices")
+    def reset_install_binding(self, request, queryset):
+        count = 0
+        for device in queryset:
+            if not device.install_key_hash:
+                continue
+            device.reset_install_binding()
+            count += 1
+        self.message_user(request, f"Install bindings reset: {count}", level=messages.INFO)
 
     @admin.action(description="Lock selected devices")
     def lock_selected_devices(self, request, queryset):

@@ -41,6 +41,10 @@ class Device(models.Model):
     locked_at = models.DateTimeField(null=True, blank=True)
     token_hash = models.CharField(max_length=64, blank=True, default="")
     token_hint = models.CharField(max_length=16, blank=True, default="")
+    install_key_hash = models.CharField(max_length=64, blank=True, default="")
+    install_key_hint = models.CharField(max_length=16, blank=True, default="")
+    install_bound_at = models.DateTimeField(null=True, blank=True)
+    last_install_seen_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -67,3 +71,45 @@ class Device(models.Model):
             return False
         hashed = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return hmac.compare_digest(hashed, self.token_hash)
+
+    def bind_install_key(self, raw: str) -> None:
+        hashed = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        now = timezone.now()
+        self.install_key_hash = hashed
+        self.install_key_hint = raw[-6:]
+        self.install_bound_at = now
+        self.last_install_seen_at = now
+        self.save(
+            update_fields=[
+                "install_key_hash",
+                "install_key_hint",
+                "install_bound_at",
+                "last_install_seen_at",
+                "updated_at",
+            ]
+        )
+
+    def verify_install_key(self, raw: str) -> bool:
+        if not self.install_key_hash:
+            return False
+        hashed = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(hashed, self.install_key_hash)
+
+    def touch_install_binding(self) -> None:
+        self.last_install_seen_at = timezone.now()
+        self.save(update_fields=["last_install_seen_at", "updated_at"])
+
+    def reset_install_binding(self) -> None:
+        self.install_key_hash = ""
+        self.install_key_hint = ""
+        self.install_bound_at = None
+        self.last_install_seen_at = None
+        self.save(
+            update_fields=[
+                "install_key_hash",
+                "install_key_hint",
+                "install_bound_at",
+                "last_install_seen_at",
+                "updated_at",
+            ]
+        )

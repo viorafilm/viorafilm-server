@@ -28,8 +28,10 @@ from coupons.service import (
     recover_coupon_usage_from_sales,
     resolve_expires_hours,
 )
+from kiosk_api.models import DeviceHeartbeat
 from mediahub.models import ShareSession
-from sales.models import SaleTransaction
+from sales.models import BranchMonthlyBilling, SaleTransaction
+from storagehub.models import UploadAsset
 from storagehub.service import generate_download_url_from_meta
 from urllib.parse import urlencode
 
@@ -38,11 +40,12 @@ AI_EST_KRW_PER_USD = 1400.0
 AI_EST_DEFAULT_IMAGES_PER_SALE = 2
 AI_EST_SERVER_COST_MULTIPLIER = 10.0
 AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
+MONTHLY_SERVER_FEE_PER_DEVICE = 60000
 COUPON_PER_PAGE_OPTIONS = (10, 30, 50, 100)
 
 
 def _is_super(user):
-    return getattr(user, "role", None) == UserRole.SUPERADMIN
+    return bool(getattr(user, "is_superuser", False)) or getattr(user, "role", None) == UserRole.SUPERADMIN
 
 
 def _is_org_admin(user):
@@ -390,7 +393,11 @@ def _build_sales_chart_payload(sales_qs):
 
 
 def _resolve_billing_month(request):
-    raw = str(request.GET.get("billing_month") or "").strip()
+    return _parse_billing_month(request.GET.get("billing_month"))
+
+
+def _parse_billing_month(value):
+    raw = str(value or "").strip()
     today = timezone.localdate()
     default_month = today.replace(day=1)
     if not raw:
@@ -438,6 +445,8 @@ def _build_ai_branch_billing(sales_qs, start_date, end_date):
         row = branch_map.get(key)
         if row is None:
             row = {
+                "org_id": int(sale.org_id or 0),
+                "branch_id": int(sale.branch_id or 0),
                 "org_code": getattr(sale.org, "code", "-"),
                 "branch_code": getattr(sale.branch, "code", "-"),
                 "branch_name": getattr(sale.branch, "name", "-"),
@@ -457,6 +466,166 @@ def _build_ai_branch_billing(sales_qs, start_date, end_date):
 
     total_billing = int(round(total_ai_images * AI_EST_KRW_PER_IMAGE * AI_EST_SERVER_COST_MULTIPLIER))
     return rows, total_ai_sales, total_ai_images, total_billing
+
+
+def _build_monthly_billing_rows(user, filters, billing_month):
+    branches_qs = _available_branches(user)
+    if filters.get("org_id") is not None:
+        branches_qs = branches_qs.filter(org_id=filters["org_id"])
+    if filters.get("branch_id") is not None:
+        branches_qs = branches_qs.filter(id=filters["branch_id"])
+    branches = list(branches_qs.select_related("org"))
+    branch_ids = [int(branch.id) for branch in branches]
+    start_date, end_date, month_last = _billing_month_range(billing_month)
+    server_fee_unit = int(max(0, MONTHLY_SERVER_FEE_PER_DEVICE))
+
+    device_count_map = {}
+    if branch_ids:
+        device_count_rows = (
+            Device.objects.filter(branch_id__in=branch_ids, is_active=True)
+            .values("branch_id")
+            .annotate(total=Count("id"))
+        )
+        device_count_map = {
+            int(row["branch_id"]): int(row.get("total") or 0)
+            for row in device_count_rows
+        }
+
+    sales_qs = _apply_org_branch_filter(_scoped_sales(user), "org_id", "branch_id", filters)
+    ai_branch_rows, _ai_sales_count, _ai_images_count, _ai_total = _build_ai_branch_billing(
+        sales_qs,
+        start_date,
+        end_date,
+    )
+    ai_map = {
+        int(row.get("branch_id") or 0): dict(row)
+        for row in ai_branch_rows
+    }
+
+    record_map = {}
+    if branch_ids:
+        record_qs = BranchMonthlyBilling.objects.filter(
+            branch_id__in=branch_ids,
+            billing_month=billing_month,
+        ).select_related("updated_by")
+        record_map = {int(record.branch_id): record for record in record_qs}
+
+    rows = []
+    summary = {
+        "branch_count": 0,
+        "device_count": 0,
+        "server_fee_total": 0,
+        "ai_extra_total": 0,
+        "requested_total": 0,
+        "paid_count": 0,
+    }
+    for branch in branches:
+        device_count = int(device_count_map.get(int(branch.id), 0))
+        ai_row = ai_map.get(int(branch.id), {})
+        server_fee = int(device_count * server_fee_unit)
+        ai_extra = int(ai_row.get("billing_amount") or 0)
+        requested_total = int(server_fee + ai_extra)
+        record = record_map.get(int(branch.id))
+        status = record.status if record else BranchMonthlyBilling.STATUS_PENDING
+        row = {
+            "org": branch.org,
+            "branch": branch,
+            "device_count": device_count,
+            "server_fee": server_fee,
+            "ai_sales": int(ai_row.get("ai_sales") or 0),
+            "ai_images": int(ai_row.get("ai_images") or 0),
+            "ai_extra": ai_extra,
+            "requested_total": requested_total,
+            "status": status,
+            "status_label": "수금 완료" if status == BranchMonthlyBilling.STATUS_PAID else "미수금",
+            "paid_at": getattr(record, "paid_at", None),
+            "note": getattr(record, "note", "") if record else "",
+            "updated_by": getattr(record, "updated_by", None) if record else None,
+        }
+        rows.append(row)
+        summary["branch_count"] += 1
+        summary["device_count"] += device_count
+        summary["server_fee_total"] += server_fee
+        summary["ai_extra_total"] += ai_extra
+        summary["requested_total"] += requested_total
+        if status == BranchMonthlyBilling.STATUS_PAID:
+            summary["paid_count"] += 1
+
+    return {
+        "rows": rows,
+        "summary": summary,
+        "start_date": start_date,
+        "end_date": end_date,
+        "month_last": month_last,
+        "server_fee_unit": server_fee_unit,
+    }
+
+
+def _build_ops_dashboard(user, filters):
+    devices_qs = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
+    device_rows = _build_device_rows(user, devices_qs=devices_qs)
+    device_ids = [int(row["device"].id) for row in device_rows]
+    now = timezone.now()
+    since_1h = now - timedelta(hours=1)
+    since_24h = now - timedelta(hours=24)
+
+    for row in device_rows:
+        health = row["device"].last_health_json if isinstance(row["device"].last_health_json, dict) else {}
+        row["offline_queue_total"] = int(health.get("offline_queue_total") or 0)
+        row["offline_queue_sale_pending"] = int(health.get("offline_queue_sale_pending") or 0)
+        row["offline_queue_share_pending"] = int(health.get("offline_queue_share_pending") or 0)
+        row["offline_queue_heartbeat_pending"] = int(health.get("offline_queue_heartbeat_pending") or 0)
+
+    heartbeat_qs = DeviceHeartbeat.objects.filter(device_id__in=device_ids) if device_ids else DeviceHeartbeat.objects.none()
+    share_qs = ShareSession.objects.filter(device_id__in=device_ids) if device_ids else ShareSession.objects.none()
+    upload_qs = UploadAsset.objects.filter(device_id__in=device_ids) if device_ids else UploadAsset.objects.none()
+    sales_qs = SaleTransaction.objects.filter(device_id__in=device_ids) if device_ids else SaleTransaction.objects.none()
+
+    recent_share_rows = []
+    recent_shares = list(
+        share_qs.select_related("device", "device__org", "device__branch").order_by("-created_at")[:20]
+    )
+    upload_count_map = {}
+    if recent_shares:
+        share_ids = [int(share.id) for share in recent_shares]
+        upload_count_rows = (
+            UploadAsset.objects.filter(share_id__in=share_ids)
+            .values("share_id")
+            .annotate(total=Count("id"))
+        )
+        upload_count_map = {
+            int(row["share_id"]): int(row.get("total") or 0)
+            for row in upload_count_rows
+        }
+    for share in recent_shares:
+        recent_share_rows.append(
+            {
+                "share": share,
+                "upload_count": int(upload_count_map.get(int(share.id), 0)),
+                "file_keys": sorted((share.files or {}).keys()) if isinstance(share.files, dict) else [],
+            }
+        )
+
+    summary = {
+        "device_count": len(device_rows),
+        "online_count": sum(1 for row in device_rows if row.get("online")),
+        "locked_count": sum(1 for row in device_rows if row.get("server_lock_active")),
+        "share_queue_device_count": sum(1 for row in device_rows if int(row.get("offline_queue_share_pending") or 0) > 0),
+        "heartbeat_1h": int(heartbeat_qs.filter(created_at__gte=since_1h).count()),
+        "heartbeat_24h": int(heartbeat_qs.filter(created_at__gte=since_24h).count()),
+        "share_24h": int(share_qs.filter(created_at__gte=since_24h).count()),
+        "share_finalized_24h": int(
+            share_qs.filter(created_at__gte=since_24h, status=ShareSession.STATUS_FINALIZED).count()
+        ),
+        "upload_24h": int(upload_qs.filter(created_at__gte=since_24h).count()),
+        "sales_24h": int(sales_qs.filter(created_at__gte=since_24h).count()),
+    }
+    return {
+        "summary": summary,
+        "device_rows": device_rows,
+        "recent_share_rows": recent_share_rows,
+        "generated_at": timezone.localtime(now),
+    }
 
 
 def _csv_response(filename, headers, rows):
@@ -752,6 +921,126 @@ def devices_live_view(request):
             "count": len(rows),
             "tbody_html": tbody_html,
         }
+    )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
+def billing_view(request):
+    user = request.user
+    filters = _resolve_scope_filters(user, request)
+    billing_month = _parse_billing_month(
+        request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month")
+    )
+    can_edit = not _is_viewer(user)
+
+    scoped_branches = _available_branches(user)
+    if filters.get("org_id") is not None:
+        scoped_branches = scoped_branches.filter(org_id=filters["org_id"])
+    if filters.get("branch_id") is not None:
+        scoped_branches = scoped_branches.filter(id=filters["branch_id"])
+
+    if request.method == "POST":
+        if not can_edit:
+            return HttpResponseForbidden("Viewer is read-only")
+        action = str(request.POST.get("action") or "").strip()
+        try:
+            branch_id = int(request.POST.get("branch_id") or 0)
+        except Exception:
+            branch_id = 0
+        note = str(request.POST.get("note") or "").strip()[:255]
+        branch = scoped_branches.select_related("org").filter(id=branch_id).first()
+        if branch is None:
+            messages.error(request, "수금 상태를 변경할 지점을 찾지 못했습니다.")
+        elif action in {"mark_paid", "mark_pending"}:
+            record, _created = BranchMonthlyBilling.objects.get_or_create(
+                org=branch.org,
+                branch=branch,
+                billing_month=billing_month,
+            )
+            before = {
+                "status": record.status,
+                "paid_at": record.paid_at.isoformat() if record.paid_at else None,
+                "note": record.note,
+            }
+            if action == "mark_paid":
+                record.status = BranchMonthlyBilling.STATUS_PAID
+                record.paid_at = timezone.now()
+                messages.success(request, f"{branch.name} {billing_month.strftime('%Y-%m')} 수금 완료로 표시했습니다.")
+            else:
+                record.status = BranchMonthlyBilling.STATUS_PENDING
+                record.paid_at = None
+                messages.success(request, f"{branch.name} {billing_month.strftime('%Y-%m')} 미수금으로 표시했습니다.")
+            record.note = note
+            record.updated_by = user
+            record.save()
+            log_event(
+                actor_user=user,
+                actor_device=None,
+                action="billing.update",
+                target_type="BranchMonthlyBilling",
+                target_id=str(record.pk),
+                before=before,
+                after={
+                    "status": record.status,
+                    "paid_at": record.paid_at.isoformat() if record.paid_at else None,
+                    "note": record.note,
+                },
+                meta={
+                    "branch_id": int(branch.id),
+                    "billing_month": billing_month.isoformat(),
+                },
+                ip=request.META.get("REMOTE_ADDR"),
+            )
+        else:
+            messages.error(request, "지원하지 않는 수금 처리 요청입니다.")
+        params = _query_params_from_filters(
+            filters,
+            extra={"billing_month": billing_month.strftime("%Y-%m")},
+        )
+        if params:
+            return redirect(f"/dashboard/billing?{urlencode(params)}")
+        return redirect("dashboard_billing")
+
+    billing_data = _build_monthly_billing_rows(user, filters, billing_month)
+    return render(
+        request,
+        "dashboard/billing.html",
+        {
+            "billing_month_value": billing_month.strftime("%Y-%m"),
+            "billing_start_date": billing_data["start_date"].isoformat(),
+            "billing_end_date": billing_data["end_date"].isoformat(),
+            "billing_month_last": billing_data["month_last"].isoformat(),
+            "billing_rows": billing_data["rows"],
+            "billing_summary": billing_data["summary"],
+            "server_fee_unit": billing_data["server_fee_unit"],
+            "can_edit": can_edit,
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
+        },
+    )
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
+def ops_view(request):
+    filters = _resolve_scope_filters(request.user, request)
+    ops_data = _build_ops_dashboard(request.user, filters)
+    return render(
+        request,
+        "dashboard/ops.html",
+        {
+            "ops_summary": ops_data["summary"],
+            "ops_device_rows": ops_data["device_rows"],
+            "ops_recent_share_rows": ops_data["recent_share_rows"],
+            "ops_generated_at": ops_data["generated_at"],
+            "filter_org_id": filters["org_id"],
+            "filter_branch_id": filters["branch_id"],
+            "filter_orgs": filters["orgs"],
+            "filter_branches": filters["branches"],
+        },
     )
 
 

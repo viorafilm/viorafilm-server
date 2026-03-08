@@ -99,6 +99,8 @@
     <div class="offcanvas-body">
       <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="/dashboard/">매출 현황</a>
       <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="/dashboard/devices">장치 관리</a>
+      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="/dashboard/ops">관측성</a>
+      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="/dashboard/billing">수금 관리</a>
       <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="/dashboard/sales">매출 관리</a>
       <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="/dashboard/coupons">쿠폰 관리</a>
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
@@ -120,6 +122,8 @@
 
       <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="/dashboard/">매출 현황</a>
       <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="/dashboard/devices">장치 관리</a>
+      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="/dashboard/ops">관측성</a>
+      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="/dashboard/billing">수금 관리</a>
       <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="/dashboard/sales">매출 관리</a>
       <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="/dashboard/coupons">쿠폰 관리</a>
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
