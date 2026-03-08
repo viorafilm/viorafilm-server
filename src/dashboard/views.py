@@ -34,6 +34,14 @@ from sales.models import BranchMonthlyBilling, SaleTransaction
 from storagehub.models import UploadAsset
 from storagehub.service import generate_download_url_from_meta
 from urllib.parse import urlencode
+from dashboard.ui import (
+    billing_currency_options,
+    format_money_from_krw,
+    get_currency_meta,
+    get_dashboard_text,
+    resolve_billing_currency,
+    resolve_dashboard_lang,
+)
 
 AI_EST_USD_PER_IMAGE = 0.039
 AI_EST_KRW_PER_USD = 1400.0
@@ -419,6 +427,18 @@ def _billing_month_range(month_first):
     return month_first, end_date, month_last
 
 
+def _shift_month(month_first, delta):
+    year = int(month_first.year)
+    month = int(month_first.month) + int(delta)
+    while month < 1:
+        month += 12
+        year -= 1
+    while month > 12:
+        month -= 12
+        year += 1
+    return month_first.replace(year=year, month=month, day=1)
+
+
 def _build_ai_branch_billing(sales_qs, start_date, end_date):
     scoped = sales_qs.filter(created_at__date__gte=start_date, created_at__date__lte=end_date).select_related("org", "branch")
     branch_map = {}
@@ -468,7 +488,7 @@ def _build_ai_branch_billing(sales_qs, start_date, end_date):
     return rows, total_ai_sales, total_ai_images, total_billing
 
 
-def _build_monthly_billing_rows(user, filters, billing_month):
+def _build_monthly_billing_rows(user, filters, billing_month, billing_currency, ui_text):
     branches_qs = _available_branches(user)
     if filters.get("org_id") is not None:
         branches_qs = branches_qs.filter(org_id=filters["org_id"])
@@ -511,6 +531,8 @@ def _build_monthly_billing_rows(user, filters, billing_month):
         record_map = {int(record.branch_id): record for record in record_qs}
 
     rows = []
+    billing_text = ui_text["billing"]
+    currency_meta = get_currency_meta(billing_currency)
     summary = {
         "branch_count": 0,
         "device_count": 0,
@@ -532,12 +554,19 @@ def _build_monthly_billing_rows(user, filters, billing_month):
             "branch": branch,
             "device_count": device_count,
             "server_fee": server_fee,
+            "server_fee_display": format_money_from_krw(server_fee, billing_currency),
             "ai_sales": int(ai_row.get("ai_sales") or 0),
             "ai_images": int(ai_row.get("ai_images") or 0),
             "ai_extra": ai_extra,
+            "ai_extra_display": format_money_from_krw(ai_extra, billing_currency),
             "requested_total": requested_total,
+            "requested_total_display": format_money_from_krw(requested_total, billing_currency),
             "status": status,
-            "status_label": "수금 완료" if status == BranchMonthlyBilling.STATUS_PAID else "미수금",
+            "status_label": (
+                billing_text["status_paid"]
+                if status == BranchMonthlyBilling.STATUS_PAID
+                else billing_text["status_pending"]
+            ),
             "paid_at": getattr(record, "paid_at", None),
             "note": getattr(record, "note", "") if record else "",
             "updated_by": getattr(record, "updated_by", None) if record else None,
@@ -554,10 +583,21 @@ def _build_monthly_billing_rows(user, filters, billing_month):
     return {
         "rows": rows,
         "summary": summary,
+        "summary_display": {
+            "server_fee_total": format_money_from_krw(summary["server_fee_total"], billing_currency),
+            "ai_extra_total": format_money_from_krw(summary["ai_extra_total"], billing_currency),
+            "requested_total": format_money_from_krw(summary["requested_total"], billing_currency),
+        },
         "start_date": start_date,
         "end_date": end_date,
         "month_last": month_last,
         "server_fee_unit": server_fee_unit,
+        "server_fee_unit_display": format_money_from_krw(server_fee_unit, billing_currency),
+        "currency": {
+            "code": billing_currency,
+            "label": currency_meta["label"],
+            "decimals": int(currency_meta["decimals"]),
+        },
     }
 
 
@@ -711,8 +751,9 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
 
 @never_cache
 def login_view(request):
+    ui_lang = resolve_dashboard_lang(request)
     if request.user.is_authenticated:
-        return redirect("dashboard_index")
+        return redirect(f"/dashboard/?{urlencode({'lang': ui_lang})}")
 
     form = AuthenticationForm(request, data=request.POST or None)
     if request.method == "POST" and form.is_valid():
@@ -725,8 +766,9 @@ def login_view(request):
 def logout_view(request):
     if request.method not in {"GET", "POST"}:
         return HttpResponseNotAllowed(["GET", "POST"])
+    ui_lang = resolve_dashboard_lang(request)
     logout(request)
-    response = redirect("dashboard_login")
+    response = redirect(f"/dashboard/login?{urlencode({'lang': ui_lang})}")
     response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response["Pragma"] = "no-cache"
     response["Expires"] = "0"
@@ -928,10 +970,14 @@ def devices_live_view(request):
 @never_cache
 def billing_view(request):
     user = request.user
+    ui_lang = resolve_dashboard_lang(request)
+    ui_text = get_dashboard_text(ui_lang)
+    billing_text = ui_text["billing"]
     filters = _resolve_scope_filters(user, request)
     billing_month = _parse_billing_month(
         request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month")
     )
+    billing_currency = resolve_billing_currency(request)
     can_edit = not _is_viewer(user)
 
     scoped_branches = _available_branches(user)
@@ -951,7 +997,7 @@ def billing_view(request):
         note = str(request.POST.get("note") or "").strip()[:255]
         branch = scoped_branches.select_related("org").filter(id=branch_id).first()
         if branch is None:
-            messages.error(request, "수금 상태를 변경할 지점을 찾지 못했습니다.")
+            messages.error(request, billing_text["message_missing_branch"])
         elif action in {"mark_paid", "mark_pending"}:
             record, _created = BranchMonthlyBilling.objects.get_or_create(
                 org=branch.org,
@@ -966,11 +1012,17 @@ def billing_view(request):
             if action == "mark_paid":
                 record.status = BranchMonthlyBilling.STATUS_PAID
                 record.paid_at = timezone.now()
-                messages.success(request, f"{branch.name} {billing_month.strftime('%Y-%m')} 수금 완료로 표시했습니다.")
+                messages.success(
+                    request,
+                    billing_text["message_paid"].format(branch=branch.name, month=billing_month.strftime("%Y-%m")),
+                )
             else:
                 record.status = BranchMonthlyBilling.STATUS_PENDING
                 record.paid_at = None
-                messages.success(request, f"{branch.name} {billing_month.strftime('%Y-%m')} 미수금으로 표시했습니다.")
+                messages.success(
+                    request,
+                    billing_text["message_pending"].format(branch=branch.name, month=billing_month.strftime("%Y-%m")),
+                )
             record.note = note
             record.updated_by = user
             record.save()
@@ -993,27 +1045,55 @@ def billing_view(request):
                 ip=request.META.get("REMOTE_ADDR"),
             )
         else:
-            messages.error(request, "지원하지 않는 수금 처리 요청입니다.")
+            messages.error(request, billing_text["message_unsupported"])
         params = _query_params_from_filters(
             filters,
-            extra={"billing_month": billing_month.strftime("%Y-%m")},
+            extra={
+                "billing_month": billing_month.strftime("%Y-%m"),
+                "currency": billing_currency,
+                "lang": ui_lang,
+            },
         )
         if params:
             return redirect(f"/dashboard/billing?{urlencode(params)}")
         return redirect("dashboard_billing")
 
-    billing_data = _build_monthly_billing_rows(user, filters, billing_month)
+    billing_data = _build_monthly_billing_rows(user, filters, billing_month, billing_currency, ui_text)
+    prev_month = _shift_month(billing_month, -1)
+    next_month = _shift_month(billing_month, 1)
+    billing_nav_base = _query_params_from_filters(
+        filters,
+        extra={
+            "currency": billing_currency,
+            "lang": ui_lang,
+        },
+    )
+    prev_month_params = dict(billing_nav_base)
+    prev_month_params["billing_month"] = prev_month.strftime("%Y-%m")
+    next_month_params = dict(billing_nav_base)
+    next_month_params["billing_month"] = next_month.strftime("%Y-%m")
     return render(
         request,
         "dashboard/billing.html",
         {
+            "billing_text": billing_text,
             "billing_month_value": billing_month.strftime("%Y-%m"),
             "billing_start_date": billing_data["start_date"].isoformat(),
             "billing_end_date": billing_data["end_date"].isoformat(),
             "billing_month_last": billing_data["month_last"].isoformat(),
             "billing_rows": billing_data["rows"],
             "billing_summary": billing_data["summary"],
+            "billing_summary_display": billing_data["summary_display"],
             "server_fee_unit": billing_data["server_fee_unit"],
+            "server_fee_unit_display": billing_data["server_fee_unit_display"],
+            "billing_currency": billing_data["currency"]["code"],
+            "billing_currency_label": billing_data["currency"]["label"],
+            "billing_currency_options": billing_currency_options(),
+            "billing_prev_month_value": prev_month.strftime("%Y-%m"),
+            "billing_next_month_value": next_month.strftime("%Y-%m"),
+            "billing_prev_month_url": f"/dashboard/billing?{urlencode(prev_month_params)}",
+            "billing_next_month_url": f"/dashboard/billing?{urlencode(next_month_params)}",
+            "ui_lang": ui_lang,
             "can_edit": can_edit,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],

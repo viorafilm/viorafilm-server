@@ -1,5 +1,5 @@
 ﻿<!doctype html>
-<html lang="ko">
+<html lang="{{ dashboard_ui.lang|default:'ko' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -86,9 +86,9 @@
 </head>
 <body>
   <div class="d-lg-none sticky-top bg-white border-bottom p-2">
-    <button class="btn btn-dark btn-sm" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileMenu">
-      메뉴
-    </button>
+      <button class="btn btn-dark btn-sm" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileMenu">
+      {{ dashboard_ui.text.base.menu_button }}
+      </button>
   </div>
 
   <div class="offcanvas offcanvas-start" tabindex="-1" id="mobileMenu">
@@ -97,18 +97,23 @@
       <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
     </div>
     <div class="offcanvas-body">
-      <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="/dashboard/">매출 현황</a>
-      <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="/dashboard/devices">장치 관리</a>
-      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="/dashboard/ops">관측성</a>
-      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="/dashboard/billing">수금 관리</a>
-      <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="/dashboard/sales">매출 관리</a>
-      <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="/dashboard/coupons">쿠폰 관리</a>
-      <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
+      <div class="d-flex gap-2 mb-3">
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'ko' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{{ dashboard_ui.switch_urls.ko }}">{{ dashboard_ui.text.base.lang_ko }}</a>
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'en' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{{ dashboard_ui.switch_urls.en }}">{{ dashboard_ui.text.base.lang_en }}</a>
+      </div>
+      <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="{{ dashboard_ui.nav.index }}">{{ dashboard_ui.text.base.menu_index }}</a>
+      <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.base.menu_devices }}</a>
+      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.base.menu_ops }}</a>
+      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.base.menu_billing }}</a>
+      <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.base.menu_sales }}</a>
+      <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.base.menu_coupons }}</a>
+      <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.base.menu_photos }}</a>
       <hr>
-      <a class="menu-link" href="/admin/password_change/">비밀번호 변경</a>
+      <a class="menu-link" href="{{ dashboard_ui.nav.password_change }}">{{ dashboard_ui.text.base.change_password }}</a>
       <form method="post" action="{% url 'dashboard_logout' %}" class="m-0">
         {% csrf_token %}
-        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">로그아웃</button>
+        <input type="hidden" name="lang" value="{{ dashboard_ui.lang }}">
+        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">{{ dashboard_ui.text.base.logout }}</button>
       </form>
     </div>
   </div>
@@ -117,27 +122,33 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="title">Viorafilm Dashboard</div>
-        <div class="subtitle">Kiosk Control Center</div>
+        <div class="subtitle">{{ dashboard_ui.text.base.subtitle }}</div>
       </div>
 
-      <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="/dashboard/">매출 현황</a>
-      <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="/dashboard/devices">장치 관리</a>
-      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="/dashboard/ops">관측성</a>
-      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="/dashboard/billing">수금 관리</a>
-      <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="/dashboard/sales">매출 관리</a>
-      <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="/dashboard/coupons">쿠폰 관리</a>
-      <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="/dashboard/photos">사진 관리</a>
+      <div class="d-flex gap-2 px-2 pb-2">
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'ko' %}btn-light{% else %}btn-outline-light{% endif %}" href="{{ dashboard_ui.switch_urls.ko }}">{{ dashboard_ui.text.base.lang_ko }}</a>
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'en' %}btn-light{% else %}btn-outline-light{% endif %}" href="{{ dashboard_ui.switch_urls.en }}">{{ dashboard_ui.text.base.lang_en }}</a>
+      </div>
+
+      <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="{{ dashboard_ui.nav.index }}">{{ dashboard_ui.text.base.menu_index }}</a>
+      <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.base.menu_devices }}</a>
+      <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.base.menu_ops }}</a>
+      <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.base.menu_billing }}</a>
+      <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.base.menu_sales }}</a>
+      <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.base.menu_coupons }}</a>
+      <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.base.menu_photos }}</a>
       <hr class="border-secondary-subtle">
-      <a class="menu-link" href="/admin/password_change/">비밀번호 변경</a>
+      <a class="menu-link" href="{{ dashboard_ui.nav.password_change }}">{{ dashboard_ui.text.base.change_password }}</a>
       <form method="post" action="{% url 'dashboard_logout' %}" class="m-0">
         {% csrf_token %}
-        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">로그아웃</button>
+        <input type="hidden" name="lang" value="{{ dashboard_ui.lang }}">
+        <button class="menu-link w-100 text-start border-0 bg-transparent" type="submit">{{ dashboard_ui.text.base.logout }}</button>
       </form>
     </aside>
 
     <main class="content">
       <div class="topbar">
-        <h1 class="page-title">운영 대시보드</h1>
+        <h1 class="page-title">{{ dashboard_ui.text.base.page_title }}</h1>
         <small class="text-secondary">{{ request.user.username }}</small>
       </div>
 

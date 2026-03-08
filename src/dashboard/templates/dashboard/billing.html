@@ -3,100 +3,112 @@
 <div class="card card-soft mb-3">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <h5 class="mb-0">수금 관리</h5>
+      <h5 class="mb-0">{{ billing_text.title }}</h5>
       <div class="text-muted small">
-        기준 월: {{ billing_month_value }} / 집계 기간: {{ billing_start_date }} ~ {{ billing_end_date }}
-        {% if billing_end_date != billing_month_last %}(현재 월 실시간 누적){% endif %}
+        {{ billing_text.month_summary_prefix }}: <span data-testid="billing-month-value">{{ billing_month_value }}</span>
+        / {{ billing_text.period_prefix }}: {{ billing_start_date }} ~ {{ billing_end_date }}
+        {% if billing_end_date != billing_month_last %}{{ billing_text.live_month_suffix }}{% endif %}
       </div>
     </div>
 
     <form class="row g-2 mb-3" method="get">
+      <input type="hidden" name="lang" value="{{ ui_lang }}">
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">조직</label>
+        <label class="form-label mb-1">{{ billing_text.organization }}</label>
         <select class="form-select form-select-sm" name="org_id">
-          <option value="">전체 조직</option>
+          <option value="">{{ billing_text.all_organizations }}</option>
           {% for o in filter_orgs %}
           <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">지점</label>
+        <label class="form-label mb-1">{{ billing_text.branch }}</label>
         <select class="form-select form-select-sm" name="branch_id">
-          <option value="">전체 지점</option>
+          <option value="">{{ billing_text.all_branches }}</option>
           {% for b in filter_branches %}
           <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">정산 월</label>
-        <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value }}">
+        <label class="form-label mb-1">{{ billing_text.billing_month }}</label>
+        <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value }}" data-testid="billing-month-input">
+      </div>
+      <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">{{ billing_text.display_currency }}</label>
+        <select class="form-select form-select-sm" name="currency" data-testid="billing-currency-select">
+          {% for option in billing_currency_options %}
+          <option value="{{ option.code }}" {% if billing_currency == option.code %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div class="col-12 d-flex align-items-end gap-2">
-        <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
-        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_billing' %}">필터 초기화</a>
+        <button class="btn btn-sm btn-primary" type="submit">{{ billing_text.apply_filters }}</button>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ billing_prev_month_url }}">{{ billing_text.previous_month }}</a>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ billing_next_month_url }}">{{ billing_text.next_month }}</a>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_billing' %}?lang={{ ui_lang }}">{{ billing_text.reset_filters }}</a>
       </div>
     </form>
 
     <div class="row g-3 mb-3">
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">브랜치 수</div>
+          <div class="text-muted small">{{ billing_text.branch_count }}</div>
           <div class="fw-semibold fs-5">{{ billing_summary.branch_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">활성 장치 수</div>
+          <div class="text-muted small">{{ billing_text.device_count }}</div>
           <div class="fw-semibold fs-5">{{ billing_summary.device_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">장치 서버비</div>
-          <div class="fw-semibold fs-5">KRW {{ billing_summary.server_fee_total }}</div>
+          <div class="text-muted small">{{ billing_text.server_fee_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-server-fee-total">{{ billing_currency_label }} {{ billing_summary_display.server_fee_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">AI 추가 청구</div>
-          <div class="fw-semibold fs-5">KRW {{ billing_summary.ai_extra_total }}</div>
+          <div class="text-muted small">{{ billing_text.ai_extra_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-ai-extra-total">{{ billing_currency_label }} {{ billing_summary_display.ai_extra_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">요청 금액 합계</div>
-          <div class="fw-semibold fs-5">KRW {{ billing_summary.requested_total }}</div>
+          <div class="text-muted small">{{ billing_text.requested_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-requested-total">{{ billing_currency_label }} {{ billing_summary_display.requested_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">수금 완료 브랜치</div>
+          <div class="text-muted small">{{ billing_text.paid_count }}</div>
           <div class="fw-semibold fs-5">{{ billing_summary.paid_count }}</div>
         </div>
       </div>
     </div>
 
     <div class="alert alert-secondary small">
-      장치 서버비는 현재 활성 장치 기준으로 1대당 KRW {{ server_fee_unit }} 입니다. AI 추가 청구액은 해당 월 AI 사용량 기준 예상액입니다.
+      {{ billing_text.info_prefix }} {{ billing_currency_label }} {{ server_fee_unit_display }} {{ billing_text.info_suffix }}
     </div>
 
     <div class="table-responsive">
       <table class="table table-hover align-middle">
         <thead>
           <tr>
-            <th>조직</th>
-            <th>지점</th>
-            <th>활성 장치</th>
-            <th>장치 서버비</th>
-            <th>AI 거래/이미지</th>
-            <th>AI 추가 청구</th>
-            <th>요청 금액</th>
-            <th>상태</th>
-            <th>수금 시각</th>
-            <th>메모</th>
-            <th>처리</th>
+            <th>{{ billing_text.table_org }}</th>
+            <th>{{ billing_text.table_branch }}</th>
+            <th>{{ billing_text.table_active_devices }}</th>
+            <th>{{ billing_text.table_server_fee }}</th>
+            <th>{{ billing_text.table_ai_usage }}</th>
+            <th>{{ billing_text.table_ai_extra }}</th>
+            <th>{{ billing_text.table_requested }}</th>
+            <th>{{ billing_text.table_status }}</th>
+            <th>{{ billing_text.table_paid_at }}</th>
+            <th>{{ billing_text.table_note }}</th>
+            <th>{{ billing_text.table_action }}</th>
           </tr>
         </thead>
         <tbody>
@@ -105,10 +117,10 @@
             <td>{{ row.org.code }}</td>
             <td>{{ row.branch.code }} - {{ row.branch.name }}</td>
             <td>{{ row.device_count }}</td>
-            <td>KRW {{ row.server_fee }}</td>
+            <td>{{ billing_currency_label }} {{ row.server_fee_display }}</td>
             <td>{{ row.ai_sales }} / {{ row.ai_images }}</td>
-            <td>KRW {{ row.ai_extra }}</td>
-            <td class="fw-semibold">KRW {{ row.requested_total }}</td>
+            <td>{{ billing_currency_label }} {{ row.ai_extra_display }}</td>
+            <td class="fw-semibold">{{ billing_currency_label }} {{ row.requested_total_display }}</td>
             <td>
               {% if row.status == "PAID" %}
               <span class="badge text-bg-success">{{ row.status_label }}</span>
@@ -122,6 +134,8 @@
               {% if can_edit %}
               <form method="post" class="d-flex gap-2">
                 {% csrf_token %}
+                <input type="hidden" name="lang" value="{{ ui_lang }}">
+                <input type="hidden" name="currency" value="{{ billing_currency }}">
                 <input type="hidden" name="branch_id" value="{{ row.branch.id }}">
                 <input type="hidden" name="billing_month" value="{{ billing_month_value }}">
                 <input
@@ -129,21 +143,21 @@
                   type="text"
                   name="note"
                   value="{{ row.note }}"
-                  placeholder="메모"
+                  placeholder="{{ billing_text.placeholder_note }}"
                 >
                 {% if row.status == "PAID" %}
-                <button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="mark_pending">미수금</button>
+                <button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="mark_pending">{{ billing_text.mark_pending }}</button>
                 {% else %}
-                <button class="btn btn-sm btn-primary" type="submit" name="action" value="mark_paid">수금 완료</button>
+                <button class="btn btn-sm btn-primary" type="submit" name="action" value="mark_paid">{{ billing_text.mark_paid }}</button>
                 {% endif %}
               </form>
               {% else %}
-              <span class="text-muted small">읽기 전용</span>
+              <span class="text-muted small">{{ billing_text.read_only }}</span>
               {% endif %}
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="11" class="text-center text-muted py-4">표시할 정산 대상이 없습니다.</td></tr>
+          <tr><td colspan="11" class="text-center text-muted py-4">{{ billing_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>

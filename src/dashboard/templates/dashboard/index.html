@@ -4,7 +4,7 @@
   <div class="col-md-4">
     <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted small">오늘 매출</div>
+        <div class="text-muted small">{{ dashboard_ui.text.index.today_total }}</div>
         <div class="fs-3 fw-bold">KRW <span id="todayTotal">{{ today_total|default:0 }}</span></div>
       </div>
     </div>
@@ -12,7 +12,7 @@
   <div class="col-md-4">
     <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted small">이번 달 매출</div>
+        <div class="text-muted small">{{ dashboard_ui.text.index.month_total }}</div>
         <div class="fs-3 fw-bold">KRW <span id="monthTotal">{{ month_total|default:0 }}</span></div>
       </div>
     </div>
@@ -20,7 +20,7 @@
   <div class="col-md-4">
     <div class="card card-soft h-100">
       <div class="card-body">
-        <div class="text-muted small">총 거래 건수</div>
+        <div class="text-muted small">{{ dashboard_ui.text.index.sales_count }}</div>
         <div class="fs-3 fw-bold"><span id="salesCount">{{ sales_count|default:0 }}</span></div>
       </div>
     </div>
@@ -29,12 +29,12 @@
 
 <div class="card card-soft">
   <div class="card-body d-flex flex-wrap gap-2">
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/devices">장치 상태 보기</a>
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/ops">관측성 보기</a>
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/billing">수금 관리 보기</a>
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/sales">매출 내역 보기</a>
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/coupons">쿠폰 관리 보기</a>
-    <a class="btn btn-outline-primary btn-sm" href="/dashboard/photos">사진 관리 보기</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.index.view_devices }}</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.index.view_ops }}</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.index.view_billing }}</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.index.view_sales }}</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.index.view_coupons }}</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.index.view_photos }}</a>
   </div>
 </div>
 

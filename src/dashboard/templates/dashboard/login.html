@@ -1,5 +1,5 @@
 ﻿<!doctype html>
-<html lang="ko">
+<html lang="{{ dashboard_ui.lang|default:'ko' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,27 +26,31 @@
 <body>
   <div class="card card-login">
     <div class="card-body p-4">
+      <div class="d-flex justify-content-end gap-2 mb-3">
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'ko' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{{ dashboard_ui.switch_urls.ko }}">{{ dashboard_ui.text.base.lang_ko }}</a>
+        <a class="btn btn-sm {% if dashboard_ui.lang == 'en' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{{ dashboard_ui.switch_urls.en }}">{{ dashboard_ui.text.base.lang_en }}</a>
+      </div>
       <h4 class="mb-1">Viorafilm</h4>
-      <div class="text-secondary small mb-3">관리자 로그인</div>
+      <div class="text-secondary small mb-3">{{ dashboard_ui.text.login.subtitle }}</div>
 
       {% if form.errors %}
-      <div class="alert alert-danger py-2">아이디 또는 비밀번호가 올바르지 않습니다.</div>
+      <div class="alert alert-danger py-2">{{ dashboard_ui.text.login.invalid_credentials }}</div>
       {% endif %}
 
       <form method="post">
         {% csrf_token %}
 
         <div class="mb-3">
-          <label class="form-label" for="id_username">아이디</label>
+          <label class="form-label" for="id_username">{{ dashboard_ui.text.login.username }}</label>
           <input class="form-control" id="id_username" name="username" type="text" required autofocus>
         </div>
 
         <div class="mb-3">
-          <label class="form-label" for="id_password">비밀번호</label>
+          <label class="form-label" for="id_password">{{ dashboard_ui.text.login.password }}</label>
           <input class="form-control" id="id_password" name="password" type="password" required>
         </div>
 
-        <button class="btn btn-dark w-100" type="submit">로그인</button>
+        <button class="btn btn-dark w-100" type="submit">{{ dashboard_ui.text.login.submit }}</button>
       </form>
     </div>
   </div>
