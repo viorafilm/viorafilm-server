@@ -1,18 +1,11 @@
-from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import urlencode
 
 from django.urls import reverse
 
 
 SUPPORTED_DASHBOARD_LANGS = ("ko", "en")
-SUPPORTED_BILLING_CURRENCIES = ("KRW", "USD", "AED", "EUR")
-
-_CURRENCY_META = {
-    "KRW": {"krw_per_unit": Decimal("1"), "decimals": 0, "label": "KRW"},
-    "USD": {"krw_per_unit": Decimal("1400"), "decimals": 2, "label": "USD"},
-    "AED": {"krw_per_unit": Decimal("381"), "decimals": 2, "label": "AED"},
-    "EUR": {"krw_per_unit": Decimal("1520"), "decimals": 2, "label": "EUR"},
-}
+DEFAULT_DASHBOARD_CURRENCY_UNIT = "KRW"
+MAX_DASHBOARD_CURRENCY_UNIT_LENGTH = 12
 
 _UI_TEXT = {
     "ko": {
@@ -32,6 +25,8 @@ _UI_TEXT = {
             "menu_photos": "사진 관리",
             "change_password": "비밀번호 변경",
             "logout": "로그아웃",
+            "currency_unit": "화폐 단위",
+            "currency_apply": "적용",
         },
         "login": {
             "subtitle": "관리자 로그인",
@@ -61,7 +56,6 @@ _UI_TEXT = {
             "branch": "지점",
             "all_branches": "전체 지점",
             "billing_month": "정산 월",
-            "display_currency": "표시 통화",
             "apply_filters": "필터 적용",
             "reset_filters": "필터 초기화",
             "previous_month": "이전 달",
@@ -115,6 +109,8 @@ _UI_TEXT = {
             "menu_photos": "Photos",
             "change_password": "Change Password",
             "logout": "Log Out",
+            "currency_unit": "Currency Unit",
+            "currency_apply": "Apply",
         },
         "login": {
             "subtitle": "Admin Login",
@@ -144,7 +140,6 @@ _UI_TEXT = {
             "branch": "Branch",
             "all_branches": "All Branches",
             "billing_month": "Billing Month",
-            "display_currency": "Display Currency",
             "apply_filters": "Apply Filters",
             "reset_filters": "Reset Filters",
             "previous_month": "Previous Month",
@@ -195,15 +190,26 @@ def resolve_dashboard_lang(request):
     return lang
 
 
-def resolve_billing_currency(request):
-    requested = str(request.GET.get("currency") or request.POST.get("currency") or "").strip().upper()
-    session_currency = str(getattr(request, "session", {}).get("dashboard_billing_currency", "") or "").strip().upper()
-    currency = requested if requested in SUPPORTED_BILLING_CURRENCIES else session_currency
-    if currency not in SUPPORTED_BILLING_CURRENCIES:
-        currency = "KRW"
+def normalize_dashboard_currency_unit(value):
+    cleaned = " ".join(str(value or "").strip().split())
+    if not cleaned:
+        return DEFAULT_DASHBOARD_CURRENCY_UNIT
+    return cleaned[:MAX_DASHBOARD_CURRENCY_UNIT_LENGTH]
+
+
+def resolve_dashboard_currency_unit(request):
+    requested = request.POST.get("currency_unit") if getattr(request, "method", "GET") == "POST" else None
+    if requested is None:
+        requested = request.GET.get("currency_unit")
+    session_currency = str(getattr(request, "session", {}).get("dashboard_currency_unit", "") or "").strip()
+    currency = normalize_dashboard_currency_unit(requested if requested not in (None, "") else session_currency)
     if hasattr(request, "session"):
-        request.session["dashboard_billing_currency"] = currency
+        request.session["dashboard_currency_unit"] = currency
     return currency
+
+
+def can_manage_billing(user):
+    return bool(getattr(user, "is_authenticated", False)) and str(getattr(user, "username", "")).strip().lower() == "admin"
 
 
 def get_dashboard_text(lang):
@@ -228,6 +234,7 @@ def build_path_with_query(path, params):
 
 def build_dashboard_ui(request):
     lang = resolve_dashboard_lang(request)
+    currency_unit = resolve_dashboard_currency_unit(request)
     text = get_dashboard_text(lang)
     base = text["base"]
     current_params = request.GET.copy()
@@ -248,37 +255,17 @@ def build_dashboard_ui(request):
     }
     return {
         "lang": lang,
+        "currency_unit": currency_unit,
+        "can_manage_billing": can_manage_billing(getattr(request, "user", None)),
         "text": text,
         "switch_urls": switch_urls,
         "nav": nav,
+        "currency_action": reverse("dashboard_currency_unit"),
     }
 
 
-def get_currency_meta(code):
-    return _CURRENCY_META.get(code, _CURRENCY_META["KRW"])
-
-
-def format_money_from_krw(amount_krw, currency):
-    meta = get_currency_meta(currency)
-    amount = Decimal(int(amount_krw or 0))
-    divisor = meta["krw_per_unit"]
-    decimals = int(meta["decimals"])
-    if divisor <= 0:
-        divisor = Decimal("1")
-    converted = amount / divisor
-    if decimals <= 0:
-        quantized = converted.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        return f"{int(quantized):,}"
-    pattern = "1." + ("0" * decimals)
-    quantized = converted.quantize(Decimal(pattern), rounding=ROUND_HALF_UP)
-    return f"{quantized:,.{decimals}f}"
-
-
-def billing_currency_options():
-    return [
-        {
-            "code": code,
-            "label": _CURRENCY_META[code]["label"],
-        }
-        for code in SUPPORTED_BILLING_CURRENCIES
-    ]
+def format_dashboard_amount(amount):
+    try:
+        return f"{int(amount or 0):,}"
+    except Exception:
+        return "0"

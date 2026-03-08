@@ -44,11 +44,15 @@
 </form>
 
 {% if can_edit %}
-<div class="card card-soft mb-3">
+  <div class="card card-soft mb-3">
   <div class="card-body">
     <h6 class="mb-3">쿠폰 일괄 발행</h6>
     <div class="text-muted small mb-2">
+      {% if coupon_global_capacity_visible %}
       전체 한도 {{ coupon_max_total }}장 / 현재 {{ coupon_total_count }}장 / 남은 {{ coupon_remaining_capacity }}장
+      {% else %}
+      현재 범위 쿠폰 {{ coupon_total_count }}장
+      {% endif %}
       · 1회 최대 {{ coupon_max_per_issue }}장
     </div>
     <form method="post" class="row g-2">
@@ -76,7 +80,7 @@
       </div>
 
       <div class="col-md-2">
-        <label class="form-label">금액 (KRW)</label>
+        <label class="form-label">금액 ({{ dashboard_ui.currency_unit }})</label>
         <input class="form-control" name="amount" type="number" min="1" value="4000">
       </div>
 
@@ -146,7 +150,7 @@
             <tr>
               <td>{% if can_edit %}<input type="checkbox" name="coupon_ids" value="{{ c.id }}">{% endif %}</td>
               <td class="fw-semibold">{{ c.formatted_code }}</td>
-              <td>{{ c.currency }} {{ c.amount }}</td>
+              <td>{{ dashboard_ui.currency_unit }} {{ c.amount }}</td>
               <td>{{ c.expires_at }}</td>
               <td>{{ c.status }}</td>
               <td>{% if c.used_by_device %}{{ c.used_by_device.device_code }}{% else %}-{% endif %}</td>

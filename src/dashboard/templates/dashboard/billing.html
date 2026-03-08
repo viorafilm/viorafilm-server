@@ -35,14 +35,6 @@
         <label class="form-label mb-1">{{ billing_text.billing_month }}</label>
         <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value }}" data-testid="billing-month-input">
       </div>
-      <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">{{ billing_text.display_currency }}</label>
-        <select class="form-select form-select-sm" name="currency" data-testid="billing-currency-select">
-          {% for option in billing_currency_options %}
-          <option value="{{ option.code }}" {% if billing_currency == option.code %}selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
       <div class="col-12 d-flex align-items-end gap-2">
         <button class="btn btn-sm btn-primary" type="submit">{{ billing_text.apply_filters }}</button>
         <a class="btn btn-sm btn-outline-secondary" href="{{ billing_prev_month_url }}">{{ billing_text.previous_month }}</a>
@@ -67,19 +59,19 @@
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
           <div class="text-muted small">{{ billing_text.server_fee_total }}</div>
-          <div class="fw-semibold fs-5" data-testid="billing-server-fee-total">{{ billing_currency_label }} {{ billing_summary_display.server_fee_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-server-fee-total">{{ dashboard_ui.currency_unit }} {{ billing_summary_display.server_fee_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
           <div class="text-muted small">{{ billing_text.ai_extra_total }}</div>
-          <div class="fw-semibold fs-5" data-testid="billing-ai-extra-total">{{ billing_currency_label }} {{ billing_summary_display.ai_extra_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-ai-extra-total">{{ dashboard_ui.currency_unit }} {{ billing_summary_display.ai_extra_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
           <div class="text-muted small">{{ billing_text.requested_total }}</div>
-          <div class="fw-semibold fs-5" data-testid="billing-requested-total">{{ billing_currency_label }} {{ billing_summary_display.requested_total }}</div>
+          <div class="fw-semibold fs-5" data-testid="billing-requested-total">{{ dashboard_ui.currency_unit }} {{ billing_summary_display.requested_total }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
@@ -91,7 +83,7 @@
     </div>
 
     <div class="alert alert-secondary small">
-      {{ billing_text.info_prefix }} {{ billing_currency_label }} {{ server_fee_unit_display }} {{ billing_text.info_suffix }}
+      {{ billing_text.info_prefix }} {{ dashboard_ui.currency_unit }} {{ server_fee_unit_display }} {{ billing_text.info_suffix }}
     </div>
 
     <div class="table-responsive">
@@ -117,10 +109,10 @@
             <td>{{ row.org.code }}</td>
             <td>{{ row.branch.code }} - {{ row.branch.name }}</td>
             <td>{{ row.device_count }}</td>
-            <td>{{ billing_currency_label }} {{ row.server_fee_display }}</td>
+            <td>{{ dashboard_ui.currency_unit }} {{ row.server_fee_display }}</td>
             <td>{{ row.ai_sales }} / {{ row.ai_images }}</td>
-            <td>{{ billing_currency_label }} {{ row.ai_extra_display }}</td>
-            <td class="fw-semibold">{{ billing_currency_label }} {{ row.requested_total_display }}</td>
+            <td>{{ dashboard_ui.currency_unit }} {{ row.ai_extra_display }}</td>
+            <td class="fw-semibold">{{ dashboard_ui.currency_unit }} {{ row.requested_total_display }}</td>
             <td>
               {% if row.status == "PAID" %}
               <span class="badge text-bg-success">{{ row.status_label }}</span>
@@ -135,7 +127,6 @@
               <form method="post" class="d-flex gap-2">
                 {% csrf_token %}
                 <input type="hidden" name="lang" value="{{ ui_lang }}">
-                <input type="hidden" name="currency" value="{{ billing_currency }}">
                 <input type="hidden" name="branch_id" value="{{ row.branch.id }}">
                 <input type="hidden" name="billing_month" value="{{ billing_month_value }}">
                 <input

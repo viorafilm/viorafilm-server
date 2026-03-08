@@ -5,7 +5,7 @@
     <div class="card card-soft h-100">
       <div class="card-body">
         <div class="text-muted small">{{ dashboard_ui.text.index.today_total }}</div>
-        <div class="fs-3 fw-bold">KRW <span id="todayTotal">{{ today_total|default:0 }}</span></div>
+        <div class="fs-3 fw-bold">{{ dashboard_ui.currency_unit }} <span id="todayTotal">{{ today_total|default:0 }}</span></div>
       </div>
     </div>
   </div>
@@ -13,7 +13,7 @@
     <div class="card card-soft h-100">
       <div class="card-body">
         <div class="text-muted small">{{ dashboard_ui.text.index.month_total }}</div>
-        <div class="fs-3 fw-bold">KRW <span id="monthTotal">{{ month_total|default:0 }}</span></div>
+        <div class="fs-3 fw-bold">{{ dashboard_ui.currency_unit }} <span id="monthTotal">{{ month_total|default:0 }}</span></div>
       </div>
     </div>
   </div>
@@ -31,7 +31,9 @@
   <div class="card-body d-flex flex-wrap gap-2">
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.index.view_devices }}</a>
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.index.view_ops }}</a>
+    {% if dashboard_ui.can_manage_billing %}
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.index.view_billing }}</a>
+    {% endif %}
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.index.view_sales }}</a>
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.index.view_coupons }}</a>
     <a class="btn btn-outline-primary btn-sm" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.index.view_photos }}</a>

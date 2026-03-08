@@ -104,7 +104,9 @@
       <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="{{ dashboard_ui.nav.index }}">{{ dashboard_ui.text.base.menu_index }}</a>
       <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.base.menu_devices }}</a>
       <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.base.menu_ops }}</a>
+      {% if dashboard_ui.can_manage_billing %}
       <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.base.menu_billing }}</a>
+      {% endif %}
       <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.base.menu_sales }}</a>
       <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.base.menu_coupons }}</a>
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.base.menu_photos }}</a>
@@ -133,7 +135,9 @@
       <a class="menu-link {% if request.path == '/dashboard/' %}active{% endif %}" href="{{ dashboard_ui.nav.index }}">{{ dashboard_ui.text.base.menu_index }}</a>
       <a class="menu-link {% if '/dashboard/devices' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.devices }}">{{ dashboard_ui.text.base.menu_devices }}</a>
       <a class="menu-link {% if '/dashboard/ops' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.ops }}">{{ dashboard_ui.text.base.menu_ops }}</a>
+      {% if dashboard_ui.can_manage_billing %}
       <a class="menu-link {% if '/dashboard/billing' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.billing }}">{{ dashboard_ui.text.base.menu_billing }}</a>
+      {% endif %}
       <a class="menu-link {% if '/dashboard/sales' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.sales }}">{{ dashboard_ui.text.base.menu_sales }}</a>
       <a class="menu-link {% if '/dashboard/coupons' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.coupons }}">{{ dashboard_ui.text.base.menu_coupons }}</a>
       <a class="menu-link {% if '/dashboard/photos' in request.path %}active{% endif %}" href="{{ dashboard_ui.nav.photos }}">{{ dashboard_ui.text.base.menu_photos }}</a>
@@ -149,7 +153,24 @@
     <main class="content">
       <div class="topbar">
         <h1 class="page-title">{{ dashboard_ui.text.base.page_title }}</h1>
-        <small class="text-secondary">{{ request.user.username }}</small>
+        <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+          <form method="post" action="{{ dashboard_ui.currency_action }}" class="d-flex flex-wrap align-items-center gap-2 mb-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <label class="small text-secondary" for="dashboardCurrencyUnit">{{ dashboard_ui.text.base.currency_unit }}</label>
+            <input
+              class="form-control form-control-sm"
+              id="dashboardCurrencyUnit"
+              name="currency_unit"
+              type="text"
+              maxlength="12"
+              value="{{ dashboard_ui.currency_unit }}"
+              style="width: 120px;"
+            >
+            <button class="btn btn-sm btn-outline-secondary" type="submit">{{ dashboard_ui.text.base.currency_apply }}</button>
+          </form>
+          <small class="text-secondary">{{ request.user.username }}</small>
+        </div>
       </div>
 
       {% if messages %}

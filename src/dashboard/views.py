@@ -35,11 +35,10 @@ from storagehub.models import UploadAsset
 from storagehub.service import generate_download_url_from_meta
 from urllib.parse import urlencode
 from dashboard.ui import (
-    billing_currency_options,
-    format_money_from_krw,
-    get_currency_meta,
+    can_manage_billing,
+    format_dashboard_amount,
     get_dashboard_text,
-    resolve_billing_currency,
+    resolve_dashboard_currency_unit,
     resolve_dashboard_lang,
 )
 
@@ -58,6 +57,10 @@ def _is_super(user):
 
 def _is_org_admin(user):
     return getattr(user, "role", None) == UserRole.ORG_ADMIN
+
+
+def _can_manage_billing(user):
+    return can_manage_billing(user)
 
 
 def _is_branch_admin(user):
@@ -488,7 +491,7 @@ def _build_ai_branch_billing(sales_qs, start_date, end_date):
     return rows, total_ai_sales, total_ai_images, total_billing
 
 
-def _build_monthly_billing_rows(user, filters, billing_month, billing_currency, ui_text):
+def _build_monthly_billing_rows(user, filters, billing_month, ui_text):
     branches_qs = _available_branches(user)
     if filters.get("org_id") is not None:
         branches_qs = branches_qs.filter(org_id=filters["org_id"])
@@ -532,7 +535,6 @@ def _build_monthly_billing_rows(user, filters, billing_month, billing_currency, 
 
     rows = []
     billing_text = ui_text["billing"]
-    currency_meta = get_currency_meta(billing_currency)
     summary = {
         "branch_count": 0,
         "device_count": 0,
@@ -554,13 +556,13 @@ def _build_monthly_billing_rows(user, filters, billing_month, billing_currency, 
             "branch": branch,
             "device_count": device_count,
             "server_fee": server_fee,
-            "server_fee_display": format_money_from_krw(server_fee, billing_currency),
+            "server_fee_display": format_dashboard_amount(server_fee),
             "ai_sales": int(ai_row.get("ai_sales") or 0),
             "ai_images": int(ai_row.get("ai_images") or 0),
             "ai_extra": ai_extra,
-            "ai_extra_display": format_money_from_krw(ai_extra, billing_currency),
+            "ai_extra_display": format_dashboard_amount(ai_extra),
             "requested_total": requested_total,
-            "requested_total_display": format_money_from_krw(requested_total, billing_currency),
+            "requested_total_display": format_dashboard_amount(requested_total),
             "status": status,
             "status_label": (
                 billing_text["status_paid"]
@@ -584,20 +586,15 @@ def _build_monthly_billing_rows(user, filters, billing_month, billing_currency, 
         "rows": rows,
         "summary": summary,
         "summary_display": {
-            "server_fee_total": format_money_from_krw(summary["server_fee_total"], billing_currency),
-            "ai_extra_total": format_money_from_krw(summary["ai_extra_total"], billing_currency),
-            "requested_total": format_money_from_krw(summary["requested_total"], billing_currency),
+            "server_fee_total": format_dashboard_amount(summary["server_fee_total"]),
+            "ai_extra_total": format_dashboard_amount(summary["ai_extra_total"]),
+            "requested_total": format_dashboard_amount(summary["requested_total"]),
         },
         "start_date": start_date,
         "end_date": end_date,
         "month_last": month_last,
         "server_fee_unit": server_fee_unit,
-        "server_fee_unit_display": format_money_from_krw(server_fee_unit, billing_currency),
-        "currency": {
-            "code": billing_currency,
-            "label": currency_meta["label"],
-            "decimals": int(currency_meta["decimals"]),
-        },
+        "server_fee_unit_display": format_dashboard_amount(server_fee_unit),
     }
 
 
@@ -790,6 +787,18 @@ def logout_view(request):
 
 @login_required(login_url="/dashboard/login")
 @never_cache
+def currency_unit_view(request):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    resolve_dashboard_currency_unit(request)
+    next_url = str(request.POST.get("next") or "").strip()
+    if not next_url.startswith("/dashboard"):
+        next_url = "/dashboard/"
+    return redirect(next_url)
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
 def index_view(request):
     summary = _build_sales_summary(request.user)
     return render(
@@ -970,6 +979,8 @@ def devices_live_view(request):
 @never_cache
 def billing_view(request):
     user = request.user
+    if not _can_manage_billing(user):
+        return HttpResponseForbidden("Billing is available only for admin")
     ui_lang = resolve_dashboard_lang(request)
     ui_text = get_dashboard_text(ui_lang)
     billing_text = ui_text["billing"]
@@ -977,7 +988,6 @@ def billing_view(request):
     billing_month = _parse_billing_month(
         request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month")
     )
-    billing_currency = resolve_billing_currency(request)
     can_edit = not _is_viewer(user)
 
     scoped_branches = _available_branches(user)
@@ -1050,7 +1060,6 @@ def billing_view(request):
             filters,
             extra={
                 "billing_month": billing_month.strftime("%Y-%m"),
-                "currency": billing_currency,
                 "lang": ui_lang,
             },
         )
@@ -1058,13 +1067,12 @@ def billing_view(request):
             return redirect(f"/dashboard/billing?{urlencode(params)}")
         return redirect("dashboard_billing")
 
-    billing_data = _build_monthly_billing_rows(user, filters, billing_month, billing_currency, ui_text)
+    billing_data = _build_monthly_billing_rows(user, filters, billing_month, ui_text)
     prev_month = _shift_month(billing_month, -1)
     next_month = _shift_month(billing_month, 1)
     billing_nav_base = _query_params_from_filters(
         filters,
         extra={
-            "currency": billing_currency,
             "lang": ui_lang,
         },
     )
@@ -1086,9 +1094,6 @@ def billing_view(request):
             "billing_summary_display": billing_data["summary_display"],
             "server_fee_unit": billing_data["server_fee_unit"],
             "server_fee_unit_display": billing_data["server_fee_unit_display"],
-            "billing_currency": billing_data["currency"]["code"],
-            "billing_currency_label": billing_data["currency"]["label"],
-            "billing_currency_options": billing_currency_options(),
             "billing_prev_month_value": prev_month.strftime("%Y-%m"),
             "billing_next_month_value": next_month.strftime("%Y-%m"),
             "billing_prev_month_url": f"/dashboard/billing?{urlencode(prev_month_params)}",
@@ -1158,8 +1163,6 @@ def sales_view(request):
         if mode == "ai":
             ai_generated_images += sale_ai_images
 
-    ai_estimated_server_cost = int(ai_generated_images * AI_EST_KRW_PER_IMAGE)
-    ai_estimated_billing_server_cost = int(round(ai_estimated_server_cost * AI_EST_SERVER_COST_MULTIPLIER))
     billing_month = _resolve_billing_month(request)
     billing_start_date, billing_end_date, billing_month_last = _billing_month_range(billing_month)
     ai_branch_rows, ai_branch_sales_count, ai_branch_images_count, ai_branch_billing_total = _build_ai_branch_billing(
@@ -1185,9 +1188,6 @@ def sales_view(request):
             "mode_counts": mode_counts,
             "mode_amounts": mode_amounts,
             "ai_generated_images": ai_generated_images,
-            "ai_estimated_billing_server_cost": ai_estimated_billing_server_cost,
-            "ai_est_krw_per_image": AI_EST_KRW_PER_IMAGE,
-            "ai_est_server_cost_multiplier": AI_EST_SERVER_COST_MULTIPLIER,
             "billing_month_value": billing_month.strftime("%Y-%m"),
             "billing_start_date": billing_start_date.isoformat(),
             "billing_end_date": billing_end_date.isoformat(),
