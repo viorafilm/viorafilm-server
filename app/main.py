@@ -1137,6 +1137,7 @@ DEFAULT_THANK_YOU_SETTINGS = {
 BILL_PROFILES = {
     "KR_ONEPLUS_RS232_V1_7": {
         "label": "Korea (ONEPLUS RS-232 v1.7)",
+        "protocol": "FRAME5_ASCII",
         "baud": 9600,
         "probe_bauds": [9600],
         "default_port": "COM3",
@@ -1162,6 +1163,7 @@ BILL_PROFILES = {
     },
     "TP70_RS232_COMPAT": {
         "label": "Overseas (TP70 RS-232 compatible)",
+        "protocol": "FRAME5_ASCII",
         "baud": 9600,
         "probe_bauds": [9600, 19200],
         "default_port": "COM3",
@@ -1191,6 +1193,7 @@ BILL_PROFILES = {
     },
     "TOP_TB_SERIES_RS232_STD": {
         "label": "TOP TB Series (TB74/TB7x RS-232 standard)",
+        "protocol": "FRAME5_ASCII",
         "baud": 9600,
         "probe_bauds": [9600, 19200, 38400, 57600],
         "probe_parities": ["N", "E", "O"],
@@ -1224,6 +1227,7 @@ BILL_PROFILES = {
     },
     "TOP_TV74_RS232_STD": {
         "label": "TOP TV74 Series (alias, RS-232 standard)",
+        "protocol": "FRAME5_ASCII",
         "baud": 9600,
         "probe_bauds": [9600, 19200, 38400, 57600],
         "probe_parities": ["N", "E", "O"],
@@ -1255,6 +1259,104 @@ BILL_PROFILES = {
             "50000": True,
         },
     },
+    "ICT_104U_RS232_STD": {
+        "label": "ICT 104U RS-232 standard",
+        "protocol": "ICT104U",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200, 38400],
+        "probe_parities": ["N"],
+        "probe_stopbits": [1],
+        "probe_bytesizes": [8],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x81],
+        # bill type 1..5 defaults are only a fallback.
+        # Configure config.json bill_acceptor.bill_to_amount per currency/setup.
+        "bill_to_amount": {
+            1: 5,
+            2: 10,
+            3: 20,
+            4: 50,
+            5: 100,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
+    "ICT_004_RS232_STD": {
+        "label": "ICT 004 RS-232 standard (alias)",
+        "protocol": "ICT104U",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200, 38400],
+        "probe_parities": ["N"],
+        "probe_stopbits": [1],
+        "probe_bytesizes": [8],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x81],
+        "bill_to_amount": {
+            1: 5,
+            2: 10,
+            3: 20,
+            4: 50,
+            5: 100,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
+    "TOP_ICT_104U_RS232_STD": {
+        "label": "TOP / ICT shared RS-232 104U",
+        "protocol": "ICT104U",
+        "baud": 9600,
+        "probe_bauds": [9600, 19200, 38400],
+        "probe_parities": ["N"],
+        "probe_stopbits": [1],
+        "probe_bytesizes": [8],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "N",
+        "bytesize": 8,
+        "stopbits": 1,
+        "strict_init": False,
+        "supports_reset": True,
+        "supports_config_bits": False,
+        "supports_insert_control": True,
+        "recognition_status": [0x81],
+        "bill_to_amount": {
+            1: 5,
+            2: 10,
+            3: 20,
+            4: 50,
+            5: 100,
+        },
+        "default_denoms": {
+            "1000": True,
+            "5000": True,
+            "10000": True,
+            "50000": True,
+        },
+    },
 }
 
 DEFAULT_BILL_ACCEPTOR_SETTINGS = {
@@ -1270,6 +1372,48 @@ DEFAULT_BILL_ACCEPTOR_SETTINGS = {
     },
     "bill_to_amount": {},
 }
+
+
+def parse_bill_to_amount_map(raw: object) -> dict[int, int]:
+    result: dict[int, int] = {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return result
+        chunks = re.split(r"[\r\n,;]+", text)
+        items = []
+        for chunk in chunks:
+            piece = str(chunk or "").strip()
+            if not piece:
+                continue
+            if "=" in piece:
+                left, right = piece.split("=", 1)
+            elif ":" in piece:
+                left, right = piece.split(":", 1)
+            else:
+                parts = piece.split()
+                if len(parts) != 2:
+                    continue
+                left, right = parts
+            items.append((left, right))
+    for raw_key, raw_amount in items:
+        try:
+            code = int(str(raw_key).strip(), 0) & 0xFF
+            amount = int(str(raw_amount).strip(), 0)
+        except Exception:
+            continue
+        if amount > 0:
+            result[code] = amount
+    return result
+
+
+def format_bill_to_amount_map(raw: object) -> str:
+    data = parse_bill_to_amount_map(raw)
+    if not data:
+        return ""
+    return ",".join(f"{int(code)}={int(amount)}" for code, amount in sorted(data.items()))
 
 DEFAULT_PRICING_SETTINGS = {
     "currency_prefix": "KRW",
@@ -9644,6 +9788,10 @@ class BillAcceptorWorker(QThread):
             profile_key = str(DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])
         return dict(BILL_PROFILES.get(profile_key, {}))
 
+    def _protocol_name(self) -> str:
+        profile_data = self._profile_data()
+        return str(profile_data.get("protocol", "FRAME5_ASCII")).strip().upper() or "FRAME5_ASCII"
+
     def _resolve_accept_status_codes(self) -> set[int]:
         profile_data = self._profile_data()
         result = set(self.DEFAULT_ACCEPT_STATUS_CODES)
@@ -9663,21 +9811,10 @@ class BillAcceptorWorker(QThread):
     def _resolve_bill_to_amount_map(self) -> dict[int, int]:
         result = dict(self.DEFAULT_BILL_TO_AMOUNT)
         profile_data = self._profile_data()
-
-        def _apply(raw_map: Any) -> None:
-            if not isinstance(raw_map, dict):
-                return
-            for raw_key, raw_amount in raw_map.items():
-                try:
-                    bill_code = int(raw_key) & 0xFF
-                    amount = int(raw_amount)
-                except Exception:
-                    continue
-                if amount > 0:
-                    result[bill_code] = amount
-
-        _apply(profile_data.get("bill_to_amount"))
-        _apply(self.settings.get("bill_to_amount"))
+        for raw_map in (profile_data.get("bill_to_amount"), self.settings.get("bill_to_amount")):
+            parsed = parse_bill_to_amount_map(raw_map)
+            for bill_code, amount in parsed.items():
+                result[int(bill_code) & 0xFF] = int(amount)
         return result
 
     def _resolve_config_byte(self) -> int:
@@ -9758,6 +9895,120 @@ class BillAcceptorWorker(QThread):
         if not self._is_ok_response(packet, "a"):
             raise RuntimeError(f"reset unexpected response={packet}")
         time.sleep(2.5)
+
+    def _ict_write_byte(self, value: int) -> None:
+        if self._serial_conn is None:
+            raise RuntimeError("serial not open")
+        try:
+            self._serial_conn.write(bytes((int(value) & 0xFF,)))
+            self._serial_conn.flush()
+        except Exception as exc:
+            raise RuntimeError(f"ict write failed: {exc}") from exc
+
+    def _ict_read_bytes(self, timeout: float = 0.3, max_bytes: int = 2) -> list[int]:
+        if self._serial_conn is None:
+            raise RuntimeError("serial not open")
+        deadline = time.monotonic() + max(0.05, float(timeout))
+        received: list[int] = []
+        while time.monotonic() < deadline and len(received) < max(1, int(max_bytes)):
+            try:
+                chunk = self._serial_conn.read(1)
+            except Exception as exc:
+                raise RuntimeError(f"ict read failed: {exc}") from exc
+            if not chunk:
+                continue
+            received.append(int(chunk[0]) & 0xFF)
+            # 0x81 escrow status is followed by a bill type byte.
+            if received[0] != 0x81 and len(received) >= 1:
+                break
+        return received
+
+    def _ict_poll(self, timeout: float = 0.3) -> list[int]:
+        self._ict_write_byte(0x0C)
+        return self._ict_read_bytes(timeout=timeout, max_bytes=2)
+
+    def _ict_set_enabled(self, enabled: bool) -> None:
+        self._ict_write_byte(0x3E if enabled else 0x5E)
+        self._insert_enabled = bool(enabled)
+
+    def _ict_reset(self) -> None:
+        self._ict_write_byte(0x30)
+        time.sleep(2.5)
+
+    def _ict_accept_current_bill(self) -> None:
+        self._ict_write_byte(0x02)
+
+    def _ict_reject_current_bill(self) -> None:
+        self._ict_write_byte(0x0F)
+
+    def _ict_decode_bill_code(self, raw_code: int) -> int:
+        value = int(raw_code) & 0xFF
+        if 0x40 <= value <= 0x4F:
+            return int(value - 0x3F)
+        return value
+
+    def _ict_lookup_amount(self, raw_code: int) -> Optional[int]:
+        normalized_code = self._ict_decode_bill_code(raw_code)
+        for key in (normalized_code, int(raw_code) & 0xFF):
+            amount = self._bill_to_amount_map.get(int(key))
+            if amount is not None and int(amount) > 0:
+                return int(amount)
+        return None
+
+    def _probe_connection(self, serial_conn: Any) -> None:
+        protocol = self._protocol_name()
+        if protocol == "ICT104U":
+            try:
+                serial_conn.reset_input_buffer()
+            except Exception:
+                pass
+            self._ict_write_probe(serial_conn)
+            data = self._ict_read_probe(serial_conn)
+            if not data:
+                raise TimeoutError("ict104u probe timeout")
+            return
+        send_cmd_with_retry(
+            serial_conn,
+            ("G", "A", "?"),
+            timeout=0.35,
+            retries=1,
+        )
+
+    @staticmethod
+    def _ict_write_probe(serial_conn: Any) -> None:
+        serial_conn.write(bytes((0x0C,)))
+        serial_conn.flush()
+
+    @staticmethod
+    def _ict_read_probe(serial_conn: Any, timeout: float = 0.3) -> list[int]:
+        deadline = time.monotonic() + max(0.05, float(timeout))
+        received: list[int] = []
+        while time.monotonic() < deadline and len(received) < 2:
+            chunk = serial_conn.read(1)
+            if not chunk:
+                continue
+            received.append(int(chunk[0]) & 0xFF)
+            if received[0] != 0x81:
+                break
+        return received
+
+    def _wait_for_ict_stack_result(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.5, float(timeout))
+        while self._running and not self.isInterruptionRequested() and time.monotonic() < deadline:
+            packet = self._ict_poll(timeout=0.35)
+            if not packet:
+                continue
+            status = int(packet[0]) & 0xFF
+            if status == 0x10:
+                return True
+            if status == 0x11:
+                return False
+            if status in {0x3E, 0x5E, 0x80}:
+                continue
+            if 0x20 <= status <= 0x2F:
+                self._log(f"[BILL][ICT104U] stack error=0x{status:02X}")
+                return False
+        return False
 
     def _resolve_probe_bauds(self, profile_data: dict, fallback_baud: int) -> list[int]:
         values: list[int] = []
@@ -9907,12 +10158,7 @@ class BillAcceptorWorker(QThread):
                                     f"[BILL] probe port={raw_port} baud={baud} "
                                     f"mode={parity_candidate}{int(byte_candidate)}{int(stop_candidate)}"
                                 )
-                                send_cmd_with_retry(
-                                    conn,
-                                    ("G", "A", "?"),
-                                    timeout=0.35,
-                                    retries=1,
-                                )
+                                self._probe_connection(conn)
                                 self._log(
                                     f"[BILL] auto-detect matched port={raw_port} baud={baud} "
                                     f"mode={parity_candidate}{int(byte_candidate)}{int(stop_candidate)}"
@@ -9938,6 +10184,123 @@ class BillAcceptorWorker(QThread):
             f"{last_error} (check device mode: RS-232 vs MDB/ccTalk)"
         )
 
+    def _run_frame5_ascii_loop(self, *, strict_init: bool, supports_insert_control: bool) -> None:
+        while self._running and not self.isInterruptionRequested():
+            try:
+                status = self.cmd_get_status()
+                if self._last_status != status:
+                    self._last_status = status
+                if status in self._accept_status_codes:
+                    billdata = self.cmd_get_billdata()
+                    amount = self._bill_to_amount_map.get(int(billdata))
+                    if amount is not None:
+                        self.bill_accepted.emit(int(amount), int(status), int(billdata))
+                        self._log(
+                            f"[BILL] status=0x{status:02X} -> billdata={int(billdata)} amount={int(amount)}"
+                        )
+                    else:
+                        self._log(
+                            f"[BILL] status=0x{status:02X} -> billdata={int(billdata)} amount=UNKNOWN"
+                        )
+                    if supports_insert_control:
+                        try:
+                            self.cmd_insert_enable()
+                            self._insert_enabled = True
+                            self._log("[BILL] insert_enable ok")
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._insert_enabled = False
+                            self._log(f"[BILL] insert_enable retry failed: {exc}")
+                elif status >= 0x80:
+                    error_code = self.cmd_get_error()
+                    self._log(f"[BILL] status=0x{status:02X} error=0x{error_code:02X}")
+            except Exception as poll_exc:
+                self._log(f"[BILL] poll error: {poll_exc}")
+                time.sleep(0.2)
+            time.sleep(0.08)
+
+    def _run_ict104u_loop(self, *, strict_init: bool, supports_insert_control: bool) -> None:
+        while self._running and not self.isInterruptionRequested():
+            try:
+                packet = self._ict_poll(timeout=0.35)
+                if not packet:
+                    time.sleep(0.08)
+                    continue
+                status = int(packet[0]) & 0xFF
+                if self._last_status != status:
+                    self._last_status = status
+                if status == 0x81:
+                    raw_bill_code = int(packet[1]) & 0xFF if len(packet) >= 2 else 0
+                    decoded_bill_code = self._ict_decode_bill_code(raw_bill_code)
+                    amount = self._ict_lookup_amount(raw_bill_code)
+                    if amount is None:
+                        self._log(
+                            f"[BILL][ICT104U] escrow bill_code=0x{raw_bill_code:02X} "
+                            f"slot={decoded_bill_code} amount=UNKNOWN -> reject"
+                        )
+                        if supports_insert_control:
+                            self._ict_reject_current_bill()
+                        time.sleep(0.1)
+                        continue
+                    if supports_insert_control:
+                        self._ict_accept_current_bill()
+                    stacked = self._wait_for_ict_stack_result(timeout=5.0)
+                    if not stacked:
+                        self._log(
+                            f"[BILL][ICT104U] stack timeout/reject bill_code=0x{raw_bill_code:02X} "
+                            f"slot={decoded_bill_code}"
+                        )
+                        if supports_insert_control and self._insert_enabled:
+                            try:
+                                self._ict_set_enabled(True)
+                            except Exception as exc:
+                                if strict_init:
+                                    raise
+                                self._log(f"[BILL][ICT104U] re-enable failed: {exc}")
+                        time.sleep(0.1)
+                        continue
+                    self.bill_accepted.emit(int(amount), int(status), int(decoded_bill_code))
+                    self._log(
+                        f"[BILL][ICT104U] escrow bill_code=0x{raw_bill_code:02X} "
+                        f"slot={decoded_bill_code} amount={int(amount)}"
+                    )
+                    if supports_insert_control and self._insert_enabled:
+                        try:
+                            self._ict_set_enabled(True)
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._log(f"[BILL][ICT104U] re-enable failed: {exc}")
+                elif status == 0x80:
+                    self._log("[BILL][ICT104U] power-up/reset detected")
+                    if supports_insert_control:
+                        try:
+                            self._ict_set_enabled(True)
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._log(f"[BILL][ICT104U] enable after reset failed: {exc}")
+                elif status == 0x5E:
+                    self._log("[BILL][ICT104U] inhibited")
+                    if supports_insert_control:
+                        try:
+                            self._ict_set_enabled(True)
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._log(f"[BILL][ICT104U] enable failed: {exc}")
+                elif status in {0x3E, 0x10, 0x11}:
+                    pass
+                elif 0x20 <= status <= 0x2F:
+                    self._log(f"[BILL][ICT104U] error=0x{status:02X}")
+                else:
+                    self._log(f"[BILL][ICT104U] status=0x{status:02X}")
+            except Exception as poll_exc:
+                self._log(f"[BILL][ICT104U] poll error: {poll_exc}")
+                time.sleep(0.2)
+            time.sleep(0.08)
+
     def run(self) -> None:
         if serial is None:
             self.failed.emit("pyserial not installed")
@@ -9948,6 +10311,7 @@ class BillAcceptorWorker(QThread):
 
         profile_data = self._profile_data()
         profile_key = str(self.settings.get("profile", DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])).strip()
+        protocol = self._protocol_name()
         strict_init = bool(profile_data.get("strict_init", True))
         supports_reset = bool(profile_data.get("supports_reset", True))
         supports_config_bits = bool(profile_data.get("supports_config_bits", True))
@@ -10020,72 +10384,66 @@ class BillAcceptorWorker(QThread):
                         raise
             self._log(
                 f"[BILL] open port={port} {int(actual_baud)}{parity_text}{int(bytesize)}{stopbits_value} "
-                f"profile={profile_key} strict_init={1 if strict_init else 0}"
+                f"profile={profile_key} protocol={protocol} strict_init={1 if strict_init else 0}"
             )
 
-            if supports_reset:
-                try:
-                    self.cmd_reset()
-                except Exception as exc:
-                    if strict_init:
-                        raise
-                    self._log(f"[BILL] reset skipped: {exc}")
+            if protocol == "ICT104U":
+                if supports_reset:
+                    try:
+                        self._ict_reset()
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._log(f"[BILL][ICT104U] reset skipped: {exc}")
 
-            if supports_config_bits:
-                try:
-                    cfg = self._resolve_config_byte()
-                    self.cmd_set_config(cfg)
-                    self._log(f"[BILL] set_config=0x{cfg:02X} ok")
-                except Exception as exc:
-                    if strict_init:
-                        raise
-                    self._log(f"[BILL] set_config skipped: {exc}")
+                if supports_insert_control:
+                    try:
+                        self._ict_set_enabled(True)
+                        self._log("[BILL][ICT104U] enable ok")
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._insert_enabled = False
+                        self._log(f"[BILL][ICT104U] enable skipped: {exc}")
 
-            if supports_insert_control:
-                try:
-                    self.cmd_insert_enable()
-                    self._insert_enabled = True
-                    self._log("[BILL] insert_enable ok")
-                except Exception as exc:
-                    if strict_init:
-                        raise
-                    self._insert_enabled = False
-                    self._log(f"[BILL] insert_enable skipped: {exc}")
+                self._run_ict104u_loop(
+                    strict_init=strict_init,
+                    supports_insert_control=supports_insert_control,
+                )
+            else:
+                if supports_reset:
+                    try:
+                        self.cmd_reset()
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._log(f"[BILL] reset skipped: {exc}")
 
-            while self._running and not self.isInterruptionRequested():
-                try:
-                    status = self.cmd_get_status()
-                    if self._last_status != status:
-                        self._last_status = status
-                    if status in self._accept_status_codes:
-                        billdata = self.cmd_get_billdata()
-                        amount = self._bill_to_amount_map.get(int(billdata))
-                        if amount is not None:
-                            self.bill_accepted.emit(int(amount), int(status), int(billdata))
-                            self._log(
-                                f"[BILL] status=0x{status:02X} -> billdata={int(billdata)} amount={int(amount)}"
-                            )
-                        else:
-                            self._log(
-                                f"[BILL] status=0x{status:02X} -> billdata={int(billdata)} amount=UNKNOWN"
-                            )
-                        if supports_insert_control:
-                            try:
-                                self.cmd_insert_enable()
-                                self._insert_enabled = True
-                                self._log("[BILL] insert_enable ok")
-                            except Exception as exc:
-                                if strict_init:
-                                    raise
-                                self._insert_enabled = False
-                                self._log(f"[BILL] insert_enable retry failed: {exc}")
-                    elif status >= 0x80:
-                        error_code = self.cmd_get_error()
-                        self._log(f"[BILL] status=0x{status:02X} error=0x{error_code:02X}")
-                except Exception as poll_exc:
-                    self._log(f"[BILL] poll error: {poll_exc}")
-                    time.sleep(0.2)
-                time.sleep(0.08)
+                if supports_config_bits:
+                    try:
+                        cfg = self._resolve_config_byte()
+                        self.cmd_set_config(cfg)
+                        self._log(f"[BILL] set_config=0x{cfg:02X} ok")
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._log(f"[BILL] set_config skipped: {exc}")
+
+                if supports_insert_control:
+                    try:
+                        self.cmd_insert_enable()
+                        self._insert_enabled = True
+                        self._log("[BILL] insert_enable ok")
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._insert_enabled = False
+                        self._log(f"[BILL] insert_enable skipped: {exc}")
+
+                self._run_frame5_ascii_loop(
+                    strict_init=strict_init,
+                    supports_insert_control=supports_insert_control,
+                )
         except SerialException as exc:
             self.failed.emit(f"serial failed: {exc}")
         except Exception as exc:
@@ -10094,8 +10452,12 @@ class BillAcceptorWorker(QThread):
             if self._serial_conn is not None:
                 if self._insert_enabled:
                     try:
-                        self.cmd_insert_disable()
-                        self._log("[BILL] insert_disable ok")
+                        if protocol == "ICT104U":
+                            self._ict_set_enabled(False)
+                            self._log("[BILL][ICT104U] disable ok")
+                        else:
+                            self.cmd_insert_disable()
+                            self._log("[BILL] insert_disable ok")
                     except Exception as disable_exc:
                         self._log(f"[BILL] insert_disable failed: {disable_exc}")
                 try:
@@ -10238,6 +10600,8 @@ class AdminScreen(QWidget):
         self.bill_enabled_cb = QCheckBox(self)
         self.bill_profile_combo = QComboBox(self)
         self.bill_port_combo = QComboBox(self)
+        self.bill_value_map_input = QLineEdit(self)
+        self.bill_value_map_input.setPlaceholderText("1=5,2=10,3=20,4=50,5=100")
         self.pricing_prefix_input = QLineEdit(self)
         self.pricing_prefix_input.setPlaceholderText("KRW / ₩")
         self.pricing_prefix_input.setMaxLength(16)
@@ -10339,6 +10703,7 @@ class AdminScreen(QWidget):
         form.addRow("bill_enabled", self.bill_enabled_cb)
         form.addRow("bill_profile", self.bill_profile_combo)
         form.addRow("bill_port", self.bill_port_combo)
+        form.addRow("bill_value_map", self.bill_value_map_input)
         denoms_row = QWidget(self)
         denoms_layout = QHBoxLayout(denoms_row)
         denoms_layout.setContentsMargins(0, 0, 0, 0)
@@ -10918,6 +11283,7 @@ class AdminScreen(QWidget):
                 index = self.bill_port_combo.findText(normalized)
             if index >= 0:
                 self.bill_port_combo.setCurrentIndex(index)
+        self.bill_value_map_input.setText(format_bill_to_amount_map(profile.get("bill_to_amount")))
 
     def _on_bill_profile_changed(self, _index: int) -> None:
         if self._loading_bill_controls:
@@ -10941,6 +11307,9 @@ class AdminScreen(QWidget):
         if isinstance(denoms, dict):
             for key in denoms_map.keys():
                 denoms_map[key] = bool(denoms.get(key, denoms_map[key]))
+        bill_to_amount_text = format_bill_to_amount_map(incoming.get("bill_to_amount"))
+        if not bill_to_amount_text:
+            bill_to_amount_text = format_bill_to_amount_map(BILL_PROFILES.get(profile, {}).get("bill_to_amount"))
 
         self._loading_bill_controls = True
         self.bill_enabled_cb.setChecked(enabled)
@@ -10953,6 +11322,7 @@ class AdminScreen(QWidget):
             profile_index = 0
         self.bill_profile_combo.setCurrentIndex(profile_index)
         self._refresh_bill_ports(selected_port=port)
+        self.bill_value_map_input.setText(bill_to_amount_text)
         for denom, cb in self.bill_denom_cbs.items():
             cb.setChecked(bool(denoms_map.get(denom, False)))
         self._loading_bill_controls = False
@@ -10964,21 +11334,7 @@ class AdminScreen(QWidget):
         denoms = {
             denom: cb.isChecked() for denom, cb in self.bill_denom_cbs.items()
         }
-        bill_to_amount: dict[int, int] = {}
-        try:
-            current = self.main_window.get_bill_acceptor_settings()
-            raw_map = current.get("bill_to_amount") if isinstance(current, dict) else None
-            if isinstance(raw_map, dict):
-                for raw_key, raw_amount in raw_map.items():
-                    try:
-                        code = int(raw_key) & 0xFF
-                        amount = int(raw_amount)
-                    except Exception:
-                        continue
-                    if amount > 0:
-                        bill_to_amount[code] = amount
-        except Exception:
-            pass
+        bill_to_amount = parse_bill_to_amount_map(self.bill_value_map_input.text())
         return {
             "enabled": self.bill_enabled_cb.isChecked(),
             "profile": profile,
@@ -15697,30 +16053,16 @@ class KioskMainWindow(QMainWindow):
             for key in denoms.keys():
                 denoms[key] = cls._as_bool(default_denoms.get(key), denoms[key])
         profile_bill_map = profile_info.get("bill_to_amount")
-        if isinstance(profile_bill_map, dict):
-            for raw_key, raw_amount in profile_bill_map.items():
-                try:
-                    code = int(raw_key) & 0xFF
-                    amount = int(raw_amount)
-                except Exception:
-                    continue
-                if amount > 0:
-                    bill_to_amount[code] = amount
+        for code, amount in parse_bill_to_amount_map(profile_bill_map).items():
+            bill_to_amount[int(code) & 0xFF] = int(amount)
 
         raw_denoms = raw_settings.get("denoms")
         if isinstance(raw_denoms, dict):
             for key in denoms.keys():
                 denoms[key] = cls._as_bool(raw_denoms.get(key), denoms[key])
         raw_bill_map = raw_settings.get("bill_to_amount")
-        if isinstance(raw_bill_map, dict):
-            for raw_key, raw_amount in raw_bill_map.items():
-                try:
-                    code = int(raw_key) & 0xFF
-                    amount = int(raw_amount)
-                except Exception:
-                    continue
-                if amount > 0:
-                    bill_to_amount[code] = amount
+        for code, amount in parse_bill_to_amount_map(raw_bill_map).items():
+            bill_to_amount[int(code) & 0xFF] = int(amount)
 
         raw_port = raw_settings.get("port", profile_info.get("default_port", DEFAULT_BILL_ACCEPTOR_SETTINGS["port"]))
         port_text = str(raw_port).strip()
@@ -15749,17 +16091,7 @@ class KioskMainWindow(QMainWindow):
     def get_bill_acceptor_settings(self) -> dict:
         settings = dict(self.bill_acceptor_settings)
         denoms = settings.get("denoms")
-        raw_bill_map = settings.get("bill_to_amount")
-        bill_to_amount: dict[int, int] = {}
-        if isinstance(raw_bill_map, dict):
-            for raw_key, raw_amount in raw_bill_map.items():
-                try:
-                    code = int(raw_key) & 0xFF
-                    amount = int(raw_amount)
-                except Exception:
-                    continue
-                if amount > 0:
-                    bill_to_amount[code] = amount
+        bill_to_amount = parse_bill_to_amount_map(settings.get("bill_to_amount"))
         settings["denoms"] = dict(denoms) if isinstance(denoms, dict) else dict(DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"])
         settings["bill_to_amount"] = bill_to_amount
         return settings
@@ -18940,7 +19272,8 @@ class KioskMainWindow(QMainWindow):
             f"enabled={1 if normalized_bill['enabled'] else 0} "
             f"profile={normalized_bill['profile']} "
             f"port={normalized_bill['port']} "
-            f"denoms={json.dumps(normalized_bill['denoms'], ensure_ascii=False, separators=(',', ':'))}"
+            f"denoms={json.dumps(normalized_bill['denoms'], ensure_ascii=False, separators=(',', ':'))} "
+            f"bill_to_amount={json.dumps(normalized_bill['bill_to_amount'], ensure_ascii=False, sort_keys=True)}"
         )
         return forced_cash
 
