@@ -1364,6 +1364,7 @@ DEFAULT_BILL_ACCEPTOR_SETTINGS = {
     "profile": "KR_ONEPLUS_RS232_V1_7",
     "port": "AUTO",
     "baud": 9600,
+    "currency_code": "",
     "denoms": {
         "1000": True,
         "5000": True,
@@ -1372,6 +1373,82 @@ DEFAULT_BILL_ACCEPTOR_SETTINGS = {
     },
     "bill_to_amount": {},
 }
+
+
+_CURRENCY_SYMBOL_TO_CODE = {
+    "$": "USD",
+    "€": "EUR",
+    "£": "GBP",
+    "¥": "JPY",
+    "₩": "KRW",
+    "₱": "PHP",
+    "฿": "THB",
+}
+
+ICT104U_BILL_VALUE_PRESETS = {
+    "AED": [5, 10, 20, 50, 100, 200, 500, 1000],
+    "AUD": [5, 10, 20, 50, 100],
+    "CAD": [5, 10, 20, 50, 100],
+    "EUR": [5, 10, 20, 50, 100, 200, 500],
+    "GBP": [5, 10, 20, 50],
+    "HKD": [10, 20, 50, 100, 500, 1000],
+    "IDR": [1000, 2000, 5000, 10000, 20000, 50000, 100000],
+    "JPY": [1000, 2000, 5000, 10000],
+    "KRW": [1000, 5000, 10000, 50000],
+    "MYR": [1, 5, 10, 20, 50, 100],
+    "PHP": [20, 50, 100, 200, 500, 1000],
+    "QAR": [1, 5, 10, 50, 100, 500],
+    "SAR": [1, 5, 10, 50, 100, 500],
+    "SGD": [2, 5, 10, 50, 100, 1000],
+    "THB": [20, 50, 100, 500, 1000],
+    "TWD": [100, 200, 500, 1000, 2000],
+    "USD": [1, 5, 10, 20, 50, 100],
+    "VND": [10000, 20000, 50000, 100000, 200000, 500000],
+}
+
+
+def normalize_currency_code(raw: object) -> str:
+    text = str(raw or "").strip().upper()
+    if not text:
+        return ""
+    token_match = re.search(r"\b([A-Z]{3})\b", text)
+    if token_match:
+        return str(token_match.group(1)).upper()
+    letters = "".join(ch for ch in text if "A" <= ch <= "Z")
+    if len(letters) >= 3:
+        return letters[:3]
+    for symbol, code in _CURRENCY_SYMBOL_TO_CODE.items():
+        if symbol in text:
+            return code
+    return ""
+
+
+def build_bill_value_map_from_sequence(values: object) -> dict[int, int]:
+    result: dict[int, int] = {}
+    if not isinstance(values, (list, tuple)):
+        return result
+    for index, raw_amount in enumerate(values, start=1):
+        try:
+            amount = int(raw_amount)
+        except Exception:
+            continue
+        if amount > 0:
+            result[int(index)] = int(amount)
+    return result
+
+
+def suggest_bill_to_amount_map(profile_key: object, currency_hint: object) -> dict[int, int]:
+    key = str(profile_key or "").strip()
+    profile = BILL_PROFILES.get(key, {})
+    protocol = str(profile.get("protocol", "FRAME5_ASCII")).strip().upper()
+    currency_code = normalize_currency_code(currency_hint)
+    if protocol == "ICT104U":
+        preset = ICT104U_BILL_VALUE_PRESETS.get(currency_code)
+        if isinstance(preset, list):
+            mapped = build_bill_value_map_from_sequence(preset)
+            if mapped:
+                return mapped
+    return parse_bill_to_amount_map(profile.get("bill_to_amount"))
 
 
 def parse_bill_to_amount_map(raw: object) -> dict[int, int]:
@@ -10235,9 +10312,10 @@ class BillAcceptorWorker(QThread):
                     decoded_bill_code = self._ict_decode_bill_code(raw_bill_code)
                     amount = self._ict_lookup_amount(raw_bill_code)
                     if amount is None:
+                        currency_code = normalize_currency_code(self.settings.get("currency_code"))
                         self._log(
                             f"[BILL][ICT104U] escrow bill_code=0x{raw_bill_code:02X} "
-                            f"slot={decoded_bill_code} amount=UNKNOWN -> reject"
+                            f"slot={decoded_bill_code} amount=UNKNOWN currency={currency_code or '-'} -> reject"
                         )
                         if supports_insert_control:
                             self._ict_reject_current_bill()
@@ -10475,6 +10553,7 @@ class AdminScreen(QWidget):
         self.screen_name = "admin"
         self.hotspots: list[Hotspot] = []
         self._loading_bill_controls = False
+        self._last_auto_bill_value_map_text = ""
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(self._clear_status)
@@ -10660,6 +10739,7 @@ class AdminScreen(QWidget):
             self.bill_profile_combo.addItem(label, profile_key)
         self.bill_profile_combo.currentIndexChanged.connect(self._on_bill_profile_changed)
         self.bill_port_combo.setEditable(False)
+        self.pricing_prefix_input.textChanged.connect(self._on_pricing_prefix_changed)
 
         self.camera_backend_combo = QComboBox(self)
         self.camera_backend_combo.addItems(["auto", "edsdk", "dummy"])
@@ -11283,13 +11363,33 @@ class AdminScreen(QWidget):
                 index = self.bill_port_combo.findText(normalized)
             if index >= 0:
                 self.bill_port_combo.setCurrentIndex(index)
-        self.bill_value_map_input.setText(format_bill_to_amount_map(profile.get("bill_to_amount")))
+        self._refresh_bill_value_map_from_pricing(
+            force=True,
+            fallback_text=format_bill_to_amount_map(profile.get("bill_to_amount")),
+        )
 
     def _on_bill_profile_changed(self, _index: int) -> None:
         if self._loading_bill_controls:
             return
         profile_key = self._current_bill_profile_key()
         self._apply_bill_profile_defaults(profile_key)
+
+    def _suggested_bill_value_map_text(self) -> str:
+        profile_key = self._current_bill_profile_key()
+        pricing_prefix = self.pricing_prefix_input.text().strip()
+        return format_bill_to_amount_map(suggest_bill_to_amount_map(profile_key, pricing_prefix))
+
+    def _refresh_bill_value_map_from_pricing(self, force: bool = False, fallback_text: str = "") -> None:
+        suggested_text = self._suggested_bill_value_map_text().strip() or str(fallback_text or "").strip()
+        current_text = self.bill_value_map_input.text().strip()
+        if force or (not current_text) or current_text == self._last_auto_bill_value_map_text:
+            self.bill_value_map_input.setText(suggested_text)
+            self._last_auto_bill_value_map_text = suggested_text
+
+    def _on_pricing_prefix_changed(self, _text: str) -> None:
+        if self._loading_bill_controls:
+            return
+        self._refresh_bill_value_map_from_pricing(force=False)
 
     def _load_bill_acceptor_controls(self, bill_acceptor: Optional[dict]) -> None:
         defaults = dict(DEFAULT_BILL_ACCEPTOR_SETTINGS)
@@ -11307,9 +11407,13 @@ class AdminScreen(QWidget):
         if isinstance(denoms, dict):
             for key in denoms_map.keys():
                 denoms_map[key] = bool(denoms.get(key, denoms_map[key]))
-        bill_to_amount_text = format_bill_to_amount_map(incoming.get("bill_to_amount"))
+        pricing_prefix = self.pricing_prefix_input.text().strip()
+        raw_bill_to_amount_text = format_bill_to_amount_map(incoming.get("bill_to_amount"))
+        bill_to_amount_text = raw_bill_to_amount_text
         if not bill_to_amount_text:
-            bill_to_amount_text = format_bill_to_amount_map(BILL_PROFILES.get(profile, {}).get("bill_to_amount"))
+            bill_to_amount_text = format_bill_to_amount_map(
+                suggest_bill_to_amount_map(profile, pricing_prefix)
+            ) or format_bill_to_amount_map(BILL_PROFILES.get(profile, {}).get("bill_to_amount"))
 
         self._loading_bill_controls = True
         self.bill_enabled_cb.setChecked(enabled)
@@ -11323,6 +11427,7 @@ class AdminScreen(QWidget):
         self.bill_profile_combo.setCurrentIndex(profile_index)
         self._refresh_bill_ports(selected_port=port)
         self.bill_value_map_input.setText(bill_to_amount_text)
+        self._last_auto_bill_value_map_text = bill_to_amount_text if not raw_bill_to_amount_text else ""
         for denom, cb in self.bill_denom_cbs.items():
             cb.setChecked(bool(denoms_map.get(denom, False)))
         self._loading_bill_controls = False
@@ -11344,6 +11449,7 @@ class AdminScreen(QWidget):
                 else self.bill_port_combo.currentText().strip() or str(DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])
             ),
             "baud": baud,
+            "currency_code": normalize_currency_code(self.pricing_prefix_input.text().strip()),
             "denoms": denoms,
             "bill_to_amount": bill_to_amount,
         }
@@ -16028,7 +16134,7 @@ class KioskMainWindow(QMainWindow):
         return result
 
     @classmethod
-    def _normalize_bill_acceptor_settings(cls, raw_settings: object) -> dict:
+    def _normalize_bill_acceptor_settings(cls, raw_settings: object, pricing_prefix: object = "") -> dict:
         normalized = dict(DEFAULT_BILL_ACCEPTOR_SETTINGS)
         denoms = dict(DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"])
         bill_to_amount: dict[int, int] = {}
@@ -16048,12 +16154,18 @@ class KioskMainWindow(QMainWindow):
         normalized["profile"] = profile
 
         profile_info = BILL_PROFILES.get(profile, {})
+        currency_code = normalize_currency_code(
+            raw_settings.get("currency_code", pricing_prefix or DEFAULT_BILL_ACCEPTOR_SETTINGS["currency_code"])
+        )
+        normalized["currency_code"] = currency_code
         default_denoms = profile_info.get("default_denoms")
         if isinstance(default_denoms, dict):
             for key in denoms.keys():
                 denoms[key] = cls._as_bool(default_denoms.get(key), denoms[key])
         profile_bill_map = profile_info.get("bill_to_amount")
         for code, amount in parse_bill_to_amount_map(profile_bill_map).items():
+            bill_to_amount[int(code) & 0xFF] = int(amount)
+        for code, amount in suggest_bill_to_amount_map(profile, currency_code).items():
             bill_to_amount[int(code) & 0xFF] = int(amount)
 
         raw_denoms = raw_settings.get("denoms")
@@ -16086,7 +16198,11 @@ class KioskMainWindow(QMainWindow):
     def _resolve_bill_acceptor_settings(self) -> dict:
         config = self._read_config_dict()
         raw = config.get("bill_acceptor") if isinstance(config, dict) else None
-        return self._normalize_bill_acceptor_settings(raw)
+        pricing = config.get("pricing") if isinstance(config, dict) else None
+        pricing_prefix = ""
+        if isinstance(pricing, dict):
+            pricing_prefix = str(pricing.get("currency_prefix", "")).strip()
+        return self._normalize_bill_acceptor_settings(raw, pricing_prefix=pricing_prefix)
 
     def get_bill_acceptor_settings(self) -> dict:
         settings = dict(self.bill_acceptor_settings)
@@ -16094,6 +16210,7 @@ class KioskMainWindow(QMainWindow):
         bill_to_amount = parse_bill_to_amount_map(settings.get("bill_to_amount"))
         settings["denoms"] = dict(denoms) if isinstance(denoms, dict) else dict(DEFAULT_BILL_ACCEPTOR_SETTINGS["denoms"])
         settings["bill_to_amount"] = bill_to_amount
+        settings["currency_code"] = normalize_currency_code(settings.get("currency_code"))
         return settings
 
     def list_serial_ports(self) -> list[str]:
@@ -16143,7 +16260,8 @@ class KioskMainWindow(QMainWindow):
             return False
 
         normalized = self._normalize_bill_acceptor_settings(
-            settings if settings is not None else self.bill_acceptor_settings
+            settings if settings is not None else self.bill_acceptor_settings,
+            pricing_prefix=self.payment_pricing_settings.get("currency_prefix", ""),
         )
         if not bool(normalized.get("enabled", False)):
             print("[BILL] start blocked: bill_acceptor disabled")
@@ -19173,11 +19291,6 @@ class KioskMainWindow(QMainWindow):
         normalized_ai_styles = self._normalize_ai_styles_settings(source_ai_styles)
         config["ai_styles"] = normalized_ai_styles
         source_bill = bill_acceptor if bill_acceptor is not None else config.get("bill_acceptor")
-        normalized_bill = self._normalize_bill_acceptor_settings(source_bill)
-        config["bill_acceptor"] = normalized_bill
-        source_celebrity = celebrity if celebrity is not None else config.get("celebrity")
-        normalized_celebrity = self._normalize_celebrity_settings(source_celebrity)
-        config["celebrity"] = normalized_celebrity
         source_pricing = pricing if pricing is not None else config.get("pricing")
         normalized_pricing = self._normalize_pricing_settings(
             source_pricing,
@@ -19190,6 +19303,14 @@ class KioskMainWindow(QMainWindow):
             ),
         )
         config["pricing"] = normalized_pricing
+        normalized_bill = self._normalize_bill_acceptor_settings(
+            source_bill,
+            pricing_prefix=normalized_pricing.get("currency_prefix", ""),
+        )
+        config["bill_acceptor"] = normalized_bill
+        source_celebrity = celebrity if celebrity is not None else config.get("celebrity")
+        normalized_celebrity = self._normalize_celebrity_settings(source_celebrity)
+        config["celebrity"] = normalized_celebrity
         # Backward-compatible mirror.
         config["payment_pricing"] = {
             "default_price": int(normalized_pricing.get("default_price", DEFAULT_PRICING_SETTINGS["default_price"])),
@@ -19272,6 +19393,7 @@ class KioskMainWindow(QMainWindow):
             f"enabled={1 if normalized_bill['enabled'] else 0} "
             f"profile={normalized_bill['profile']} "
             f"port={normalized_bill['port']} "
+            f"currency={normalized_bill.get('currency_code', '')} "
             f"denoms={json.dumps(normalized_bill['denoms'], ensure_ascii=False, separators=(',', ':'))} "
             f"bill_to_amount={json.dumps(normalized_bill['bill_to_amount'], ensure_ascii=False, sort_keys=True)}"
         )
