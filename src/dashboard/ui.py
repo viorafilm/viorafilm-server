@@ -27,6 +27,10 @@ _UI_TEXT = {
             "logout": "로그아웃",
             "currency_unit": "화폐 단위",
             "currency_apply": "적용",
+            "timezone_active": "기준 시간대",
+            "timezone_scope": "적용 범위",
+            "timezone_name": "시간대",
+            "timezone_apply": "저장",
         },
         "login": {
             "subtitle": "관리자 로그인",
@@ -111,6 +115,10 @@ _UI_TEXT = {
             "logout": "Log Out",
             "currency_unit": "Currency Unit",
             "currency_apply": "Apply",
+            "timezone_active": "Display Timezone",
+            "timezone_scope": "Scope",
+            "timezone_name": "Timezone",
+            "timezone_apply": "Save",
         },
         "login": {
             "subtitle": "Admin Login",

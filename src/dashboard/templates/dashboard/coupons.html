@@ -80,7 +80,7 @@
       </div>
 
       <div class="col-md-2">
-        <label class="form-label">금액 ({{ dashboard_ui.currency_unit }})</label>
+        <label class="form-label">금액</label>
         <input class="form-control" name="amount" type="number" min="1" value="4000">
       </div>
 
@@ -120,6 +120,10 @@
   <input type="hidden" name="page" value="{{ page_obj.number }}">
   <div class="d-flex flex-wrap gap-2 mb-2">
     {% if can_edit %}
+    <div class="form-check align-self-center me-2">
+      <input class="form-check-input m-0" type="checkbox" id="couponSelectPage">
+      <label class="form-check-label small" for="couponSelectPage">현재 페이지 전체선택</label>
+    </div>
     <button class="btn btn-info btn-sm" type="submit" name="action" value="recover_missing_usage">누락 사용 복구</button>
     <button class="btn btn-danger btn-sm" type="submit" name="action" value="delete_selected">선택 삭제</button>
     <button class="btn btn-warning btn-sm" type="submit" name="action" value="delete_used">사용완료 삭제</button>
@@ -135,7 +139,11 @@
         <table class="table table-hover align-middle mb-0">
           <thead>
             <tr>
-              <th style="width:48px"></th>
+              <th style="width:48px">
+                {% if can_edit %}
+                <input class="form-check-input m-0" type="checkbox" id="couponSelectHeader" aria-label="현재 페이지 쿠폰 전체선택">
+                {% endif %}
+              </th>
               <th>코드</th>
               <th>금액</th>
               <th>만료</th>
@@ -148,9 +156,9 @@
           <tbody>
             {% for c in coupons %}
             <tr>
-              <td>{% if can_edit %}<input type="checkbox" name="coupon_ids" value="{{ c.id }}">{% endif %}</td>
+              <td>{% if can_edit %}<input class="form-check-input m-0" type="checkbox" name="coupon_ids" value="{{ c.id }}">{% endif %}</td>
               <td class="fw-semibold">{{ c.formatted_code }}</td>
-              <td>{{ dashboard_ui.currency_unit }} {{ c.amount }}</td>
+              <td>{{ c.amount }}</td>
               <td>{{ c.expires_at }}</td>
               <td>{{ c.status }}</td>
               <td>{% if c.used_by_device %}{{ c.used_by_device.device_code }}{% else %}-{% endif %}</td>
@@ -189,5 +197,52 @@
     </li>
   </ul>
 </nav>
+{% endif %}
+{% if can_edit %}
+<script>
+  (function () {
+    const pageToggle = document.getElementById("couponSelectPage");
+    const headerToggle = document.getElementById("couponSelectHeader");
+    const rowSelector = 'input[name="coupon_ids"]';
+
+    function getRows() {
+      return Array.from(document.querySelectorAll(rowSelector));
+    }
+
+    function syncMasterState() {
+      const rows = getRows();
+      const allChecked = rows.length > 0 && rows.every((row) => row.checked);
+      const anyChecked = rows.some((row) => row.checked);
+      [pageToggle, headerToggle].forEach((toggle) => {
+        if (!toggle) {
+          return;
+        }
+        toggle.checked = allChecked;
+        toggle.indeterminate = anyChecked && !allChecked;
+      });
+    }
+
+    function setAll(checked) {
+      getRows().forEach((row) => {
+        row.checked = checked;
+      });
+      syncMasterState();
+    }
+
+    [pageToggle, headerToggle].forEach((toggle) => {
+      if (!toggle) {
+        return;
+      }
+      toggle.addEventListener("change", function () {
+        setAll(this.checked);
+      });
+    });
+
+    getRows().forEach((row) => {
+      row.addEventListener("change", syncMasterState);
+    });
+    syncMasterState();
+  })();
+</script>
 {% endif %}
 {% endblock %}

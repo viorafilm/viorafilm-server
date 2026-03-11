@@ -1,5 +1,7 @@
 ﻿import csv
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+from functools import lru_cache
+from zoneinfo import ZoneInfo, available_timezones
 
 from django.conf import settings
 from django.contrib import messages
@@ -19,6 +21,7 @@ from accounts.models import UserRole
 from alerts.notifier import send_email_targets
 from alerts.models import ChannelType, NotificationChannel
 from audit.service import log_event
+from configs.models import ConfigProfile, ConfigScope
 from core.models import Branch, Device, Organization
 from coupons.models import Coupon
 from coupons.service import (
@@ -49,6 +52,25 @@ AI_EST_SERVER_COST_MULTIPLIER = 10.0
 AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
 MONTHLY_SERVER_FEE_PER_DEVICE = 60000
 COUPON_PER_PAGE_OPTIONS = (10, 30, 50, 100)
+DASHBOARD_TIMEZONE_KEY = "dashboard_timezone"
+DEFAULT_DASHBOARD_TIMEZONE = "Asia/Seoul"
+PREFERRED_DASHBOARD_TIMEZONES = (
+    "Asia/Seoul",
+    "Asia/Tokyo",
+    "Asia/Kolkata",
+    "Asia/Singapore",
+    "Asia/Bangkok",
+    "Asia/Dubai",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Pacific/Auckland",
+    "UTC",
+)
 
 
 def _is_super(user):
@@ -259,6 +281,198 @@ def _pick_valid_int(value):
         return None
 
 
+def _latest_config_profile(scope, org=None, branch=None, device=None):
+    return ConfigProfile.objects.filter(scope=scope, org=org, branch=branch, device=device).order_by("-version").first()
+
+
+def _normalize_dashboard_timezone_name(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        ZoneInfo(raw)
+        return raw
+    except Exception:
+        return None
+
+
+def _default_dashboard_timezone_name():
+    return _normalize_dashboard_timezone_name(getattr(settings, "TIME_ZONE", "")) or DEFAULT_DASHBOARD_TIMEZONE
+
+
+def _load_dashboard_tzinfo(value=None):
+    resolved = _normalize_dashboard_timezone_name(value) or _default_dashboard_timezone_name()
+    try:
+        return resolved, ZoneInfo(resolved)
+    except Exception:
+        fallback = DEFAULT_DASHBOARD_TIMEZONE
+        return fallback, ZoneInfo(fallback)
+
+
+@lru_cache(maxsize=1)
+def _ordered_dashboard_timezone_names():
+    ordered = []
+    seen = set()
+    try:
+        discovered = sorted(available_timezones())
+    except Exception:
+        discovered = []
+    for name in list(PREFERRED_DASHBOARD_TIMEZONES) + discovered + [_default_dashboard_timezone_name()]:
+        normalized = _normalize_dashboard_timezone_name(name)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return tuple(ordered)
+
+
+def _local_now(tzinfo):
+    return timezone.localtime(timezone.now(), tzinfo)
+
+
+def _local_today(tzinfo):
+    return _local_now(tzinfo).date()
+
+
+def _make_aware_local(naive_value, tzinfo):
+    try:
+        return timezone.make_aware(naive_value, timezone=tzinfo)
+    except TypeError:
+        return timezone.make_aware(naive_value, tzinfo)
+
+
+def _local_date_range_bounds(start_date=None, end_date=None, tzinfo=None):
+    start_dt = None
+    end_dt = None
+    if start_date is not None:
+        start_dt = _make_aware_local(datetime.combine(start_date, time.min), tzinfo)
+    if end_date is not None:
+        end_dt = _make_aware_local(datetime.combine(end_date + timedelta(days=1), time.min), tzinfo)
+    return start_dt, end_dt
+
+
+def _apply_local_date_range_filter(qs, field_name, start_date=None, end_date=None, tzinfo=None):
+    start_dt, end_dt = _local_date_range_bounds(start_date=start_date, end_date=end_date, tzinfo=tzinfo)
+    if start_dt is not None:
+        qs = qs.filter(**{f"{field_name}__gte": start_dt})
+    if end_dt is not None:
+        qs = qs.filter(**{f"{field_name}__lt": end_dt})
+    return qs
+
+
+def _resolve_dashboard_scope_objects(user, filters=None):
+    filters = filters or {}
+    selected_branch_id = _pick_valid_int(filters.get("branch_id"))
+    selected_org_id = _pick_valid_int(filters.get("org_id"))
+
+    branch_obj = None
+    org_obj = None
+
+    if selected_branch_id is not None:
+        branch_obj = _available_branches(user).select_related("org").filter(id=selected_branch_id).first()
+        if branch_obj is not None:
+            org_obj = branch_obj.org
+
+    if org_obj is None and selected_org_id is not None:
+        org_obj = _available_orgs(user).filter(id=selected_org_id).first()
+
+    if branch_obj is None and getattr(user, "branch_id", None) and not _is_super(user):
+        branch_obj = Branch.objects.select_related("org").filter(id=user.branch_id).first()
+        if branch_obj is not None and org_obj is None:
+            org_obj = branch_obj.org
+
+    if org_obj is None and getattr(user, "organization_id", None) and not _is_super(user):
+        org_obj = Organization.objects.filter(id=user.organization_id).first()
+
+    return org_obj, branch_obj
+
+
+def _build_dashboard_timezone_scope_options(user, org_obj, branch_obj):
+    options = []
+    options.append({"value": "global", "label": "GLOBAL"})
+    if org_obj is not None:
+        options.append({"value": "org", "label": f"ORG: {org_obj.code}"})
+    if branch_obj is not None:
+        options.append({"value": "branch", "label": f"BRANCH: {branch_obj.org.code}/{branch_obj.code}"})
+    return options
+
+
+def _resolve_dashboard_timezone_context(user, filters=None):
+    org_obj, branch_obj = _resolve_dashboard_scope_objects(user, filters)
+    global_profile = _latest_config_profile(ConfigScope.GLOBAL, org=None, branch=None, device=None)
+    org_profile = _latest_config_profile(ConfigScope.ORG, org=org_obj, branch=None, device=None) if org_obj else None
+    branch_profile = _latest_config_profile(ConfigScope.BRANCH, org=None, branch=branch_obj, device=None) if branch_obj else None
+
+    global_name = (
+        _normalize_dashboard_timezone_name((global_profile.payload or {}).get(DASHBOARD_TIMEZONE_KEY))
+        if global_profile
+        else None
+    )
+    org_name = (
+        _normalize_dashboard_timezone_name((org_profile.payload or {}).get(DASHBOARD_TIMEZONE_KEY))
+        if org_profile
+        else None
+    )
+    branch_name = (
+        _normalize_dashboard_timezone_name((branch_profile.payload or {}).get(DASHBOARD_TIMEZONE_KEY))
+        if branch_profile
+        else None
+    )
+
+    source_scope = "global"
+    resolved_name = global_name or _default_dashboard_timezone_name()
+    if org_name:
+        source_scope = "org"
+        resolved_name = org_name
+    if branch_name:
+        source_scope = "branch"
+        resolved_name = branch_name
+
+    active_name, active_tzinfo = _load_dashboard_tzinfo(resolved_name)
+    scope_options = _build_dashboard_timezone_scope_options(user, org_obj, branch_obj)
+    scope_values = {item["value"] for item in scope_options}
+    if branch_obj is not None and "branch" in scope_values:
+        selected_scope = "branch"
+    elif org_obj is not None and "org" in scope_values:
+        selected_scope = "org"
+    elif "global" in scope_values:
+        selected_scope = "global"
+    else:
+        selected_scope = scope_options[0]["value"] if scope_options else ""
+
+    return {
+        "dashboard_tz_name": active_name,
+        "dashboard_tz_source_scope": source_scope,
+        "dashboard_tz_source_org": org_obj,
+        "dashboard_tz_source_branch": branch_obj,
+        "dashboard_tz_scope_options": scope_options,
+        "dashboard_tz_selected_scope": selected_scope,
+        "dashboard_tz_choices": _ordered_dashboard_timezone_names(),
+        "dashboard_tz_can_edit": bool(scope_options),
+        "dashboard_tz_org_id": int(org_obj.id) if org_obj is not None else "",
+        "dashboard_tz_branch_id": int(branch_obj.id) if branch_obj is not None else "",
+        "dashboard_tzinfo": active_tzinfo,
+    }
+
+
+def _render_dashboard_page(request, template_name, context, tzinfo):
+    with timezone.override(tzinfo):
+        return render(request, template_name, context)
+
+
+def _render_dashboard_partial(request, template_name, context, tzinfo):
+    with timezone.override(tzinfo):
+        return render_to_string(template_name, context, request=request)
+
+
+def _build_dashboard_page_context(user, filters=None, **extra):
+    tz_context = _resolve_dashboard_timezone_context(user, filters)
+    tzinfo = tz_context["dashboard_tzinfo"]
+    context = dict(extra)
+    context.update(tz_context)
+    return context, tzinfo
+
+
 def _resolve_scope_filters(user, request):
     if request.method == "POST":
         raw_org = request.POST.get("org_id") or request.GET.get("org_id")
@@ -328,15 +542,21 @@ def _query_params_from_filters(filters, extra=None):
     return params
 
 
-def _build_sales_summary(user):
+def _build_sales_summary(user, tzinfo):
     sales = _scoped_sales(user)
-    today = timezone.localdate()
-    now_local = timezone.localtime()
-    today_total = sales.filter(created_at__date=today).aggregate(v=Sum("price_total"))["v"] or 0
-    month_total = (
-        sales.filter(created_at__year=now_local.year, created_at__month=now_local.month).aggregate(v=Sum("price_total"))["v"]
-        or 0
-    )
+    today = _local_today(tzinfo)
+    now_local = _local_now(tzinfo)
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    today_total = _apply_local_date_range_filter(sales, "created_at", today, today, tzinfo).aggregate(v=Sum("price_total"))[
+        "v"
+    ] or 0
+    month_total = _apply_local_date_range_filter(
+        sales,
+        "created_at",
+        start_date=now_local.date().replace(day=1),
+        end_date=next_month - timedelta(days=1),
+        tzinfo=tzinfo,
+    ).aggregate(v=Sum("price_total"))["v"] or 0
     sales_count = sales.count()
     return {
         "today_total": int(today_total),
@@ -355,12 +575,12 @@ def _parse_date_ymd(value):
         return None
 
 
-def _resolve_sales_period(request):
+def _resolve_sales_period(request, tzinfo):
     period = str(request.GET.get("period") or "month").strip().lower()
     if period not in {"week", "month", "custom"}:
         period = "month"
 
-    today = timezone.localdate()
+    today = _local_today(tzinfo)
     if period == "week":
         start_date = today - timedelta(days=6)
         end_date = today
@@ -379,19 +599,15 @@ def _resolve_sales_period(request):
     return {"period": period, "start_date": start_date, "end_date": end_date}
 
 
-def _apply_sales_period_filter(qs, period_info):
+def _apply_sales_period_filter(qs, period_info, tzinfo):
     start_date = period_info.get("start_date")
     end_date = period_info.get("end_date")
-    if start_date is not None:
-        qs = qs.filter(created_at__date__gte=start_date)
-    if end_date is not None:
-        qs = qs.filter(created_at__date__lte=end_date)
-    return qs
+    return _apply_local_date_range_filter(qs, "created_at", start_date=start_date, end_date=end_date, tzinfo=tzinfo)
 
 
-def _build_sales_chart_payload(sales_qs):
+def _build_sales_chart_payload(sales_qs, tzinfo):
     rows = list(
-        sales_qs.annotate(day=TruncDate("created_at"))
+        sales_qs.annotate(day=TruncDate("created_at", tzinfo=tzinfo))
         .values("day")
         .annotate(total=Sum("price_total"), tx_count=Count("id"))
         .order_by("day")
@@ -403,13 +619,13 @@ def _build_sales_chart_payload(sales_qs):
     }
 
 
-def _resolve_billing_month(request):
-    return _parse_billing_month(request.GET.get("billing_month"))
+def _resolve_billing_month(request, tzinfo):
+    return _parse_billing_month(request.GET.get("billing_month"), tzinfo)
 
 
-def _parse_billing_month(value):
+def _parse_billing_month(value, tzinfo):
     raw = str(value or "").strip()
-    today = timezone.localdate()
+    today = _local_today(tzinfo)
     default_month = today.replace(day=1)
     if not raw:
         return default_month
@@ -420,10 +636,10 @@ def _parse_billing_month(value):
         return default_month
 
 
-def _billing_month_range(month_first):
+def _billing_month_range(month_first, tzinfo):
     next_month = (month_first.replace(day=28) + timedelta(days=4)).replace(day=1)
     month_last = next_month - timedelta(days=1)
-    today = timezone.localdate()
+    today = _local_today(tzinfo)
     end_date = month_last
     if month_first.year == today.year and month_first.month == today.month:
         end_date = today
@@ -442,8 +658,14 @@ def _shift_month(month_first, delta):
     return month_first.replace(year=year, month=month, day=1)
 
 
-def _build_ai_branch_billing(sales_qs, start_date, end_date):
-    scoped = sales_qs.filter(created_at__date__gte=start_date, created_at__date__lte=end_date).select_related("org", "branch")
+def _build_ai_branch_billing(sales_qs, start_date, end_date, tzinfo):
+    scoped = _apply_local_date_range_filter(
+        sales_qs.select_related("org", "branch"),
+        "created_at",
+        start_date=start_date,
+        end_date=end_date,
+        tzinfo=tzinfo,
+    )
     branch_map = {}
     total_ai_sales = 0
     total_ai_images = 0
@@ -491,7 +713,7 @@ def _build_ai_branch_billing(sales_qs, start_date, end_date):
     return rows, total_ai_sales, total_ai_images, total_billing
 
 
-def _build_monthly_billing_rows(user, filters, billing_month, ui_text):
+def _build_monthly_billing_rows(user, filters, billing_month, ui_text, tzinfo):
     branches_qs = _available_branches(user)
     if filters.get("org_id") is not None:
         branches_qs = branches_qs.filter(org_id=filters["org_id"])
@@ -499,7 +721,7 @@ def _build_monthly_billing_rows(user, filters, billing_month, ui_text):
         branches_qs = branches_qs.filter(id=filters["branch_id"])
     branches = list(branches_qs.select_related("org"))
     branch_ids = [int(branch.id) for branch in branches]
-    start_date, end_date, month_last = _billing_month_range(billing_month)
+    start_date, end_date, month_last = _billing_month_range(billing_month, tzinfo)
     server_fee_unit = int(max(0, MONTHLY_SERVER_FEE_PER_DEVICE))
 
     device_count_map = {}
@@ -519,6 +741,7 @@ def _build_monthly_billing_rows(user, filters, billing_month, ui_text):
         sales_qs,
         start_date,
         end_date,
+        tzinfo,
     )
     ai_map = {
         int(row.get("branch_id") or 0): dict(row)
@@ -598,7 +821,7 @@ def _build_monthly_billing_rows(user, filters, billing_month, ui_text):
     }
 
 
-def _build_ops_dashboard(user, filters):
+def _build_ops_dashboard(user, filters, tzinfo):
     devices_qs = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
     device_rows = _build_device_rows(user, devices_qs=devices_qs)
     device_ids = [int(row["device"].id) for row in device_rows]
@@ -661,7 +884,7 @@ def _build_ops_dashboard(user, filters):
         "summary": summary,
         "device_rows": device_rows,
         "recent_share_rows": recent_share_rows,
-        "generated_at": timezone.localtime(now),
+        "generated_at": timezone.localtime(now, tzinfo),
     }
 
 
@@ -746,6 +969,66 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
     return rows
 
 
+def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=None, branch_id=None):
+    normalized_name = _normalize_dashboard_timezone_name(timezone_name)
+    if not normalized_name:
+        raise ValueError("유효한 시간대를 선택하세요.")
+
+    scope_value = str(scope_value or "").strip().lower()
+    target_scope = None
+    target_org = None
+    target_branch = None
+    available_orgs = _available_orgs(user)
+    available_branches = _available_branches(user)
+
+    if scope_value == "global":
+        target_scope = ConfigScope.GLOBAL
+    elif scope_value == "org":
+        target_org = available_orgs.filter(id=_pick_valid_int(org_id)).first()
+        if target_org is None and getattr(user, "organization_id", None):
+            target_org = available_orgs.filter(id=user.organization_id).first()
+        if target_org is None and getattr(user, "branch_id", None):
+            branch_obj = available_branches.select_related("org").filter(id=user.branch_id).first()
+            if branch_obj is not None:
+                target_org = branch_obj.org
+        if target_org is None:
+            raise ValueError("적용할 조직을 찾을 수 없습니다.")
+        target_scope = ConfigScope.ORG
+    elif scope_value == "branch":
+        branch_pk = _pick_valid_int(branch_id)
+        target_branch = available_branches.select_related("org").filter(id=branch_pk).first()
+        if target_branch is None and getattr(user, "branch_id", None):
+            target_branch = available_branches.select_related("org").filter(id=user.branch_id).first()
+        if target_branch is None:
+            raise ValueError("적용할 지점을 찾을 수 없습니다.")
+        target_scope = ConfigScope.BRANCH
+    else:
+        raise ValueError("지원하지 않는 시간대 범위입니다.")
+
+    latest = _latest_config_profile(
+        target_scope,
+        org=target_org if target_scope == ConfigScope.ORG else None,
+        branch=target_branch if target_scope == ConfigScope.BRANCH else None,
+        device=None,
+    )
+    payload = dict(latest.payload or {}) if latest else {}
+    payload[DASHBOARD_TIMEZONE_KEY] = normalized_name
+    ConfigProfile.objects.create(
+        scope=target_scope,
+        org=target_org if target_scope == ConfigScope.ORG else None,
+        branch=target_branch if target_scope == ConfigScope.BRANCH else None,
+        device=None,
+        payload=payload,
+        updated_by=user,
+    )
+
+    if target_scope == ConfigScope.GLOBAL:
+        return f"전역 기준 시간이 {normalized_name}로 저장되었습니다."
+    if target_scope == ConfigScope.ORG:
+        return f"{target_org.code} 조직 기준 시간이 {normalized_name}로 저장되었습니다."
+    return f"{target_branch.org.code}/{target_branch.code} 지점 기준 시간이 {normalized_name}로 저장되었습니다."
+
+
 @never_cache
 def login_view(request):
     ui_lang = resolve_dashboard_lang(request)
@@ -799,26 +1082,54 @@ def currency_unit_view(request):
 
 @login_required(login_url="/dashboard/login")
 @never_cache
+def dashboard_timezone_view(request):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    next_url = str(request.POST.get("next") or "").strip()
+    if not next_url.startswith("/dashboard"):
+        next_url = "/dashboard/"
+    try:
+        message = _save_dashboard_timezone_profile(
+            request.user,
+            scope_value=request.POST.get("timezone_scope"),
+            timezone_name=request.POST.get("timezone_name"),
+            org_id=request.POST.get("org_id"),
+            branch_id=request.POST.get("branch_id"),
+        )
+    except PermissionError as exc:
+        return HttpResponseForbidden(str(exc))
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect(next_url)
+
+    messages.success(request, message)
+    return redirect(next_url)
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
 def index_view(request):
-    summary = _build_sales_summary(request.user)
-    return render(
-        request,
-        "dashboard/index.html",
+    context, tzinfo = _build_dashboard_page_context(request.user)
+    summary = _build_sales_summary(request.user, tzinfo)
+    context.update(
         {
             "today_total": summary["today_total"],
             "month_total": summary["month_total"],
             "sales_count": summary["sales_count"],
             "can_edit": not _is_viewer(request.user),
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/index.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def index_live_view(request):
-    summary = _build_sales_summary(request.user)
+    tz_context = _resolve_dashboard_timezone_context(request.user)
+    tzinfo = tz_context["dashboard_tzinfo"]
+    summary = _build_sales_summary(request.user, tzinfo)
     summary["ok"] = True
-    summary["generated_at"] = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+    summary["generated_at"] = timezone.localtime(timezone.now(), tzinfo).strftime("%Y-%m-%d %H:%M:%S")
     return JsonResponse(summary)
 
 
@@ -827,6 +1138,7 @@ def index_live_view(request):
 def devices_view(request):
     user = request.user
     filters = _resolve_scope_filters(user, request)
+    context, tzinfo = _build_dashboard_page_context(user, filters)
     can_edit_notifications = not _is_viewer(user)
     can_manage_locks = not _is_viewer(user)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
@@ -862,7 +1174,7 @@ def devices_view(request):
                     "현재 이메일 백엔드가 콘솔 모드입니다. 실제 메일 발송을 위해 SMTP 설정을 먼저 입력하세요.",
                 )
                 return redirect("dashboard_devices")
-            now_local = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+            now_local = timezone.localtime(timezone.now(), tzinfo).strftime("%Y-%m-%d %H:%M:%S")
             subject = "[Viorafilm] 테스트 알림 메일"
             body = (
                 "이 메일은 Viorafilm 대시보드에서 발송한 테스트 알림입니다.\n"
@@ -931,9 +1243,7 @@ def devices_view(request):
     filtered_devices = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
     rows = _build_device_rows(user, only_locked=only_locked, devices_qs=filtered_devices)
 
-    return render(
-        request,
-        "dashboard/devices.html",
+    context.update(
         {
             "rows": rows,
             "only_locked": only_locked,
@@ -944,8 +1254,9 @@ def devices_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/devices.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
@@ -953,22 +1264,25 @@ def devices_view(request):
 def devices_live_view(request):
     user = request.user
     filters = _resolve_scope_filters(user, request)
+    tz_context = _resolve_dashboard_timezone_context(user, filters)
+    tzinfo = tz_context["dashboard_tzinfo"]
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
     filtered_devices = _apply_org_branch_filter(_scoped_devices(user), "org_id", "branch_id", filters)
     rows = _build_device_rows(user, only_locked=only_locked, devices_qs=filtered_devices)
     can_manage_locks = not _is_viewer(user)
-    tbody_html = render_to_string(
+    tbody_html = _render_dashboard_partial(
+        request,
         "dashboard/_devices_tbody.html",
         {
             "rows": rows,
             "can_manage_locks": can_manage_locks,
         },
-        request=request,
+        tzinfo,
     )
     return JsonResponse(
         {
             "ok": True,
-            "generated_at": timezone.localtime().strftime("%Y-%m-%d %H:%M:%S"),
+            "generated_at": timezone.localtime(timezone.now(), tzinfo).strftime("%Y-%m-%d %H:%M:%S"),
             "count": len(rows),
             "tbody_html": tbody_html,
         }
@@ -985,8 +1299,10 @@ def billing_view(request):
     ui_text = get_dashboard_text(ui_lang)
     billing_text = ui_text["billing"]
     filters = _resolve_scope_filters(user, request)
+    context, tzinfo = _build_dashboard_page_context(user, filters)
     billing_month = _parse_billing_month(
-        request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month")
+        request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month"),
+        tzinfo,
     )
     can_edit = not _is_viewer(user)
 
@@ -1067,7 +1383,7 @@ def billing_view(request):
             return redirect(f"/dashboard/billing?{urlencode(params)}")
         return redirect("dashboard_billing")
 
-    billing_data = _build_monthly_billing_rows(user, filters, billing_month, ui_text)
+    billing_data = _build_monthly_billing_rows(user, filters, billing_month, ui_text, tzinfo)
     prev_month = _shift_month(billing_month, -1)
     next_month = _shift_month(billing_month, 1)
     billing_nav_base = _query_params_from_filters(
@@ -1080,9 +1396,7 @@ def billing_view(request):
     prev_month_params["billing_month"] = prev_month.strftime("%Y-%m")
     next_month_params = dict(billing_nav_base)
     next_month_params["billing_month"] = next_month.strftime("%Y-%m")
-    return render(
-        request,
-        "dashboard/billing.html",
+    context.update(
         {
             "billing_text": billing_text,
             "billing_month_value": billing_month.strftime("%Y-%m"),
@@ -1104,18 +1418,18 @@ def billing_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/billing.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def ops_view(request):
     filters = _resolve_scope_filters(request.user, request)
-    ops_data = _build_ops_dashboard(request.user, filters)
-    return render(
-        request,
-        "dashboard/ops.html",
+    context, tzinfo = _build_dashboard_page_context(request.user, filters)
+    ops_data = _build_ops_dashboard(request.user, filters, tzinfo)
+    context.update(
         {
             "ops_summary": ops_data["summary"],
             "ops_device_rows": ops_data["device_rows"],
@@ -1125,17 +1439,19 @@ def ops_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/ops.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def sales_view(request):
     filters = _resolve_scope_filters(request.user, request)
-    period_info = _resolve_sales_period(request)
+    context, tzinfo = _build_dashboard_page_context(request.user, filters)
+    period_info = _resolve_sales_period(request, tzinfo)
     sales_base_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
-    sales_qs = _apply_sales_period_filter(sales_base_qs, period_info)
+    sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
     sales = list(sales_qs[:300])
     total_amount = int(sales_qs.aggregate(v=Sum("price_total")).get("v") or 0)
     total_count = int(sales_qs.count())
@@ -1163,18 +1479,17 @@ def sales_view(request):
         if mode == "ai":
             ai_generated_images += sale_ai_images
 
-    billing_month = _resolve_billing_month(request)
-    billing_start_date, billing_end_date, billing_month_last = _billing_month_range(billing_month)
+    billing_month = _resolve_billing_month(request, tzinfo)
+    billing_start_date, billing_end_date, billing_month_last = _billing_month_range(billing_month, tzinfo)
     ai_branch_rows, ai_branch_sales_count, ai_branch_images_count, ai_branch_billing_total = _build_ai_branch_billing(
         sales_base_qs,
         billing_start_date,
         billing_end_date,
+        tzinfo,
     )
 
-    chart_payload = _build_sales_chart_payload(sales_qs)
-    return render(
-        request,
-        "dashboard/sales.html",
+    chart_payload = _build_sales_chart_payload(sales_qs, tzinfo)
+    context.update(
         {
             "sales": sales,
             "sales_total_amount": total_amount,
@@ -1200,17 +1515,20 @@ def sales_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/sales.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def sales_export_view(request):
     filters = _resolve_scope_filters(request.user, request)
-    period_info = _resolve_sales_period(request)
+    tz_context = _resolve_dashboard_timezone_context(request.user, filters)
+    tzinfo = tz_context["dashboard_tzinfo"]
+    period_info = _resolve_sales_period(request, tzinfo)
     sales_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
-    sales_qs = _apply_sales_period_filter(sales_qs, period_info)
+    sales_qs = _apply_sales_period_filter(sales_qs, period_info, tzinfo)
 
     rows = []
     for s in sales_qs.order_by("-created_at").iterator():
@@ -1220,7 +1538,7 @@ def sales_export_view(request):
             compose_mode = "normal"
         rows.append(
             [
-                timezone.localtime(s.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+                timezone.localtime(s.created_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S"),
                 getattr(s.org, "code", ""),
                 getattr(s.branch, "code", ""),
                 getattr(s.device, "device_code", ""),
@@ -1237,7 +1555,7 @@ def sales_export_view(request):
             ]
         )
 
-    filename = f"viorafilm_sales_{timezone.localtime().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"viorafilm_sales_{timezone.localtime(timezone.now(), tzinfo).strftime('%Y%m%d_%H%M%S')}.csv"
     return _csv_response(
         filename=filename,
         headers=[
@@ -1265,6 +1583,7 @@ def sales_export_view(request):
 def coupons_view(request):
     user = request.user
     filters = _resolve_scope_filters(user, request)
+    context, tzinfo = _build_dashboard_page_context(user, filters)
     can_edit = not _is_viewer(user)
     coupons = _apply_org_branch_filter(
         _scoped_coupons(user),
@@ -1430,9 +1749,7 @@ def coupons_view(request):
         for num in range(max(1, page_obj.number - 2), min(paginator.num_pages, page_obj.number + 2) + 1)
     ]
 
-    return render(
-        request,
-        "dashboard/coupons.html",
+    context.update(
         {
             "coupons": page_obj.object_list,
             "page_obj": page_obj,
@@ -1451,14 +1768,17 @@ def coupons_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/coupons.html", context, tzinfo)
 
 
 @login_required(login_url="/dashboard/login")
 @never_cache
 def coupons_export_view(request):
     filters = _resolve_scope_filters(request.user, request)
+    tz_context = _resolve_dashboard_timezone_context(request.user, filters)
+    tzinfo = tz_context["dashboard_tzinfo"]
     coupons_qs = _apply_org_branch_filter(
         _scoped_coupons(request.user),
         "batch__org_id",
@@ -1475,9 +1795,9 @@ def coupons_export_view(request):
                 c.currency,
                 c.amount,
                 c.status,
-                timezone.localtime(c.created_at).strftime("%Y-%m-%d %H:%M:%S"),
-                timezone.localtime(c.expires_at).strftime("%Y-%m-%d %H:%M:%S"),
-                timezone.localtime(c.used_at).strftime("%Y-%m-%d %H:%M:%S") if c.used_at else "",
+                timezone.localtime(c.created_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S"),
+                timezone.localtime(c.expires_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S"),
+                timezone.localtime(c.used_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S") if c.used_at else "",
                 getattr(c.batch.org, "code", "") if c.batch else "",
                 getattr(c.batch.branch, "code", "") if c.batch else "",
                 c.used_session_id or "",
@@ -1485,7 +1805,7 @@ def coupons_export_view(request):
             ]
         )
 
-    filename = f"viorafilm_coupons_{timezone.localtime().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"viorafilm_coupons_{timezone.localtime(timezone.now(), tzinfo).strftime('%Y%m%d_%H%M%S')}.csv"
     return _csv_response(
         filename=filename,
         headers=[
@@ -1510,6 +1830,7 @@ def coupons_export_view(request):
 @never_cache
 def photos_view(request):
     filters = _resolve_scope_filters(request.user, request)
+    context, tzinfo = _build_dashboard_page_context(request.user, filters)
     q = (request.GET.get("q") or "").strip()
     devices_qs = _apply_org_branch_filter(_scoped_devices(request.user), "org_id", "branch_id", filters)
     device_ids = list(devices_qs.values_list("id", flat=True))
@@ -1563,9 +1884,7 @@ def photos_view(request):
                 "original_urls": original_urls,
             }
         )
-    return render(
-        request,
-        "dashboard/photos.html",
+    context.update(
         {
             "rows": rows,
             "q": q,
@@ -1573,5 +1892,6 @@ def photos_view(request):
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
             "filter_branches": filters["branches"],
-        },
+        }
     )
+    return _render_dashboard_page(request, "dashboard/photos.html", context, tzinfo)

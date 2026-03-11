@@ -154,6 +154,30 @@
       <div class="topbar">
         <h1 class="page-title">{{ dashboard_ui.text.base.page_title }}</h1>
         <div class="d-flex flex-wrap align-items-center justify-content-end gap-2">
+          <div class="small text-secondary">
+            {{ dashboard_ui.text.base.timezone_active }}: <strong>{{ dashboard_tz_name|default:"Asia/Seoul" }}</strong>
+          </div>
+          {% if dashboard_tz_can_edit %}
+          <form method="post" action="{% url 'dashboard_timezone' %}" class="d-flex flex-wrap align-items-center gap-2 mb-0">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            {% if dashboard_tz_org_id %}<input type="hidden" name="org_id" value="{{ dashboard_tz_org_id }}">{% endif %}
+            {% if dashboard_tz_branch_id %}<input type="hidden" name="branch_id" value="{{ dashboard_tz_branch_id }}">{% endif %}
+            <label class="small text-secondary" for="dashboardTimezoneScope">{{ dashboard_ui.text.base.timezone_scope }}</label>
+            <select class="form-select form-select-sm" id="dashboardTimezoneScope" name="timezone_scope" style="width: 140px;">
+              {% for item in dashboard_tz_scope_options %}
+              <option value="{{ item.value }}" {% if dashboard_tz_selected_scope == item.value %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+            <label class="small text-secondary" for="dashboardTimezoneName">{{ dashboard_ui.text.base.timezone_name }}</label>
+            <select class="form-select form-select-sm" id="dashboardTimezoneName" name="timezone_name" style="width: 210px;">
+              {% for tz_name in dashboard_tz_choices %}
+              <option value="{{ tz_name }}" {% if dashboard_tz_name == tz_name %}selected{% endif %}>{{ tz_name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-outline-secondary" type="submit">{{ dashboard_ui.text.base.timezone_apply }}</button>
+          </form>
+          {% endif %}
           <form method="post" action="{{ dashboard_ui.currency_action }}" class="d-flex flex-wrap align-items-center gap-2 mb-0">
             {% csrf_token %}
             <input type="hidden" name="next" value="{{ request.get_full_path }}">
