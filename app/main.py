@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ctypes
 import base64
@@ -21374,8 +21374,9 @@ class KioskMainWindow(QMainWindow):
             "printer_ok": bool(printer_ok),
             "last_error": None,
         }
-        ds620_remaining = self._get_film_remaining("DS620")
-        rx1hs_remaining = self._get_film_remaining("RX1HS")
+        # Keep the last known per-model count when the live probe is flaky.
+        ds620_remaining = self._get_film_remaining("DS620", allow_fallback=True)
+        rx1hs_remaining = self._get_film_remaining("RX1HS", allow_fallback=True)
 
         env_all = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING")
         env_ds620 = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_DS620")
@@ -21402,8 +21403,6 @@ class KioskMainWindow(QMainWindow):
 
         default_model = self._normalize_film_model(str(printing_settings.get("default_model", "DS620")))
         primary_remaining = ds620_remaining if default_model == "DS620" else rx1hs_remaining
-        if primary_remaining is None:
-            primary_remaining = ds620_remaining if ds620_remaining is not None else rx1hs_remaining
         if env_all is not None:
             primary_remaining = env_all
         if primary_remaining is not None:

@@ -78,6 +78,19 @@ def _lock_payload(device: Device):
     return payload
 
 
+def _merge_health_payload(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing or {})
+    for key, value in dict(incoming or {}).items():
+        if key in {"printer_ds620", "printer_rx1hs"} and isinstance(value, dict):
+            current = merged.get(key)
+            current_dict = dict(current) if isinstance(current, dict) else {}
+            current_dict.update(value)
+            merged[key] = current_dict
+            continue
+        merged[key] = value
+    return merged
+
+
 class AuthTokenView(TokenObtainPairView):
     permission_classes = [AllowAny]
 
@@ -102,7 +115,8 @@ class HeartbeatView(APIView):
         device.last_seen_at = timezone.now()
         if payload.get("app_version"):
             device.last_app_version = payload.get("app_version")
-        device.last_health_json = payload
+        existing_health = device.last_health_json if isinstance(device.last_health_json, dict) else {}
+        device.last_health_json = _merge_health_payload(existing_health, payload)
         device.save(update_fields=["last_seen_at", "last_app_version", "last_health_json", "updated_at"])
 
         heartbeat = DeviceHeartbeat.objects.create(
