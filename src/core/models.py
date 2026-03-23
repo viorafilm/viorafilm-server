@@ -54,6 +54,8 @@ class Device(models.Model):
     last_config_version_applied = models.CharField(max_length=64, null=True, blank=True)
     last_config_applied_at = models.DateTimeField(null=True, blank=True)
     last_health_json = models.JSONField(default=dict, blank=True)
+    pending_remote_action = models.JSONField(default=dict, blank=True)
+    pending_remote_action_updated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.device_code}"

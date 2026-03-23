@@ -1,24 +1,49 @@
-﻿{% for row in rows %}
+{% with device_text=dashboard_ui.text.devices common_text=dashboard_ui.text.common %}
+{% for row in rows %}
 <tr>
   <td class="fw-semibold">{{ row.device.device_code }}</td>
   <td>{{ row.device.org.code }} / {{ row.device.branch.code }}</td>
   <td>{{ row.device.last_seen_at|default:"-" }}</td>
   <td>
     {% if row.online %}
-    <span class="badge text-bg-success">ONLINE</span>
+    <span class="badge text-bg-success">{{ common_text.online_badge }}</span>
     {% else %}
-    <span class="badge text-bg-danger">OFFLINE</span>
+    <span class="badge text-bg-danger">{{ common_text.offline_badge }}</span>
     {% endif %}
   </td>
-  <td>{% if row.internet_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
-  <td>{% if row.camera_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
-  <td>{% if row.printer_ok %}<span class="badge text-bg-success">OK</span>{% else %}<span class="badge text-bg-secondary">-</span>{% endif %}</td>
+  <td>
+    {% if row.internet_ok == True %}
+    <span class="badge text-bg-success">{{ common_text.ok }}</span>
+    {% elif row.internet_ok == False %}
+    <span class="badge text-bg-danger">{{ common_text.issue }}</span>
+    {% else %}
+    <span class="badge text-bg-secondary">-</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if row.camera_ok == True %}
+    <span class="badge text-bg-success">{{ common_text.ok }}</span>
+    {% elif row.camera_ok == False %}
+    <span class="badge text-bg-danger">{{ common_text.issue }}</span>
+    {% else %}
+    <span class="badge text-bg-secondary">-</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if row.printer_ok == True %}
+    <span class="badge text-bg-success">{{ common_text.ok }}</span>
+    {% elif row.printer_ok == False %}
+    <span class="badge text-bg-danger">{{ common_text.issue }}</span>
+    {% else %}
+    <span class="badge text-bg-secondary">-</span>
+    {% endif %}
+  </td>
   <td>
     {% if row.film_remaining is not None %}
       {% if row.film_remaining_estimated %}
-      <span class="badge text-bg-warning">EST {{ row.film_remaining }} sheets</span>
+      <span class="badge text-bg-warning">{{ device_text.film_estimate_prefix }} {{ row.film_remaining }} {{ device_text.film_unit }}</span>
       {% else %}
-      <span class="badge text-bg-info">{{ row.film_remaining }} sheets</span>
+      <span class="badge text-bg-info">{{ row.film_remaining }} {{ device_text.film_unit }}</span>
       {% endif %}
     {% else %}
     <span class="badge text-bg-secondary">-</span>
@@ -26,14 +51,14 @@
   </td>
   <td>
     {% if row.offline_guard_enabled %}
-    <span class="badge text-bg-primary">ENABLED</span>
+    <span class="badge text-bg-primary">{{ device_text.offline_guard_enabled }}</span>
     {% else %}
-    <span class="badge text-bg-secondary">OFF</span>
+    <span class="badge text-bg-secondary">{{ device_text.offline_guard_off }}</span>
     {% endif %}
   </td>
   <td>
     {% if row.offline_grace_overdue %}
-    <span class="badge text-bg-danger">{{ row.offline_grace_text }}</span>
+    <span class="badge text-bg-danger">{{ device_text.offline_overdue_prefix }} {{ row.offline_grace_text }}</span>
     {% elif row.offline_grace_text == "-" %}
     <span class="badge text-bg-secondary">-</span>
     {% else %}
@@ -42,11 +67,11 @@
   </td>
   <td>
     {% if row.server_lock_active %}
-    <span class="badge text-bg-danger">SERVER LOCK</span>
+    <span class="badge text-bg-danger">{{ device_text.lock_server }}</span>
     {% elif row.offline_lock_active %}
-    <span class="badge text-bg-warning">OFFLINE LOCK</span>
+    <span class="badge text-bg-warning">{{ device_text.lock_offline }}</span>
     {% else %}
-    <span class="badge text-bg-success">UNLOCKED</span>
+    <span class="badge text-bg-success">{{ device_text.lock_unlocked }}</span>
     {% endif %}
   </td>
   <td>
@@ -61,42 +86,64 @@
     <div class="d-flex flex-column gap-1">
       <div>
         {% if row.allow_celebrity_mode %}
-        <span class="badge text-bg-primary">연예인 ON</span>
+        <span class="badge text-bg-primary">{{ device_text.celebrity_on }}</span>
         {% else %}
-        <span class="badge text-bg-secondary">연예인 OFF</span>
+        <span class="badge text-bg-secondary">{{ device_text.celebrity_off }}</span>
         {% endif %}
         {% if row.allow_ai_mode %}
-        <span class="badge text-bg-info">AI ON</span>
+        <span class="badge text-bg-info">{{ device_text.ai_on }}</span>
         {% else %}
-        <span class="badge text-bg-secondary">AI OFF</span>
+        <span class="badge text-bg-secondary">{{ device_text.ai_off }}</span>
         {% endif %}
       </div>
-      <span class="text-muted small">Admin 페이지에서 변경</span>
+      <span class="text-muted small">{{ device_text.mode_permissions_hint }}</span>
     </div>
   </td>
   <td>
     {% if can_manage_locks %}
+      <div class="d-flex flex-column gap-1">
+      {% if row.remote_credit_pending %}
+      <form method="post" class="d-flex gap-1">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="remote_credit_cancel">
+        <input type="hidden" name="device_id" value="{{ row.device.id }}">
+        <button type="submit" class="btn btn-sm btn-outline-warning">{{ device_text.remote_credit_disable }}</button>
+        <span class="badge text-bg-warning align-self-center">{{ device_text.remote_credit_pending }}</span>
+      </form>
+      {% else %}
+      <form method="post" class="d-flex gap-1">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="remote_credit">
+        <input type="hidden" name="device_id" value="{{ row.device.id }}">
+        <button type="submit" class="btn btn-sm btn-outline-primary">{{ device_text.remote_credit }}</button>
+        {% if not row.remote_credit_available %}
+        <span class="text-muted small align-self-center">{{ device_text.remote_credit_unavailable }}</span>
+        {% endif %}
+      </form>
+      {% endif %}
       {% if row.server_lock_active %}
       <form method="post" class="d-flex gap-1">
         {% csrf_token %}
         <input type="hidden" name="action" value="unlock_device">
         <input type="hidden" name="device_id" value="{{ row.device.id }}">
-        <button type="submit" class="btn btn-sm btn-outline-success">Unlock</button>
+        <button type="submit" class="btn btn-sm btn-outline-success">{{ device_text.unlock }}</button>
       </form>
       {% else %}
       <form method="post" class="d-flex gap-1">
         {% csrf_token %}
         <input type="hidden" name="action" value="lock_device">
         <input type="hidden" name="device_id" value="{{ row.device.id }}">
-        <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="reason (optional)" style="max-width: 130px;">
-        <button type="submit" class="btn btn-sm btn-outline-danger">Lock</button>
+        <input type="text" name="lock_reason" class="form-control form-control-sm" placeholder="{{ device_text.lock_reason_placeholder }}" style="max-width: 130px;">
+        <button type="submit" class="btn btn-sm btn-outline-danger">{{ device_text.lock }}</button>
       </form>
       {% endif %}
+      </div>
     {% else %}
-    <span class="text-muted small">Read only</span>
+    <span class="text-muted small">{{ device_text.read_only }}</span>
     {% endif %}
   </td>
 </tr>
 {% empty %}
-<tr><td colspan="15" class="text-center text-muted py-4">No devices found.</td></tr>
+<tr><td colspan="15" class="text-center text-muted py-4">{{ device_text.empty }}</td></tr>
 {% endfor %}
+{% endwith %}

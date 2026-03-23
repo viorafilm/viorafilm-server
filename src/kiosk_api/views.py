@@ -78,6 +78,30 @@ def _lock_payload(device: Device):
     return payload
 
 
+def _remote_action_payload(device: Device):
+    payload = device.pending_remote_action if isinstance(device.pending_remote_action, dict) else {}
+    command_id = str(payload.get("id", "")).strip()
+    kind = str(payload.get("kind", "")).strip().lower()
+    if not command_id or not kind:
+        return None
+    return {
+        "id": command_id,
+        "kind": kind,
+        "created_at": payload.get("created_at"),
+        "expires_at": payload.get("expires_at"),
+        "meta": dict(payload.get("meta") or {}),
+    }
+
+
+def _clear_pending_remote_action(device: Device, expected_id: str = "") -> None:
+    payload = device.pending_remote_action if isinstance(device.pending_remote_action, dict) else {}
+    command_id = str(payload.get("id", "")).strip()
+    expected = str(expected_id or "").strip()
+    if expected and command_id and command_id != expected:
+        return
+    device.pending_remote_action = {}
+    device.pending_remote_action_updated_at = timezone.now()
+    device.save(update_fields=["pending_remote_action", "pending_remote_action_updated_at", "updated_at"])
 def _merge_health_payload(existing: dict, incoming: dict) -> dict:
     merged = dict(existing or {})
     for key, value in dict(incoming or {}).items():
@@ -111,6 +135,10 @@ class HeartbeatView(APIView):
         serializer = HeartbeatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        ack_id = str(payload.get("remote_action_ack", "")).strip()
+        if ack_id:
+            _clear_pending_remote_action(device, expected_id=ack_id)
+            device.refresh_from_db(fields=["pending_remote_action", "pending_remote_action_updated_at"])
 
         device.last_seen_at = timezone.now()
         if payload.get("app_version"):
@@ -126,7 +154,14 @@ class HeartbeatView(APIView):
             camera_ok=payload.get("camera_ok"),
             printer_ok=payload.get("printer_ok"),
         )
-        return Response({"ok": True, "heartbeat_id": heartbeat.id, "device_lock": _lock_payload(device)})
+        return Response(
+            {
+                "ok": True,
+                "heartbeat_id": heartbeat.id,
+                "device_lock": _lock_payload(device),
+                "remote_action": _remote_action_payload(device),
+            }
+        )
 
 
 class ConfigView(APIView):
@@ -219,7 +254,8 @@ class UpdateCheckView(APIView):
         active_v = _safe_version(active.version)
         min_v = _safe_version(active.min_supported_version or "0.0.0")
 
-        update_available = current_v != active_v
+        # Only offer an update when the active release is newer than the kiosk.
+        update_available = current_v < active_v
         force_update = bool(active.force_below_min and current_v < min_v)
         # Use authenticated API download URL so kiosk update fetch does not depend
         # on external /media static routing.
@@ -343,11 +379,17 @@ class ShareInitUploadView(APIView):
             if not created and session.device_id != device.id:
                 return Response({"ok": False, "reason": "TOKEN_CONFLICT"}, status=409)
             if not created:
+                existing_assets = dict(session.assets or {})
+                existing_session_id = str(existing_assets.get("kiosk_session_id") or "").strip()
+                if session_id and existing_session_id and existing_session_id != session_id:
+                    return Response({"ok": False, "reason": "SESSION_TOKEN_MISMATCH"}, status=409)
                 session.expires_at = expires_at
-                session.status = ShareSession.STATUS_INIT
-                session.files = {}
-                session.assets = assets
-                session.save(update_fields=["expires_at", "status", "files", "assets"])
+                if session_id and not existing_session_id:
+                    existing_assets["kiosk_session_id"] = session_id
+                    session.assets = existing_assets
+                    session.save(update_fields=["expires_at", "assets"])
+                else:
+                    session.save(update_fields=["expires_at"])
         else:
             session = ShareSession.create_24h(device=device, assets=assets)
             session.expires_at = expires_at
@@ -538,7 +580,9 @@ class ShareCompleteView(APIView):
         if session.is_expired():
             return Response({"detail": "Expired"}, status=410)
 
-        session.assets = assets
+        merged_assets = dict(session.assets or {})
+        merged_assets.update(assets)
+        session.assets = merged_assets
         session.status = ShareSession.STATUS_FINALIZED
         session.save(update_fields=["assets", "status"])
         logger.info("[SHARE] complete token=%s device=%s", token, device.device_code)

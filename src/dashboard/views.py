@@ -1,4 +1,5 @@
 ﻿import csv
+import secrets
 from datetime import datetime, time, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo, available_timezones
@@ -14,6 +15,7 @@ from django.db.models.functions import TruncDate
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
@@ -43,6 +45,7 @@ from dashboard.ui import (
     get_dashboard_text,
     resolve_dashboard_currency_unit,
     resolve_dashboard_lang,
+    resolve_dashboard_text,
 )
 
 AI_EST_USD_PER_IMAGE = 0.039
@@ -54,6 +57,16 @@ MONTHLY_SERVER_FEE_PER_DEVICE = 60000
 COUPON_PER_PAGE_OPTIONS = (10, 30, 50, 100)
 DASHBOARD_TIMEZONE_KEY = "dashboard_timezone"
 DEFAULT_DASHBOARD_TIMEZONE = "Asia/Seoul"
+REMOTE_CREDIT_ALLOWED_SCREENS = {
+    "payment_method",
+    "pay_cash",
+    "pay_card",
+    "coupon_input",
+    "coupon_remaining_method",
+    "coupon_low",
+    "pay_cash_remaining",
+    "pay_card_remaining",
+}
 PREFERRED_DASHBOARD_TIMEZONES = (
     "Asia/Seoul",
     "Asia/Tokyo",
@@ -171,7 +184,7 @@ def _derive_printer_ok(health):
             values.append(item.get("ok"))
     if not values:
         return None
-    return any(values)
+    return all(values)
 
 
 def _as_optional_int(value):
@@ -387,17 +400,28 @@ def _resolve_dashboard_scope_objects(user, filters=None):
     return org_obj, branch_obj
 
 
-def _build_dashboard_timezone_scope_options(user, org_obj, branch_obj):
+def _build_dashboard_timezone_scope_options(user, org_obj, branch_obj, ui_text=None):
+    timezone_text = (ui_text or get_dashboard_text("ko")).get("timezone", {})
     options = []
-    options.append({"value": "global", "label": "GLOBAL"})
+    options.append({"value": "global", "label": timezone_text.get("scope_global", "GLOBAL")})
     if org_obj is not None:
-        options.append({"value": "org", "label": f"ORG: {org_obj.code}"})
+        options.append(
+            {
+                "value": "org",
+                "label": f"{timezone_text.get('scope_org', 'ORG')}: {org_obj.code}",
+            }
+        )
     if branch_obj is not None:
-        options.append({"value": "branch", "label": f"BRANCH: {branch_obj.org.code}/{branch_obj.code}"})
+        options.append(
+            {
+                "value": "branch",
+                "label": f"{timezone_text.get('scope_branch', 'BRANCH')}: {branch_obj.org.code}/{branch_obj.code}",
+            }
+        )
     return options
 
 
-def _resolve_dashboard_timezone_context(user, filters=None):
+def _resolve_dashboard_timezone_context(user, filters=None, ui_text=None):
     org_obj, branch_obj = _resolve_dashboard_scope_objects(user, filters)
     global_profile = _latest_config_profile(ConfigScope.GLOBAL, org=None, branch=None, device=None)
     org_profile = _latest_config_profile(ConfigScope.ORG, org=org_obj, branch=None, device=None) if org_obj else None
@@ -429,7 +453,7 @@ def _resolve_dashboard_timezone_context(user, filters=None):
         resolved_name = branch_name
 
     active_name, active_tzinfo = _load_dashboard_tzinfo(resolved_name)
-    scope_options = _build_dashboard_timezone_scope_options(user, org_obj, branch_obj)
+    scope_options = _build_dashboard_timezone_scope_options(user, org_obj, branch_obj, ui_text=ui_text)
     scope_values = {item["value"] for item in scope_options}
     if branch_obj is not None and "branch" in scope_values:
         selected_scope = "branch"
@@ -465,8 +489,8 @@ def _render_dashboard_partial(request, template_name, context, tzinfo):
         return render_to_string(template_name, context, request=request)
 
 
-def _build_dashboard_page_context(user, filters=None, **extra):
-    tz_context = _resolve_dashboard_timezone_context(user, filters)
+def _build_dashboard_page_context(user, filters=None, ui_text=None, **extra):
+    tz_context = _resolve_dashboard_timezone_context(user, filters, ui_text=ui_text)
     tzinfo = tz_context["dashboard_tzinfo"]
     context = dict(extra)
     context.update(tz_context)
@@ -923,6 +947,9 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
     for d in devices:
         health = d.last_health_json if isinstance(d.last_health_json, dict) else {}
         online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < threshold)
+        current_screen = str(health.get("current_screen", "") or "").strip()
+        pending_remote_action = d.pending_remote_action if isinstance(d.pending_remote_action, dict) else {}
+        pending_remote_action_id = str(pending_remote_action.get("id", "")).strip()
         film_remaining = _extract_film_remaining(health)
         film_estimated = False
         if film_remaining is None:
@@ -947,6 +974,12 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
                 "server_locked_at": d.locked_at,
                 "allow_celebrity_mode": bool(getattr(d, "allow_celebrity_mode", True)),
                 "allow_ai_mode": bool(getattr(d, "allow_ai_mode", True)),
+                "current_screen": current_screen,
+                "order_state": str(health.get("order_state", "") or "").strip(),
+                "remote_credit_pending": bool(pending_remote_action_id),
+                "remote_credit_available": bool(
+                    online and current_screen in REMOTE_CREDIT_ALLOWED_SCREENS and not pending_remote_action_id
+                ),
             }
         )
     for row in rows:
@@ -960,7 +993,7 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
             row["offline_grace_text"] = _format_duration_compact(remain_int)
             row["offline_grace_overdue"] = False
         else:
-            row["offline_grace_text"] = f"초과 {_format_duration_compact(abs(remain_int))}"
+            row["offline_grace_text"] = _format_duration_compact(abs(remain_int))
             row["offline_grace_overdue"] = True
     for row in rows:
         row["locked_any"] = bool(row.get("offline_lock_active") or row.get("server_lock_active"))
@@ -969,10 +1002,11 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
     return rows
 
 
-def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=None, branch_id=None):
+def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=None, branch_id=None, ui_text=None):
+    timezone_text = (ui_text or get_dashboard_text("ko")).get("timezone", {})
     normalized_name = _normalize_dashboard_timezone_name(timezone_name)
     if not normalized_name:
-        raise ValueError("유효한 시간대를 선택하세요.")
+        raise ValueError(timezone_text.get("invalid_name", "유효한 시간대를 선택하세요."))
 
     scope_value = str(scope_value or "").strip().lower()
     target_scope = None
@@ -992,7 +1026,7 @@ def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=No
             if branch_obj is not None:
                 target_org = branch_obj.org
         if target_org is None:
-            raise ValueError("적용할 조직을 찾을 수 없습니다.")
+            raise ValueError(timezone_text.get("missing_org", "적용할 조직을 찾을 수 없습니다."))
         target_scope = ConfigScope.ORG
     elif scope_value == "branch":
         branch_pk = _pick_valid_int(branch_id)
@@ -1000,10 +1034,10 @@ def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=No
         if target_branch is None and getattr(user, "branch_id", None):
             target_branch = available_branches.select_related("org").filter(id=user.branch_id).first()
         if target_branch is None:
-            raise ValueError("적용할 지점을 찾을 수 없습니다.")
+            raise ValueError(timezone_text.get("missing_branch", "적용할 지점을 찾을 수 없습니다."))
         target_scope = ConfigScope.BRANCH
     else:
-        raise ValueError("지원하지 않는 시간대 범위입니다.")
+        raise ValueError(timezone_text.get("unsupported_scope", "지원하지 않는 시간대 범위입니다."))
 
     latest = _latest_config_profile(
         target_scope,
@@ -1023,10 +1057,32 @@ def _save_dashboard_timezone_profile(user, scope_value, timezone_name, org_id=No
     )
 
     if target_scope == ConfigScope.GLOBAL:
-        return f"전역 기준 시간이 {normalized_name}로 저장되었습니다."
+        return timezone_text.get("saved_global", "전역 기준 시간이 {timezone}로 저장되었습니다.").format(
+            timezone=normalized_name
+        )
     if target_scope == ConfigScope.ORG:
-        return f"{target_org.code} 조직 기준 시간이 {normalized_name}로 저장되었습니다."
-    return f"{target_branch.org.code}/{target_branch.code} 지점 기준 시간이 {normalized_name}로 저장되었습니다."
+        return timezone_text.get("saved_org", "{org} 조직 기준 시간이 {timezone}로 저장되었습니다.").format(
+            org=target_org.code,
+            timezone=normalized_name,
+        )
+    return timezone_text.get("saved_branch", "{org}/{branch} 지점 기준 시간이 {timezone}로 저장되었습니다.").format(
+        org=target_branch.org.code,
+        branch=target_branch.code,
+        timezone=normalized_name,
+    )
+
+
+def _translate_coupon_issue_error(message, coupon_text):
+    raw = str(message or "").strip()
+    if not raw:
+        return raw
+    if raw == "발행 수량은 1개 이상이어야 합니다.":
+        return coupon_text.get("issue_count_min", raw)
+    if raw.startswith("1회 발행 최대 수량은 ") and raw.endswith("개입니다."):
+        return coupon_text.get("issue_count_max", raw).format(max=MAX_COUPON_BATCH_COUNT)
+    if raw == "전체 쿠폰 발행 한도를 초과했습니다. 시스템 관리 한도를 확인해 주세요.":
+        return coupon_text.get("issue_capacity_exceeded", raw)
+    return raw
 
 
 @never_cache
@@ -1038,7 +1094,16 @@ def login_view(request):
     form = AuthenticationForm(request, data=request.POST or None)
     if request.method == "POST" and form.is_valid():
         login(request, form.get_user())
-        return redirect(request.GET.get("next") or "dashboard_index")
+        next_url = str(request.GET.get("next") or "").strip()
+        if not next_url.startswith("/dashboard"):
+            next_url = "/dashboard/"
+        elif not url_has_allowed_host_and_scheme(
+            url=next_url,
+            allowed_hosts={request.get_host()},
+            require_https=request.is_secure(),
+        ):
+            next_url = "/dashboard/"
+        return redirect(next_url)
     return render(request, "dashboard/login.html", {"form": form})
 
 
@@ -1085,6 +1150,7 @@ def currency_unit_view(request):
 def dashboard_timezone_view(request):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
+    ui_text = resolve_dashboard_text(request)
     next_url = str(request.POST.get("next") or "").strip()
     if not next_url.startswith("/dashboard"):
         next_url = "/dashboard/"
@@ -1095,6 +1161,7 @@ def dashboard_timezone_view(request):
             timezone_name=request.POST.get("timezone_name"),
             org_id=request.POST.get("org_id"),
             branch_id=request.POST.get("branch_id"),
+            ui_text=ui_text,
         )
     except PermissionError as exc:
         return HttpResponseForbidden(str(exc))
@@ -1109,7 +1176,8 @@ def dashboard_timezone_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def index_view(request):
-    context, tzinfo = _build_dashboard_page_context(request.user)
+    ui_text = resolve_dashboard_text(request)
+    context, tzinfo = _build_dashboard_page_context(request.user, ui_text=ui_text)
     summary = _build_sales_summary(request.user, tzinfo)
     context.update(
         {
@@ -1137,15 +1205,18 @@ def index_live_view(request):
 @never_cache
 def devices_view(request):
     user = request.user
+    ui_text = resolve_dashboard_text(request)
+    common_text = ui_text["common"]
+    device_text = ui_text["devices"]
     filters = _resolve_scope_filters(user, request)
-    context, tzinfo = _build_dashboard_page_context(user, filters)
+    context, tzinfo = _build_dashboard_page_context(user, filters, ui_text=ui_text)
     can_edit_notifications = not _is_viewer(user)
     can_manage_locks = not _is_viewer(user)
     only_locked = str(request.GET.get("locked", "")).strip() == "1"
 
     if request.method == "POST":
         if not can_edit_notifications:
-            return HttpResponseForbidden("Viewer is read-only")
+            return HttpResponseForbidden(common_text["viewer_read_only"])
         action = (request.POST.get("action") or "").strip()
         if action == "save_alert_emails":
             emails = _parse_email_list(request.POST.get("alert_emails", ""))
@@ -1161,43 +1232,43 @@ def devices_view(request):
                     config={"to": email},
                 )
                 created += 1
-            messages.success(request, f"알림 이메일 저장 완료: {created}개")
+            messages.success(request, device_text["save_alert_emails_success"].format(count=created))
         elif action == "send_test_email":
             targets = _get_scope_email_targets(user)
             if not targets:
-                messages.error(request, "먼저 알림 이메일을 저장하세요.")
+                messages.error(request, device_text["save_alert_emails_first"])
                 return redirect("dashboard_devices")
             backend = str(getattr(settings, "EMAIL_BACKEND", "") or "")
             if "console.EmailBackend" in backend:
                 messages.warning(
                     request,
-                    "현재 이메일 백엔드가 콘솔 모드입니다. 실제 메일 발송을 위해 SMTP 설정을 먼저 입력하세요.",
+                    device_text["console_email_backend"],
                 )
                 return redirect("dashboard_devices")
             now_local = timezone.localtime(timezone.now(), tzinfo).strftime("%Y-%m-%d %H:%M:%S")
-            subject = "[Viorafilm] 테스트 알림 메일"
+            subject = device_text["test_email_subject"]
             body = (
-                "이 메일은 Viorafilm 대시보드에서 발송한 테스트 알림입니다.\n"
-                f"시간: {now_local}\n"
-                f"발신 사용자: {user.username}\n"
+                f"{device_text['test_email_body_intro']}\n"
+                f"{device_text['test_email_body_time']}: {now_local}\n"
+                f"{device_text['test_email_body_user']}: {user.username}\n"
             )
             sent, failed = send_email_targets(targets, subject, body)
             if sent:
-                messages.success(request, f"테스트 메일 발송 완료: 성공 {sent}, 실패 {failed}")
+                messages.success(request, device_text["test_email_success"].format(sent=sent, failed=failed))
             else:
-                messages.error(request, f"테스트 메일 발송 실패: 성공 {sent}, 실패 {failed}")
-        elif action in ("lock_device", "unlock_device"):
+                messages.error(request, device_text["test_email_failure"].format(sent=sent, failed=failed))
+        elif action in ("lock_device", "unlock_device", "remote_credit", "remote_credit_cancel"):
             device_id_raw = (request.POST.get("device_id") or "").strip()
             if not device_id_raw.isdigit():
-                messages.error(request, "잘못된 장치 ID 입니다.")
+                messages.error(request, device_text["invalid_device_id"])
                 return redirect("dashboard_devices")
 
             target = _scoped_devices(user).filter(id=int(device_id_raw)).first()
             if not target:
-                messages.error(request, "해당 장치를 찾을 수 없습니다.")
+                messages.error(request, device_text["device_not_found"])
                 return redirect("dashboard_devices")
             if not can_manage_locks:
-                return HttpResponseForbidden("Viewer is read-only")
+                return HttpResponseForbidden(common_text["viewer_read_only"])
 
             if action == "lock_device":
                 reason = (request.POST.get("lock_reason") or "").strip()
@@ -1216,8 +1287,8 @@ def devices_view(request):
                     meta={},
                     ip=request.META.get("REMOTE_ADDR"),
                 )
-                messages.success(request, f"장치 잠금 처리 완료: {target.device_code}")
-            else:
+                messages.success(request, device_text["device_locked"].format(device=target.device_code))
+            elif action == "unlock_device":
                 old_reason = target.lock_reason
                 target.is_locked = False
                 target.lock_reason = ""
@@ -1234,7 +1305,63 @@ def devices_view(request):
                     meta={},
                     ip=request.META.get("REMOTE_ADDR"),
                 )
-                messages.success(request, f"장치 잠금 해제 완료: {target.device_code}")
+                messages.success(request, device_text["device_unlocked"].format(device=target.device_code))
+            elif action == "remote_credit":
+                if target.pending_remote_action and isinstance(target.pending_remote_action, dict):
+                    pending_id = str(target.pending_remote_action.get("id", "")).strip()
+                    if pending_id:
+                        messages.warning(
+                            request,
+                            device_text["remote_credit_already_pending"].format(device=target.device_code),
+                        )
+                        params = _query_params_from_filters(filters, extra={"locked": "1" if only_locked else None})
+                        if params:
+                            return redirect(f"/dashboard/devices?{urlencode(params)}")
+                        return redirect("dashboard_devices")
+                command_id = secrets.token_hex(8)
+                now = timezone.now()
+                expires_at = now + timedelta(minutes=3)
+                target.pending_remote_action = {
+                    "id": command_id,
+                    "kind": "payment_bypass",
+                    "created_at": now.isoformat(),
+                    "expires_at": expires_at.isoformat(),
+                    "meta": {
+                        "actor": str(user.username or ""),
+                    },
+                }
+                target.pending_remote_action_updated_at = now
+                target.save(update_fields=["pending_remote_action", "pending_remote_action_updated_at", "updated_at"])
+                log_event(
+                    actor_user=user,
+                    actor_device=None,
+                    action="device.remote_credit",
+                    target_type="Device",
+                    target_id=str(target.id),
+                    before=None,
+                    after={"device_code": target.device_code, "command_id": command_id},
+                    meta={"expires_at": expires_at.isoformat()},
+                    ip=request.META.get("REMOTE_ADDR"),
+                )
+                messages.success(request, device_text["remote_credit_sent"].format(device=target.device_code))
+            elif action == "remote_credit_cancel":
+                pending_payload = target.pending_remote_action if isinstance(target.pending_remote_action, dict) else {}
+                pending_id = str(pending_payload.get("id", "")).strip()
+                target.pending_remote_action = {}
+                target.pending_remote_action_updated_at = timezone.now()
+                target.save(update_fields=["pending_remote_action", "pending_remote_action_updated_at", "updated_at"])
+                log_event(
+                    actor_user=user,
+                    actor_device=None,
+                    action="device.remote_credit_cancel",
+                    target_type="Device",
+                    target_id=str(target.id),
+                    before={"command_id": pending_id},
+                    after={"device_code": target.device_code},
+                    meta={},
+                    ip=request.META.get("REMOTE_ADDR"),
+                )
+                messages.success(request, device_text["remote_credit_cleared"].format(device=target.device_code))
         params = _query_params_from_filters(filters, extra={"locked": "1" if only_locked else None})
         if params:
             return redirect(f"/dashboard/devices?{urlencode(params)}")
@@ -1293,13 +1420,14 @@ def devices_live_view(request):
 @never_cache
 def billing_view(request):
     user = request.user
+    ui_text = resolve_dashboard_text(request)
+    common_text = ui_text["common"]
     if not _can_manage_billing(user):
-        return HttpResponseForbidden("Billing is available only for admin")
+        return HttpResponseForbidden(common_text["billing_admin_only"])
     ui_lang = resolve_dashboard_lang(request)
-    ui_text = get_dashboard_text(ui_lang)
     billing_text = ui_text["billing"]
     filters = _resolve_scope_filters(user, request)
-    context, tzinfo = _build_dashboard_page_context(user, filters)
+    context, tzinfo = _build_dashboard_page_context(user, filters, ui_text=ui_text)
     billing_month = _parse_billing_month(
         request.POST.get("billing_month") if request.method == "POST" else request.GET.get("billing_month"),
         tzinfo,
@@ -1314,7 +1442,7 @@ def billing_view(request):
 
     if request.method == "POST":
         if not can_edit:
-            return HttpResponseForbidden("Viewer is read-only")
+            return HttpResponseForbidden(common_text["viewer_read_only"])
         action = str(request.POST.get("action") or "").strip()
         try:
             branch_id = int(request.POST.get("branch_id") or 0)
@@ -1426,8 +1554,9 @@ def billing_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def ops_view(request):
+    ui_text = resolve_dashboard_text(request)
     filters = _resolve_scope_filters(request.user, request)
-    context, tzinfo = _build_dashboard_page_context(request.user, filters)
+    context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     ops_data = _build_ops_dashboard(request.user, filters, tzinfo)
     context.update(
         {
@@ -1447,8 +1576,11 @@ def ops_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def sales_view(request):
+    ui_text = resolve_dashboard_text(request)
+    sales_text = ui_text["sales"]
+    currency_unit = resolve_dashboard_currency_unit(request)
     filters = _resolve_scope_filters(request.user, request)
-    context, tzinfo = _build_dashboard_page_context(request.user, filters)
+    context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     period_info = _resolve_sales_period(request, tzinfo)
     sales_base_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
     sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
@@ -1511,6 +1643,8 @@ def sales_view(request):
             "ai_branch_sales_count": ai_branch_sales_count,
             "ai_branch_images_count": ai_branch_images_count,
             "ai_branch_billing_total": ai_branch_billing_total,
+            "sales_chart_revenue_label": sales_text["chart_dataset_revenue"].format(currency=currency_unit),
+            "sales_chart_revenue_axis_title": sales_text["chart_axis_revenue"].format(currency=currency_unit),
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
@@ -1582,8 +1716,11 @@ def sales_export_view(request):
 @never_cache
 def coupons_view(request):
     user = request.user
+    ui_text = resolve_dashboard_text(request)
+    common_text = ui_text["common"]
+    coupon_text = ui_text["coupons"]
     filters = _resolve_scope_filters(user, request)
-    context, tzinfo = _build_dashboard_page_context(user, filters)
+    context, tzinfo = _build_dashboard_page_context(user, filters, ui_text=ui_text)
     can_edit = not _is_viewer(user)
     coupons = _apply_org_branch_filter(
         _scoped_coupons(user),
@@ -1615,7 +1752,7 @@ def coupons_view(request):
 
     if request.method == "POST":
         if not can_edit:
-            return HttpResponseForbidden("Viewer is read-only")
+            return HttpResponseForbidden(common_text["viewer_read_only"])
         action = (request.POST.get("action") or "").strip()
 
         if action == "issue":
@@ -1644,7 +1781,7 @@ def coupons_view(request):
                 branch = user.branch
 
             if amount <= 0 or count <= 0 or expires_hours <= 0:
-                messages.error(request, "amount/count/expires_hours must be > 0")
+                messages.error(request, coupon_text["invalid_issue_params"])
             else:
                 try:
                     batch = create_batch_and_coupons(
@@ -1656,9 +1793,9 @@ def coupons_view(request):
                         created_by=user,
                         title=title,
                     )
-                    messages.success(request, f"쿠폰 묶음 발행 완료 (Batch #{batch.id})")
+                    messages.success(request, coupon_text["issue_success"].format(batch_id=batch.id))
                 except ValueError as exc:
-                    messages.error(request, str(exc))
+                    messages.error(request, _translate_coupon_issue_error(str(exc), coupon_text))
 
         elif action == "delete_selected":
             ids = [int(x) for x in request.POST.getlist("coupon_ids") if str(x).isdigit()]
@@ -1678,7 +1815,7 @@ def coupons_view(request):
                     meta={"action": action},
                     ip=request.META.get("REMOTE_ADDR"),
                 )
-            messages.success(request, f"Deleted selected coupons: {count}")
+            messages.success(request, coupon_text["delete_selected_success"].format(count=count))
 
         elif action == "delete_used":
             targets = coupons.filter(used_at__isnull=False)
@@ -1697,7 +1834,7 @@ def coupons_view(request):
                     meta={"action": action},
                     ip=request.META.get("REMOTE_ADDR"),
                 )
-            messages.success(request, f"Deleted used coupons: {count}")
+            messages.success(request, coupon_text["delete_used_success"].format(count=count))
 
         elif action == "delete_expired":
             targets = coupons.filter(expires_at__lte=timezone.now(), used_at__isnull=True)
@@ -1716,7 +1853,7 @@ def coupons_view(request):
                     meta={"action": action},
                     ip=request.META.get("REMOTE_ADDR"),
                 )
-            messages.success(request, f"Deleted expired coupons: {count}")
+            messages.success(request, coupon_text["delete_expired_success"].format(count=count))
         elif action == "recover_missing_usage":
             stats = recover_coupon_usage_from_sales(
                 actor_user=user,
@@ -1726,9 +1863,14 @@ def coupons_view(request):
             )
             messages.success(
                 request,
-                "누락 사용 복구 완료 "
-                f"(검사 {stats['scanned']} / 연결 {stats['linked_sales']} / 사용처리 {stats['coupon_marked_used']} / "
-                f"코드없음 {stats['skipped_no_code']} / 미존재 {stats['skipped_not_found']} / 충돌 {stats['skipped_conflict']})",
+                coupon_text["recover_missing_usage_success"].format(
+                    scanned=stats["scanned"],
+                    linked_sales=stats["linked_sales"],
+                    coupon_marked_used=stats["coupon_marked_used"],
+                    skipped_no_code=stats["skipped_no_code"],
+                    skipped_not_found=stats["skipped_not_found"],
+                    skipped_conflict=stats["skipped_conflict"],
+                ),
             )
 
         params = _query_params_from_filters(
@@ -1764,6 +1906,18 @@ def coupons_view(request):
             "coupon_max_total": int(MAX_TOTAL_COUPONS),
             "coupon_max_per_issue": int(MAX_COUPON_BATCH_COUNT),
             "coupon_global_capacity_visible": coupon_global_capacity_visible,
+            "coupon_capacity_summary_text": (
+                coupon_text["capacity_global"].format(
+                    max=int(MAX_TOTAL_COUPONS),
+                    count=coupon_total_count,
+                    remaining=coupon_remaining_capacity,
+                )
+                if coupon_global_capacity_visible
+                else coupon_text["capacity_scoped"].format(count=coupon_total_count)
+            ),
+            "coupon_capacity_limit_text": coupon_text["capacity_per_issue"].format(
+                count=int(MAX_COUPON_BATCH_COUNT)
+            ),
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
@@ -1829,8 +1983,10 @@ def coupons_export_view(request):
 @login_required(login_url="/dashboard/login")
 @never_cache
 def photos_view(request):
+    ui_text = resolve_dashboard_text(request)
+    photo_text = ui_text["photos"]
     filters = _resolve_scope_filters(request.user, request)
-    context, tzinfo = _build_dashboard_page_context(request.user, filters)
+    context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     q = (request.GET.get("q") or "").strip()
     devices_qs = _apply_org_branch_filter(_scoped_devices(request.user), "org_id", "branch_id", filters)
     device_ids = list(devices_qs.values_list("id", flat=True))
@@ -1869,6 +2025,13 @@ def photos_view(request):
 
         if not isinstance(original_urls, list):
             original_urls = []
+        original_links = [
+            {
+                "url": url,
+                "label": photo_text["download_original"].format(number=index + 1),
+            }
+            for index, url in enumerate(original_urls)
+        ]
         is_expired = s.is_expired()
         rows.append(
             {
@@ -1881,7 +2044,7 @@ def photos_view(request):
                 "gif_url": gif_url,
                 "video_url": video_url,
                 "frame_url": frame_url,
-                "original_urls": original_urls,
+                "original_links": original_links,
             }
         )
     context.update(

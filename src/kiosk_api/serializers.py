@@ -6,6 +6,9 @@ from storagehub.service import normalize_kind
 
 class HeartbeatSerializer(serializers.Serializer):
     app_version = serializers.CharField(required=False, allow_blank=True)
+    current_screen = serializers.CharField(required=False, allow_blank=True)
+    order_state = serializers.CharField(required=False, allow_blank=True)
+    remote_action_ack = serializers.CharField(required=False, allow_blank=True)
     internet_ok = serializers.BooleanField(required=False)
     camera_ok = serializers.BooleanField(required=False)
     printer_ok = serializers.BooleanField(required=False)
