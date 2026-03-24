@@ -41,9 +41,11 @@ else:
 if hasattr(Qt, "AspectRatioMode"):
     KEEP_ASPECT = Qt.AspectRatioMode.KeepAspectRatio
     SMOOTH_TRANSFORM = Qt.TransformationMode.SmoothTransformation
+    WORD_WRAP = Qt.TextFlag.TextWordWrap
 else:
     KEEP_ASPECT = Qt.KeepAspectRatio
     SMOOTH_TRANSFORM = Qt.SmoothTransformation
+    WORD_WRAP = Qt.TextWordWrap
 
 
 def _event_pos(event: QMouseEvent):
@@ -241,10 +243,10 @@ class LoadingScreen(QWidget):
             painter.drawText(self.rect(), ALIGN_CENTER, "Loading...")
 
         if self._preview_frames:
-            box_w = max(260, int(self.width() * 0.42))
-            box_h = max(180, int(self.height() * 0.36))
+            box_w = max(260, int(self.width() * 0.40))
+            box_h = max(180, int(self.height() * 0.33))
             box_x = int((self.width() - box_w) / 2)
-            box_y = int(self.height() * 0.18)
+            box_y = int(self.height() * 0.10)
             box_rect = QRect(box_x, box_y, box_w, box_h)
             painter.fillRect(box_rect, QColor(0, 0, 0, 160))
             preview_pen = QPen(QColor(255, 255, 255, 210))
@@ -266,10 +268,10 @@ class LoadingScreen(QWidget):
                 painter.drawPixmap(draw_x, draw_y, scaled)
 
         if self._status_message:
-            w = int(self.width() * 0.72)
-            h = max(130, int(self.height() * 0.22))
+            w = int(self.width() * 0.80)
+            h = max(180, int(self.height() * 0.27))
             x = int((self.width() - w) / 2)
-            y = int(self.height() * 0.70)
+            y = int(self.height() * 0.62)
             box_rect = QRect(x, y, w, h)
             painter.fillRect(box_rect, QColor(0, 0, 0, 175))
             pen = QPen(QColor(255, 255, 255, 210))
@@ -279,11 +281,11 @@ class LoadingScreen(QWidget):
 
             if self._status_percent is not None:
                 percent = max(0, min(100, int(self._status_percent)))
-                bar_x = x + 32
+                bar_x = x + 34
                 bar_y = y + 22
-                bar_h = 36
-                percent_w = 96
-                bar_w = max(120, w - 32 - 24 - percent_w)
+                bar_h = 46
+                percent_w = 132
+                bar_w = max(160, w - 34 - 30 - percent_w)
                 track_rect = QRect(bar_x, bar_y, bar_w, bar_h)
                 painter.fillRect(track_rect, QColor(255, 255, 255, 26))
                 track_pen = QPen(QColor(255, 255, 255, 130))
@@ -291,12 +293,12 @@ class LoadingScreen(QWidget):
                 painter.setPen(track_pen)
                 painter.drawRect(track_rect)
 
-                seg_gap = 6
+                seg_gap = 8
                 seg_count = 10
-                inner_x = bar_x + 8
-                inner_y = bar_y + 8
-                inner_w = max(10, bar_w - 16)
-                inner_h = max(8, bar_h - 16)
+                inner_x = bar_x + 10
+                inner_y = bar_y + 10
+                inner_w = max(10, bar_w - 20)
+                inner_h = max(10, bar_h - 20)
                 seg_w = max(4, int((inner_w - (seg_gap * (seg_count - 1))) / seg_count))
                 filled = max(0, min(seg_count, int((percent + 9) / 10)))
                 cursor = inner_x
@@ -307,13 +309,21 @@ class LoadingScreen(QWidget):
                     cursor += seg_w + seg_gap
 
                 painter.setPen(QColor(255, 255, 255))
+                percent_font = painter.font()
+                percent_font.setBold(True)
+                percent_font.setPixelSize(max(30, int(bar_h * 0.72)))
+                painter.setFont(percent_font)
                 percent_rect = QRect(bar_x + bar_w + 8, bar_y, percent_w, bar_h)
                 painter.drawText(percent_rect, ALIGN_CENTER, f"{percent}%")
 
                 if self._status_lines:
                     info = "\n".join(self._status_lines[:2])
-                    info_rect = QRect(x + 24, bar_y + bar_h + 14, w - 48, max(20, h - (bar_h + 42)))
-                    painter.drawText(info_rect, ALIGN_CENTER, info)
+                    info_rect = QRect(x + 28, bar_y + bar_h + 18, w - 56, max(40, h - (bar_h + 48)))
+                    info_font = painter.font()
+                    info_font.setBold(True)
+                    info_font.setPixelSize(max(22, int(h * 0.15)))
+                    painter.setFont(info_font)
+                    painter.drawText(info_rect, ALIGN_CENTER | WORD_WRAP, info)
             else:
                 dots = "." * self._status_phase if self._status_animate else ""
                 lines = [line for line in self._status_message.splitlines() if line.strip()]
@@ -323,7 +333,11 @@ class LoadingScreen(QWidget):
                     lines = [f"{line}{dots}" for line in lines]
                 display = "\n".join(lines)
                 painter.setPen(QColor(255, 255, 255))
-                painter.drawText(box_rect, ALIGN_CENTER, display)
+                message_font = painter.font()
+                message_font.setBold(True)
+                message_font.setPixelSize(max(24, int(h * 0.18)))
+                painter.setFont(message_font)
+                painter.drawText(box_rect, ALIGN_CENTER | WORD_WRAP, display)
 
     def mousePressEvent(self, event: QMouseEvent):  # noqa: N802
         if event.button() != LEFT_BUTTON:

@@ -93,6 +93,19 @@ def _remote_action_payload(device: Device):
     }
 
 
+def _device_identity_payload(device: Device):
+    org = getattr(device, "org", None)
+    branch = getattr(device, "branch", None)
+    return {
+        "device_code": str(getattr(device, "device_code", "") or "").strip(),
+        "display_name": str(getattr(device, "display_name", "") or "").strip(),
+        "org_code": str(getattr(org, "code", "") or "").strip(),
+        "org_name": str(getattr(org, "name", "") or "").strip(),
+        "branch_code": str(getattr(branch, "code", "") or "").strip(),
+        "branch_name": str(getattr(branch, "name", "") or "").strip(),
+    }
+
+
 def _clear_pending_remote_action(device: Device, expected_id: str = "") -> None:
     payload = device.pending_remote_action if isinstance(device.pending_remote_action, dict) else {}
     command_id = str(payload.get("id", "")).strip()
@@ -162,6 +175,7 @@ class HeartbeatView(APIView):
                 "heartbeat_id": heartbeat.id,
                 "device_lock": _lock_payload(device),
                 "remote_action": _remote_action_payload(device),
+                "device_identity": _device_identity_payload(device),
             }
         )
 
@@ -206,6 +220,7 @@ class ConfigView(APIView):
                 "config": config,
                 "device_lock": _lock_payload(device),
                 "remote_action": _remote_action_payload(device),
+                "device_identity": _device_identity_payload(device),
             }
         )
 

@@ -1622,6 +1622,7 @@ DEFAULT_COUPON_VALUE_SETTINGS = {
 }
 
 DEFAULT_DESIGN_FLIP_HORIZONTAL = True
+DEFAULT_LIVEVIEW_MIRROR = False
 
 DEFAULT_PRINTING_SETTINGS = {
     "enabled": True,
@@ -12741,6 +12742,8 @@ class AdminScreen(QWidget):
         self.setStyleSheet(
             "QWidget { background: #eef2f7; color: #0f172a; font-size: 15px; } "
             "QLabel#title { font-size: 32px; font-weight: 800; color: #0b1324; } "
+            "QLabel#identity { font-size: 17px; font-weight: 700; color: #334155; "
+            "padding: 10px 16px; border-radius: 12px; background: #ffffff; border: 1px solid #dbe3ef; } "
             "QLabel#section { font-size: 17px; font-weight: 800; color: #1e3a8a; "
             "padding: 8px 12px; border-radius: 8px; background: #e9f0ff; border: 1px solid #cfe0ff; } "
             "QLabel#status { color: #0a7a55; font-size: 16px; font-weight: 700; padding: 4px 6px; } "
@@ -12774,6 +12777,15 @@ class AdminScreen(QWidget):
         title.setObjectName("title")
         title.setAlignment(ALIGN_CENTER)
         root_layout.addWidget(title)
+        self._device_identity_label = QLabel("", self)
+        self._device_identity_label.setObjectName("identity")
+        self._device_identity_label.setAlignment(ALIGN_CENTER)
+        self._device_identity_label.setWordWrap(True)
+        root_layout.addWidget(self._device_identity_label)
+        initial_identity = None
+        if hasattr(self.main_window, "get_device_identity"):
+            initial_identity = self.main_window.get_device_identity()
+        self._set_device_identity(initial_identity)
 
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setWidgetResizable(True)
@@ -13260,6 +13272,36 @@ class AdminScreen(QWidget):
     def set_overlay_visible(self, visible: bool) -> None:
         _ = visible
 
+    @staticmethod
+    def _format_identity_value(name: str, code: str, fallback: str = "-") -> str:
+        clean_name = str(name or "").strip()
+        clean_code = str(code or "").strip()
+        if clean_name and clean_code and clean_name != clean_code:
+            return f"{clean_name} ({clean_code})"
+        if clean_name:
+            return clean_name
+        if clean_code:
+            return clean_code
+        return fallback
+
+    def _set_device_identity(self, device_identity: Optional[dict]) -> None:
+        payload = dict(device_identity) if isinstance(device_identity, dict) else {}
+        device_text = self._format_identity_value(
+            payload.get("display_name", ""),
+            payload.get("device_code", ""),
+        )
+        org_text = self._format_identity_value(
+            payload.get("org_name", ""),
+            payload.get("org_code", ""),
+        )
+        branch_text = self._format_identity_value(
+            payload.get("branch_name", ""),
+            payload.get("branch_code", ""),
+        )
+        self._device_identity_label.setText(
+            f"장치: {device_text}\n조직: {org_text}   지점: {branch_text}"
+        )
+
     def load_settings(
         self,
         settings: dict,
@@ -13272,7 +13314,9 @@ class AdminScreen(QWidget):
         layout_ids: Optional[list[str]] = None,
         printing: Optional[dict] = None,
         printer_names: Optional[list[str]] = None,
+        device_identity: Optional[dict] = None,
     ) -> None:
+        self._set_device_identity(device_identity)
         self.test_mode_cb.setChecked(bool(settings.get("test_mode", False)))
         self.allow_dummy_cb.setChecked(
             bool(
@@ -16311,6 +16355,36 @@ class CameraScreen(ImageScreen):
             self._gif_burst_timers.append(timer)
             timer.start(delay_ms)
 
+    def _gif_burst_duration_ms(self) -> int:
+        gif_settings = {}
+        if hasattr(self.main_window, "get_gif_settings"):
+            gif_settings = self.main_window.get_gif_settings()
+        if not bool(gif_settings.get("enabled", True)):
+            return 0
+        try:
+            frames_per_shot = int(
+                gif_settings.get("frames_per_shot", DEFAULT_GIF_SETTINGS["frames_per_shot"])
+            )
+        except Exception:
+            frames_per_shot = int(DEFAULT_GIF_SETTINGS["frames_per_shot"])
+        try:
+            interval_ms = int(
+                gif_settings.get("interval_ms", DEFAULT_GIF_SETTINGS["interval_ms"])
+            )
+        except Exception:
+            interval_ms = int(DEFAULT_GIF_SETTINGS["interval_ms"])
+        frames_per_shot = max(1, frames_per_shot)
+        interval_ms = max(50, interval_ms)
+        return max(0, (frames_per_shot - 1) * interval_ms + 80)
+
+    def _ensure_gif_frames_for_shot(self, shot_index: int) -> None:
+        if shot_index <= 0:
+            return
+        bucket = self._gif_frames_by_shot.get(int(shot_index)) or []
+        if bucket:
+            return
+        self._start_gif_burst_capture(int(shot_index))
+
     def _grab_one_gif_frame(self, shot_index: int, grab_index: int) -> None:
         data = self._make_gif_grab_bytes()
         if not data:
@@ -16739,7 +16813,7 @@ class CameraScreen(ImageScreen):
         else:
             # Some SDK streams report oversized buffers (~8MB). Keep a compact copy only.
             self._last_liveview_jpeg = None
-        if DEFAULT_DESIGN_FLIP_HORIZONTAL:
+        if DEFAULT_LIVEVIEW_MIRROR:
             image = image.mirrored(True, False)
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
@@ -16913,7 +16987,8 @@ class CameraScreen(ImageScreen):
         self._finish_capture_cycle()
         self._schedule_auto_next_if_complete()
         if self._remote_capture_mode_enabled() and len(self.shot_paths) < self.capture_slots:
-            QTimer.singleShot(250, self._start_remote_ready_countdown)
+            remote_delay_ms = max(250, self._gif_burst_duration_ms())
+            QTimer.singleShot(remote_delay_ms, self._start_remote_ready_countdown)
         self._schedule_auto_continue(600)
 
     def _on_capture_success(self, out_path: str) -> None:
@@ -16985,6 +17060,7 @@ class CameraScreen(ImageScreen):
         except Exception as exc:
             print(f"[CAMERA] external capture save normalize failed: {exc}")
         print(f"[CAMERA] external capture accepted shot_index={index} path={source}")
+        self._ensure_gif_frames_for_shot(index)
         self._finalize_saved_shot(saved, index)
         if saved != source:
             try:
@@ -17969,6 +18045,14 @@ class KioskMainWindow(QMainWindow):
         self._device_registration_required = self._env_bool(os.environ.get("KIOSK_REQUIRE_DEVICE_AUTH", "1"), True)
         if self._device_registration_required:
             self._ensure_device_registration_or_raise()
+        self._device_identity = {
+            "device_code": str(self.share_settings.get("device_code", "")).strip(),
+            "display_name": "",
+            "org_code": "",
+            "org_name": "",
+            "branch_code": "",
+            "branch_name": "",
+        }
         self.payment_pricing_settings = self._resolve_payment_pricing_settings()
         self.printing_settings = self._resolve_printing_settings()
         self.coupon_value_settings = self._resolve_coupon_value_settings()
@@ -19283,6 +19367,7 @@ class KioskMainWindow(QMainWindow):
                 self.get_pricing_layout_ids(),
                 self.get_printing_settings(),
                 printer_names,
+                self.get_device_identity(),
             )
 
     @staticmethod
@@ -26400,6 +26485,30 @@ class KioskMainWindow(QMainWindow):
         except Exception:
             return ""
 
+    def _consume_device_identity_payload(self, payload: Any) -> None:
+        current = dict(self._device_identity) if isinstance(getattr(self, "_device_identity", None), dict) else {}
+        share_code = str(self.share_settings.get("device_code", "")).strip() if isinstance(getattr(self, "share_settings", None), dict) else ""
+        merged = {
+            "device_code": str(current.get("device_code", "") or share_code).strip(),
+            "display_name": str(current.get("display_name", "") or "").strip(),
+            "org_code": str(current.get("org_code", "") or "").strip(),
+            "org_name": str(current.get("org_name", "") or "").strip(),
+            "branch_code": str(current.get("branch_code", "") or "").strip(),
+            "branch_name": str(current.get("branch_name", "") or "").strip(),
+        }
+        if isinstance(payload, dict):
+            for key in merged.keys():
+                value = str(payload.get(key, "") or "").strip()
+                if value:
+                    merged[key] = value
+        if not merged["display_name"] and merged["device_code"]:
+            merged["display_name"] = merged["device_code"]
+        self._device_identity = merged
+
+    def get_device_identity(self) -> dict[str, str]:
+        self._consume_device_identity_payload(None)
+        return dict(self._device_identity)
+
     def _has_pending_payment_bypass_action(self) -> bool:
         payload = (
             self._pending_remote_action_payload
@@ -26555,6 +26664,7 @@ class KioskMainWindow(QMainWindow):
             data = parsed_payload if isinstance(parsed_payload, dict) else (response.json() if response.content else {})
             if not isinstance(data, dict):
                 data = {}
+            self._consume_device_identity_payload(data.get("device_identity"))
             remote_action_payload = data.get("remote_action")
             if isinstance(remote_action_payload, dict):
                 self._consume_remote_action_payload(remote_action_payload)
@@ -26587,6 +26697,7 @@ class KioskMainWindow(QMainWindow):
             if not isinstance(data, dict):
                 return False, "invalid json payload"
             self._apply_server_lock_payload(data.get("device_lock"), trigger="config_probe")
+            self._consume_device_identity_payload(data.get("device_identity"))
             remote_action_payload = data.get("remote_action")
             if isinstance(remote_action_payload, dict):
                 self._consume_remote_action_payload(remote_action_payload)
