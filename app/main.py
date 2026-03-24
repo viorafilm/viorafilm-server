@@ -896,15 +896,18 @@ except ImportError:
             ) from exc
 
 try:
-    from PySide6.QtMultimedia import QSoundEffect  # type: ignore
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect  # type: ignore
 except Exception:
     try:
-        from PyQt6.QtMultimedia import QSoundEffect  # type: ignore
+        from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect  # type: ignore
     except Exception:
         try:
-            from PyQt5.QtMultimedia import QSoundEffect  # type: ignore
+            from PyQt5.QtMultimedia import QMediaPlayer, QSoundEffect  # type: ignore
+            QAudioOutput = None  # type: ignore
         except Exception:
             QSoundEffect = None  # type: ignore
+            QMediaPlayer = None  # type: ignore
+            QAudioOutput = None  # type: ignore
 
 from kiosk.print.compose import (
     EXPECTED_SLOT_COUNT_BY_LAYOUT,
@@ -1222,7 +1225,7 @@ DEFAULT_COUPON_SETTINGS = {
 
 DEFAULT_GIF_SETTINGS = {
     "enabled": True,
-    "frames_per_shot": 10,
+    "frames_per_shot": 6,
     "interval_ms": 100,
     "max_width": 480,
 }
@@ -1622,7 +1625,7 @@ DEFAULT_COUPON_VALUE_SETTINGS = {
 }
 
 DEFAULT_DESIGN_FLIP_HORIZONTAL = True
-DEFAULT_LIVEVIEW_MIRROR = False
+DEFAULT_LIVEVIEW_MIRROR = True
 
 DEFAULT_PRINTING_SETTINGS = {
     "enabled": True,
@@ -16016,6 +16019,7 @@ class CameraScreen(ImageScreen):
         self._countdown_active = False
         self._countdown_mode = "idle"
         self._remote_capture_armed = False
+        self._remote_capture_accept_after_ts = 0.0
         self._retry_overlay_active = False
         self._retry_overlay_timer = QTimer(self)
         self._retry_overlay_timer.setSingleShot(True)
@@ -16080,6 +16084,7 @@ class CameraScreen(ImageScreen):
         self._first_shot_ready_deadline = 0.0
         self._countdown_mode = "idle"
         self._remote_capture_armed = False
+        self._remote_capture_accept_after_ts = 0.0
         remote_capture_mode = self._remote_capture_mode_enabled()
         self.auto_mode = not remote_capture_mode
         self.auto_wait_frame = True
@@ -16104,6 +16109,7 @@ class CameraScreen(ImageScreen):
         self._terminate_sdk_after_stop = True
         self._first_shot_ready_deadline = 0.0
         self._remote_capture_armed = False
+        self._remote_capture_accept_after_ts = 0.0
         self.auto_mode = False
         self.auto_wait_frame = False
         self.countdown_running = False
@@ -16198,6 +16204,7 @@ class CameraScreen(ImageScreen):
     def cancel_countdown(self) -> None:
         if self._countdown_mode == "remote_window":
             self._remote_capture_armed = False
+            self._remote_capture_accept_after_ts = 0.0
         self._countdown_timer.stop()
         self._countdown_value = 0
         self._countdown_active = False
@@ -16219,10 +16226,17 @@ class CameraScreen(ImageScreen):
             return
         if self.capture_slots > 0 and len(self.shot_paths) >= self.capture_slots:
             self._remote_capture_armed = False
+            self._remote_capture_accept_after_ts = 0.0
             self._refresh_remote_capture_counter()
             return
         countdown_seconds = self._resolve_countdown_seconds()
         self._remote_capture_armed = True
+        try:
+            accept_delay_ms = int(float(os.environ.get("KIOSK_REMOTE_ACCEPT_DELAY_MS", "450") or 450))
+        except Exception:
+            accept_delay_ms = 450
+        accept_delay_ms = max(0, min(3000, accept_delay_ms))
+        self._remote_capture_accept_after_ts = time.perf_counter() + (accept_delay_ms / 1000.0)
         if countdown_seconds <= 0:
             self._countdown_active = False
             self.countdown_running = False
@@ -16233,6 +16247,7 @@ class CameraScreen(ImageScreen):
                 f"shot_index={len(self.shot_paths) + 1}/{self.capture_slots}"
             )
             self._remote_capture_armed = False
+            self._remote_capture_accept_after_ts = 0.0
             self._trigger_remote_fallback_capture()
             return
         self._countdown_active = True
@@ -16976,6 +16991,11 @@ class CameraScreen(ImageScreen):
             self.shot_paths[index - 1] = saved
         elif len(self.shot_paths) == index - 1:
             self.shot_paths.append(saved)
+        try:
+            if hasattr(self.main_window, "ui_sound"):
+                self.main_window.ui_sound.play("shutter")
+        except Exception:
+            pass
         if self.session is not None:
             next_index = len(self.shot_paths) + 1
             if self.capture_slots > 0:
@@ -17042,8 +17062,21 @@ class CameraScreen(ImageScreen):
             except Exception:
                 pass
             return
+        now_ts = time.perf_counter()
+        if now_ts < float(self._remote_capture_accept_after_ts):
+            remaining_ms = int(max(0, round((float(self._remote_capture_accept_after_ts) - now_ts) * 1000)))
+            print(
+                "[CAMERA] external capture ignored (remote accept delay): "
+                f"{source} remaining_ms={remaining_ms}"
+            )
+            try:
+                source.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
 
         self._remote_capture_armed = False
+        self._remote_capture_accept_after_ts = 0.0
         self.cancel_countdown()
         self._capture_timeout_streak = 0
         index = len(self.shot_paths) + 1
@@ -17518,6 +17551,7 @@ class CameraScreen(ImageScreen):
         self._capture_timeout_streak = 0
         self._countdown_mode = "idle"
         self._remote_capture_armed = False
+        self._remote_capture_accept_after_ts = 0.0
         self.auto_wait_frame = True
         self.countdown_running = False
         self.capture_inflight = False
@@ -17792,6 +17826,16 @@ class CameraScreen(ImageScreen):
         y = (self.height() - scaled.height()) // 2
         painter.drawPixmap(x, y, scaled)
 
+    def _prepare_camera_screen_pixmap(self, pixmap: QPixmap) -> QPixmap:
+        if pixmap.isNull() or not DEFAULT_LIVEVIEW_MIRROR:
+            return pixmap
+        image = pixmap.toImage()
+        if image.isNull():
+            return pixmap
+        mirrored = image.mirrored(True, False)
+        prepared = QPixmap.fromImage(mirrored)
+        return prepared if not prepared.isNull() else pixmap
+
     def _get_liveview_rect(self) -> QRect:
         return self.design_rect_to_widget(self._liveview_design_rect)
 
@@ -17813,6 +17857,7 @@ class CameraScreen(ImageScreen):
             if idx < len(self.shot_paths):
                 shot_pixmap = QPixmap(str(self.shot_paths[idx]))
                 if not shot_pixmap.isNull():
+                    shot_pixmap = self._prepare_camera_screen_pixmap(shot_pixmap)
                     self._draw_cover_pixmap(painter, shot_pixmap, target)
 
 
@@ -17824,6 +17869,12 @@ class UiSoundManager(QObject):
         self.enabled = True
         self._sound_paths: dict[str, Path] = {}
         self._effects: dict[str, Any] = {}
+        self._players: dict[str, Any] = {}
+        self._audio_outputs: dict[str, Any] = {}
+        self._bgm_paths: dict[str, Path] = {}
+        self._bgm_player = None
+        self._bgm_audio_output = None
+        self._bgm_key = ""
         self._fallback_paths: dict[str, Path] = {}
         self._load_sound_library()
 
@@ -17865,6 +17916,8 @@ class UiSoundManager(QObject):
         discovered = sorted(set(discovered), key=lambda p: p.name.lower())
         click_path = self._find_by_tokens(discovered, ["click", "tap", "button", "touch", "select"])
         nav_path = self._find_by_tokens(discovered, ["page", "screen", "transition", "nav", "next", "move", "loading"])
+        shutter_path = self._find_by_tokens(discovered, ["camera_shutter", "shutter"])
+        frame_select_bgm_path = self._find_by_tokens(discovered, ["selectstartbgm", "frame_select_bgm", "frame_select"])
         if click_path is None:
             click_path = self._find_by_tokens(discovered, ["btn", "select"])
         if nav_path is None:
@@ -17873,27 +17926,49 @@ class UiSoundManager(QObject):
         fallback = discovered[0]
         self._sound_paths["click"] = click_path or fallback
         self._sound_paths["nav"] = nav_path or fallback
+        if shutter_path is not None:
+            self._sound_paths["shutter"] = shutter_path
+        if frame_select_bgm_path is not None:
+            self._bgm_paths["frame_select"] = frame_select_bgm_path
         self._fallback_paths = dict(self._sound_paths)
 
         print(
             "[SOUND] loaded click="
             f"{self._sound_paths['click'].name} nav={self._sound_paths['nav'].name} "
+            f"shutter={self._sound_paths.get('shutter').name if self._sound_paths.get('shutter') else '-'} "
+            f"frame_select_bgm={self._bgm_paths.get('frame_select').name if self._bgm_paths.get('frame_select') else '-'} "
             f"count={len(discovered)}"
         )
 
-        if QSoundEffect is None:
+        if QSoundEffect is None and QMediaPlayer is None:
             print("[SOUND] QtMultimedia unavailable; using winsound fallback if possible")
             return
 
         for key, path in self._sound_paths.items():
-            try:
-                effect = QSoundEffect(self)
-                effect.setSource(QUrl.fromLocalFile(str(path)))
-                effect.setLoopCount(1)
-                effect.setVolume(0.85)
-                self._effects[key] = effect
-            except Exception as exc:
-                print(f"[SOUND] effect init failed key={key} path={path} err={exc}")
+            if path.suffix.lower() == ".wav" and QSoundEffect is not None:
+                try:
+                    effect = QSoundEffect(self)
+                    effect.setSource(QUrl.fromLocalFile(str(path)))
+                    effect.setLoopCount(1)
+                    effect.setVolume(0.85)
+                    self._effects[key] = effect
+                    continue
+                except Exception as exc:
+                    print(f"[SOUND] effect init failed key={key} path={path} err={exc}")
+            if QMediaPlayer is not None:
+                try:
+                    player = QMediaPlayer(self)
+                    audio_output = None
+                    if QAudioOutput is not None:
+                        audio_output = QAudioOutput(self)
+                        audio_output.setVolume(0.85)
+                        player.setAudioOutput(audio_output)
+                    player.setSource(QUrl.fromLocalFile(str(path)))
+                    self._players[key] = player
+                    if audio_output is not None:
+                        self._audio_outputs[key] = audio_output
+                except Exception as exc:
+                    print(f"[SOUND] media init failed key={key} path={path} err={exc}")
 
     def play(self, key: str) -> None:
         if not self.enabled:
@@ -17906,6 +17981,17 @@ class UiSoundManager(QObject):
                 return
             except Exception:
                 pass
+        player = self._players.get(key)
+        if player is not None:
+            try:
+                if hasattr(player, "stop"):
+                    player.stop()
+                if hasattr(player, "setPosition"):
+                    player.setPosition(0)
+                player.play()
+                return
+            except Exception:
+                pass
 
         # Fallback for environments where QtMultimedia backend is unavailable.
         if winsound is not None:
@@ -17915,6 +18001,44 @@ class UiSoundManager(QObject):
                     winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
                 except Exception:
                     pass
+
+    def stop_bgm(self) -> None:
+        self._bgm_key = ""
+        if self._bgm_player is not None:
+            try:
+                self._bgm_player.stop()
+            except Exception:
+                pass
+
+    def update_screen_bgm(self, screen_name: str) -> None:
+        if not self.enabled:
+            self.stop_bgm()
+            return
+        target_key = "frame_select" if str(screen_name or "").strip() == "frame_select" else ""
+        if target_key == self._bgm_key:
+            return
+        self.stop_bgm()
+        if not target_key:
+            return
+        path = self._bgm_paths.get(target_key)
+        if path is None or not path.is_file() or QMediaPlayer is None:
+            return
+        try:
+            if self._bgm_player is None:
+                self._bgm_player = QMediaPlayer(self)
+                if QAudioOutput is not None:
+                    self._bgm_audio_output = QAudioOutput(self)
+                    self._bgm_audio_output.setVolume(0.45)
+                    self._bgm_player.setAudioOutput(self._bgm_audio_output)
+            self._bgm_player.setSource(QUrl.fromLocalFile(str(path)))
+            if hasattr(self._bgm_player, "setLoops") and hasattr(QMediaPlayer, "Loops"):
+                self._bgm_player.setLoops(QMediaPlayer.Loops.Infinite)
+            if hasattr(self._bgm_player, "setPosition"):
+                self._bgm_player.setPosition(0)
+            self._bgm_player.play()
+            self._bgm_key = target_key
+        except Exception as exc:
+            print(f"[SOUND] bgm start failed key={target_key} path={path} err={exc}")
 
 
 class OfflineLockScreen(QWidget):
@@ -18004,6 +18128,7 @@ class KioskMainWindow(QMainWindow):
     server_lock_signal = Signal(object)
     server_mode_permissions_signal = Signal(object)
     ota_state_signal = Signal(object)
+    remote_action_signal = Signal(object)
     FRAME_SELECT_MODE_RECTS: dict[str, tuple[int, int, int, int]] = {
         "celebrity": (260, 820, 620, 86),
         "ai": (1040, 820, 620, 86),
@@ -18165,6 +18290,8 @@ class KioskMainWindow(QMainWindow):
         except Exception:
             printer_cache_ttl = 10.0
         self._printer_list_cache_ttl_sec = max(1.0, min(300.0, printer_cache_ttl))
+        self._heartbeat_printer_health_cache_lock = threading.Lock()
+        self._heartbeat_printer_health_cache: dict[str, tuple[float, bool, str]] = {}
         self._runtime_out_dir = _resolve_runtime_out_dir()
         self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
         self._ensure_runtime_dirs()
@@ -18308,6 +18435,7 @@ class KioskMainWindow(QMainWindow):
         self.server_lock_signal.connect(self._on_server_lock_signal)
         self.server_mode_permissions_signal.connect(self._on_server_mode_permissions_signal)
         self.ota_state_signal.connect(self._on_ota_state_signal)
+        self.remote_action_signal.connect(self._on_remote_action_signal)
 
         after_camera_loading_screen = LoadingScreen(self)
         after_camera_loading_screen.screen_name = "after_camera_loading"
@@ -18646,6 +18774,10 @@ class KioskMainWindow(QMainWindow):
         self.stack.setCurrentWidget(target)
         if should_play_nav_sound:
             self.ui_sound.play("nav")
+        try:
+            self.ui_sound.update_screen_bgm(screen_name)
+        except Exception:
+            pass
         if screen_name in {
             "payment_method",
             "pay_cash",
@@ -21973,7 +22105,7 @@ class KioskMainWindow(QMainWindow):
                 max_width = int(raw.get("max_width", DEFAULT_GIF_SETTINGS["max_width"]))
             except Exception:
                 max_width = int(DEFAULT_GIF_SETTINGS["max_width"])
-            result["frames_per_shot"] = max(1, min(10, frames_per_shot))
+            result["frames_per_shot"] = max(1, min(6, frames_per_shot))
             result["interval_ms"] = max(50, min(1000, interval_ms))
             result["max_width"] = max(64, min(1920, max_width))
         return result
@@ -22553,6 +22685,9 @@ class KioskMainWindow(QMainWindow):
             f"ai_enabled={1 if effective_modes.get('ai_enabled') else 0} "
             f"(allow_celebrity={1 if allow_celebrity else 0} allow_ai={1 if allow_ai else 0})"
         )
+
+    def _on_remote_action_signal(self, payload: Any) -> None:
+        self._consume_remote_action_payload(payload)
 
     def _apply_server_lock_payload(self, payload: Any, trigger: str) -> None:
         if not isinstance(payload, dict):
@@ -23250,6 +23385,27 @@ class KioskMainWindow(QMainWindow):
                 if not first_msg:
                     first_msg = str(msg)
         return False, (first_msg or ("프린터 이름 미설정" if not saw_candidates else "health_check_failed"))
+
+    def _heartbeat_printer_health_snapshot(
+        self,
+        cache_key: str,
+        config_keys: tuple[str, ...],
+        printing_settings: Optional[dict] = None,
+        ttl_sec: float = 30.0,
+    ) -> tuple[bool, str]:
+        now_ts = time.monotonic()
+        safe_ttl = max(1.0, float(ttl_sec or 30.0))
+        with self._heartbeat_printer_health_cache_lock:
+            cached = self._heartbeat_printer_health_cache.get(cache_key)
+            if cached is not None:
+                cached_ts, cached_ok, cached_msg = cached
+                if (now_ts - float(cached_ts)) < safe_ttl:
+                    return bool(cached_ok), str(cached_msg)
+
+        ok, msg = self._printer_health_snapshot(config_keys, printing_settings)
+        with self._heartbeat_printer_health_cache_lock:
+            self._heartbeat_printer_health_cache[cache_key] = (now_ts, bool(ok), str(msg))
+        return bool(ok), str(msg)
 
     @staticmethod
     def _resolve_print_model(settings: dict) -> str:
@@ -26561,6 +26717,13 @@ class KioskMainWindow(QMainWindow):
         next_payload["id"] = command_id
         next_payload["kind"] = kind
         self._pending_remote_action_payload = next_payload
+        try:
+            if QThread.currentThread() != self.thread():
+                self.remote_action_signal.emit(next_payload)
+                return
+        except Exception:
+            self.remote_action_signal.emit(next_payload)
+            return
         if command_id == str(self._last_remote_action_id or "").strip():
             self._pending_remote_action_payload = {}
             self._pending_remote_action_ack_id = command_id
@@ -26579,18 +26742,45 @@ class KioskMainWindow(QMainWindow):
         internet_ok, _internet_msg = check_internet(timeout=0.8, api_base_url=api_base)
         printing_settings = self.get_printing_settings()
         printers = printing_settings.get("printers", {}) if isinstance(printing_settings, dict) else {}
-
-        ds620_ok, ds620_msg = self._printer_health_snapshot(("DS620", "DS620_STRIP"), printing_settings)
-        rx1hs_ok, rx1hs_msg = self._printer_health_snapshot(("RX1HS",), printing_settings)
+        current_screen = (
+            self._current_screen_name_for_heartbeat()
+            if hasattr(self, "_current_screen_name_for_heartbeat")
+            else ""
+        )
+        heartbeat_printer_ttl_sec = 30.0
+        if current_screen in {
+            "camera",
+            "after_camera_loading",
+            "select_photo",
+            "select_design",
+            "preview",
+            "loading",
+            "qr_generating",
+            "thank_you",
+        }:
+            heartbeat_printer_ttl_sec = 180.0
+        heartbeat_health_fn = getattr(self, "_heartbeat_printer_health_snapshot", None)
+        if callable(heartbeat_health_fn):
+            ds620_ok, ds620_msg = heartbeat_health_fn(
+                "ds620_family",
+                ("DS620", "DS620_STRIP"),
+                printing_settings,
+                ttl_sec=heartbeat_printer_ttl_sec,
+            )
+            rx1hs_ok, rx1hs_msg = heartbeat_health_fn(
+                "rx1hs",
+                ("RX1HS",),
+                printing_settings,
+                ttl_sec=heartbeat_printer_ttl_sec,
+            )
+        else:
+            ds620_ok, ds620_msg = self._printer_health_snapshot(("DS620", "DS620_STRIP"), printing_settings)
+            rx1hs_ok, rx1hs_msg = self._printer_health_snapshot(("RX1HS",), printing_settings)
         printer_ok = bool(ds620_ok or rx1hs_ok)
 
         payload: dict[str, Any] = {
             "app_version": self._current_kiosk_app_version(),
-            "current_screen": (
-                self._current_screen_name_for_heartbeat()
-                if hasattr(self, "_current_screen_name_for_heartbeat")
-                else ""
-            ),
+            "current_screen": current_screen,
             "order_state": str(getattr(self, "current_order_state", "") or "").strip(),
             "internet_ok": bool(internet_ok),
             "camera_ok": True,
@@ -27678,6 +27868,10 @@ class KioskMainWindow(QMainWindow):
         self._ota_check_timer.stop()
         self._stop_payment_complete_transition_watchdog()
         self._stop_select_photo_preload_worker(wait=True)
+        try:
+            self.ui_sound.stop_bgm()
+        except Exception:
+            pass
         self.stop_bill_acceptor_test(wait_ms=3000)
         camera_screen = self.screens.get("camera")
         if isinstance(camera_screen, CameraScreen):
