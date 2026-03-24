@@ -19,19 +19,19 @@
     },
     {
       "id": "layout_4641",
-      "rect": [790, 220, 320, 640],
+      "rect": [930, 220, 302, 640],
       "action": "select_layout:4641"
     },
-    {
-      "id": "layout_4661",
-      "rect": [1150, 220, 320, 640],
-      "action": "select_layout:4661"
-    },
-    {
-      "id": "layout_4681",
-      "rect": [1510, 220, 320, 640],
-      "action": "select_layout:4681"
-    }
+      {
+        "id": "layout_4681",
+        "rect": [1233, 220, 265, 640],
+        "action": "select_layout:4681"
+      },
+      {
+        "id": "layout_4661",
+        "rect": [1499, 220, 281, 640],
+        "action": "select_layout:4661"
+      }
   ],
   "how_many_prints": [
     {

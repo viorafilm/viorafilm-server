@@ -1,72 +1,74 @@
-﻿{% extends "dashboard/base.html" %}
+{% extends "dashboard/base.html" %}
 {% block content %}
+{% with sales_text=dashboard_ui.text.sales common_text=dashboard_ui.text.common %}
 <div class="card card-soft mb-3">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <h5 class="mb-0">매출 관리</h5>
+      <h5 class="mb-0">{{ sales_text.title }}</h5>
       <a
         class="btn btn-success btn-sm"
         href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}&billing_month={{ billing_month_value|default:'' }}"
       >
-        엑셀 다운로드(CSV)
+        {{ sales_text.export_csv }}
       </a>
     </div>
 
     <form class="row g-2 mb-3" method="get">
+      <input type="hidden" name="lang" value="{{ dashboard_ui.lang }}">
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">조직</label>
+        <label class="form-label mb-1">{{ common_text.organization }}</label>
         <select class="form-select form-select-sm" name="org_id">
-          <option value="">전체 조직</option>
+          <option value="">{{ common_text.all_organizations }}</option>
           {% for o in filter_orgs %}
           <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">지점</label>
+        <label class="form-label mb-1">{{ common_text.branch }}</label>
         <select class="form-select form-select-sm" name="branch_id">
-          <option value="">전체 지점</option>
+          <option value="">{{ common_text.all_branches }}</option>
           {% for b in filter_branches %}
           <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">기간</label>
+        <label class="form-label mb-1">{{ sales_text.period }}</label>
         <select class="form-select form-select-sm" name="period" id="periodSelect">
-          <option value="week" {% if period == 'week' %}selected{% endif %}>1주</option>
-          <option value="month" {% if period == 'month' %}selected{% endif %}>1달</option>
-          <option value="custom" {% if period == 'custom' %}selected{% endif %}>특정 기간</option>
+          <option value="week" {% if period == 'week' %}selected{% endif %}>{{ sales_text.period_week }}</option>
+          <option value="month" {% if period == 'month' %}selected{% endif %}>{{ sales_text.period_month }}</option>
+          <option value="custom" {% if period == 'custom' %}selected{% endif %}>{{ sales_text.period_custom }}</option>
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">AI 청구 월</label>
+        <label class="form-label mb-1">{{ sales_text.billing_month }}</label>
         <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value|default:'' }}">
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">시작일</label>
+        <label class="form-label mb-1">{{ sales_text.start_date }}</label>
         <input class="form-control form-control-sm" type="date" name="start_date" id="startDateInput" value="{{ start_date|default:'' }}">
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">종료일</label>
+        <label class="form-label mb-1">{{ sales_text.end_date }}</label>
         <input class="form-control form-control-sm" type="date" name="end_date" id="endDateInput" value="{{ end_date|default:'' }}">
       </div>
       <div class="col-12 d-flex align-items-end gap-2">
-        <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
-        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_sales' %}">필터 초기화</a>
+        <button class="btn btn-sm btn-primary" type="submit">{{ common_text.apply_filters }}</button>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_sales' %}?lang={{ dashboard_ui.lang }}">{{ common_text.reset_filters }}</a>
       </div>
     </form>
 
     <div class="row g-3 mb-3">
       <div class="col-12 col-md-6">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">기간 매출 합계</div>
+          <div class="text-muted small">{{ sales_text.summary_total_amount }}</div>
           <div class="fs-4 fw-bold">{{ dashboard_ui.currency_unit }} {{ sales_total_amount }}</div>
         </div>
       </div>
       <div class="col-12 col-md-6">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">기간 거래 건수</div>
+          <div class="text-muted small">{{ sales_text.summary_total_count }}</div>
           <div class="fs-4 fw-bold">{{ sales_total_count }}</div>
         </div>
       </div>
@@ -75,47 +77,47 @@
     <div class="row g-3 mb-3">
       <div class="col-12 col-md-4">
         <div class="border rounded-3 p-3">
-          <div class="text-muted small">일반 모드</div>
-          <div class="fw-semibold">건수 {{ mode_counts.normal }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.normal }}</div>
+          <div class="text-muted small">{{ sales_text.mode_normal_title }}</div>
+          <div class="fw-semibold">{{ sales_text.mode_count_label }} {{ mode_counts.normal }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.normal }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4">
         <div class="border rounded-3 p-3">
-          <div class="text-muted small">AI 모드</div>
-          <div class="fw-semibold">건수 {{ mode_counts.ai }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.ai }}</div>
+          <div class="text-muted small">{{ sales_text.mode_ai_title }}</div>
+          <div class="fw-semibold">{{ sales_text.mode_count_label }} {{ mode_counts.ai }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.ai }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4">
         <div class="border rounded-3 p-3">
-          <div class="text-muted small">유명인 합성 모드</div>
-          <div class="fw-semibold">건수 {{ mode_counts.celebrity }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.celebrity }}</div>
+          <div class="text-muted small">{{ sales_text.mode_celebrity_title }}</div>
+          <div class="fw-semibold">{{ sales_text.mode_count_label }} {{ mode_counts.celebrity }} / {{ dashboard_ui.currency_unit }} {{ mode_amounts.celebrity }}</div>
         </div>
       </div>
     </div>
 
     <div class="card card-soft mb-3">
       <div class="card-body">
-        <h6 class="mb-2">AI 월별 청구 예상액 (브랜치별)</h6>
+        <h6 class="mb-2">{{ sales_text.ai_billing_title }}</h6>
         <div class="text-muted small mb-3">
-          기준 월: {{ billing_month_value }} / 집계 기간: {{ billing_start_date }} ~ {{ billing_end_date }}
-          {% if billing_end_date != billing_month_last %}(현재 월 실시간 누적){% endif %}
+          {{ sales_text.billing_month_prefix }}: {{ billing_month_value }} / {{ sales_text.billing_period_prefix }}: {{ billing_start_date }} ~ {{ billing_end_date }}
+          {% if billing_end_date != billing_month_last %}{{ sales_text.billing_live_suffix }}{% endif %}
         </div>
         <div class="row g-2 mb-3">
           <div class="col-12 col-md-4">
             <div class="border rounded-3 p-2 bg-light-subtle">
-              <div class="text-muted small">AI 거래 건수</div>
+              <div class="text-muted small">{{ sales_text.ai_sales_count }}</div>
               <div class="fw-semibold">{{ ai_branch_sales_count }}</div>
             </div>
           </div>
           <div class="col-12 col-md-4">
             <div class="border rounded-3 p-2 bg-light-subtle">
-              <div class="text-muted small">AI 생성 이미지</div>
+              <div class="text-muted small">{{ sales_text.ai_generated_images }}</div>
               <div class="fw-semibold">{{ ai_branch_images_count }}</div>
             </div>
           </div>
           <div class="col-12 col-md-4">
             <div class="border rounded-3 p-2 bg-light-subtle">
-              <div class="text-muted small">월 청구 예상 합계</div>
+              <div class="text-muted small">{{ sales_text.ai_estimated_total }}</div>
               <div class="fw-semibold">{{ dashboard_ui.currency_unit }} {{ ai_branch_billing_total }}</div>
             </div>
           </div>
@@ -124,12 +126,12 @@
           <table class="table table-sm table-hover align-middle mb-0">
             <thead>
               <tr>
-                <th>조직</th>
-                <th>지점코드</th>
-                <th>지점명</th>
-                <th>AI 거래</th>
-                <th>AI 이미지</th>
-                <th>청구 예상액</th>
+                <th>{{ sales_text.table_org }}</th>
+                <th>{{ sales_text.table_branch_code }}</th>
+                <th>{{ sales_text.table_branch_name }}</th>
+                <th>{{ sales_text.table_ai_sales }}</th>
+                <th>{{ sales_text.table_ai_images }}</th>
+                <th>{{ sales_text.table_estimated_charge }}</th>
               </tr>
             </thead>
             <tbody>
@@ -143,7 +145,7 @@
                 <td>{{ dashboard_ui.currency_unit }} {{ row.billing_amount }}</td>
               </tr>
               {% empty %}
-              <tr><td colspan="6" class="text-center text-muted py-3">해당 월 AI 사용 내역이 없습니다.</td></tr>
+              <tr><td colspan="6" class="text-center text-muted py-3">{{ sales_text.ai_empty }}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -153,7 +155,7 @@
 
     <div class="card card-soft mb-3">
       <div class="card-body">
-        <h6 class="mb-3">매출 그래프</h6>
+        <h6 class="mb-3">{{ sales_text.chart_title }}</h6>
         <canvas id="salesTotalChart" height="120"></canvas>
       </div>
     </div>
@@ -162,16 +164,16 @@
       <table class="table table-hover align-middle">
         <thead>
           <tr>
-            <th>시간</th>
-            <th>장치</th>
-            <th>세션</th>
-            <th>레이아웃</th>
-            <th>모드</th>
-            <th>총액</th>
-            <th>결제수단</th>
-            <th>현금</th>
-            <th>쿠폰</th>
-            <th>쿠폰코드</th>
+            <th>{{ sales_text.table_time }}</th>
+            <th>{{ common_text.device }}</th>
+            <th>{{ sales_text.table_session }}</th>
+            <th>{{ sales_text.table_layout }}</th>
+            <th>{{ sales_text.table_mode }}</th>
+            <th>{{ sales_text.table_total }}</th>
+            <th>{{ sales_text.table_payment_method }}</th>
+            <th>{{ sales_text.table_cash }}</th>
+            <th>{{ sales_text.table_coupon }}</th>
+            <th>{{ sales_text.table_coupon_code }}</th>
           </tr>
         </thead>
         <tbody>
@@ -183,7 +185,7 @@
             <td>{{ s.layout_id }}</td>
             <td>
               {% with m=s.meta.compose_mode|default:"normal" %}
-                {% if m == "ai" %}AI{% elif m == "celebrity" %}CELEBRITY{% else %}NORMAL{% endif %}
+                {% if m == "ai" %}{{ sales_text.mode_ai }}{% elif m == "celebrity" %}{{ sales_text.mode_celebrity }}{% else %}{{ sales_text.mode_normal }}{% endif %}
               {% endwith %}
             </td>
             <td>{{ dashboard_ui.currency_unit }} {{ s.price_total }}</td>
@@ -193,7 +195,7 @@
             <td>{% if s.coupon %}{{ s.coupon.formatted_code }}{% else %}-{% endif %}</td>
           </tr>
           {% empty %}
-          <tr><td colspan="10" class="text-center text-muted py-4">매출 데이터가 없습니다.</td></tr>
+          <tr><td colspan="10" class="text-center text-muted py-4">{{ sales_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -235,7 +237,7 @@
         datasets: [
           {
             type: "bar",
-            label: "매출 ({{ dashboard_ui.currency_unit|escapejs }})",
+            label: "{{ sales_chart_revenue_label|escapejs }}",
             data: totals,
             backgroundColor: "rgba(14, 165, 233, 0.5)",
             borderColor: "rgba(14, 165, 233, 1)",
@@ -243,7 +245,7 @@
           },
           {
             type: "line",
-            label: "거래 건수",
+            label: "{{ sales_text.chart_dataset_transactions|escapejs }}",
             data: counts,
             borderColor: "rgba(239, 68, 68, 1)",
             backgroundColor: "rgba(239, 68, 68, 0.2)",
@@ -258,17 +260,18 @@
         scales: {
           y: {
             beginAtZero: true,
-            title: { display: true, text: "매출({{ dashboard_ui.currency_unit|escapejs }})" }
+            title: { display: true, text: "{{ sales_chart_revenue_axis_title|escapejs }}" }
           },
           y1: {
             beginAtZero: true,
             position: "right",
             grid: { drawOnChartArea: false },
-            title: { display: true, text: "거래 건수" }
+            title: { display: true, text: "{{ sales_text.chart_axis_transactions|escapejs }}" }
           }
         }
       }
     });
   })();
 </script>
+{% endwith %}
 {% endblock %}

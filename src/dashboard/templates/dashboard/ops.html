@@ -1,95 +1,97 @@
 {% extends "dashboard/base.html" %}
 {% block content %}
+{% with ops_text=dashboard_ui.text.ops common_text=dashboard_ui.text.common %}
 <div class="card card-soft mb-3">
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-      <h5 class="mb-0">관측성</h5>
-      <div class="text-muted small">생성 시각: {{ ops_generated_at }}</div>
+      <h5 class="mb-0">{{ ops_text.title }}</h5>
+      <div class="text-muted small">{{ common_text.generated_at }}: {{ ops_generated_at }}</div>
     </div>
 
     <form class="row g-2 mb-3" method="get">
+      <input type="hidden" name="lang" value="{{ dashboard_ui.lang }}">
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">조직</label>
+        <label class="form-label mb-1">{{ common_text.organization }}</label>
         <select class="form-select form-select-sm" name="org_id">
-          <option value="">전체 조직</option>
+          <option value="">{{ common_text.all_organizations }}</option>
           {% for o in filter_orgs %}
           <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-3">
-        <label class="form-label mb-1">지점</label>
+        <label class="form-label mb-1">{{ common_text.branch }}</label>
         <select class="form-select form-select-sm" name="branch_id">
-          <option value="">전체 지점</option>
+          <option value="">{{ common_text.all_branches }}</option>
           {% for b in filter_branches %}
           <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
           {% endfor %}
         </select>
       </div>
       <div class="col-12 d-flex align-items-end gap-2">
-        <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
-        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_ops' %}">필터 초기화</a>
+        <button class="btn btn-sm btn-primary" type="submit">{{ common_text.apply_filters }}</button>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_ops' %}?lang={{ dashboard_ui.lang }}">{{ common_text.reset_filters }}</a>
       </div>
     </form>
 
     <div class="row g-3 mb-3">
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">장치 수</div>
+          <div class="text-muted small">{{ ops_text.summary_device_count }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.device_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">온라인 장치</div>
+          <div class="text-muted small">{{ ops_text.summary_online_count }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.online_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">잠금 장치</div>
+          <div class="text-muted small">{{ ops_text.summary_locked_count }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.locked_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">업로드 대기 장치</div>
+          <div class="text-muted small">{{ ops_text.summary_share_queue_device_count }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.share_queue_device_count }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">Heartbeat 1시간</div>
+          <div class="text-muted small">{{ ops_text.summary_heartbeat_1h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.heartbeat_1h }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-2">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">Heartbeat 24시간</div>
+          <div class="text-muted small">{{ ops_text.summary_heartbeat_24h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.heartbeat_24h }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-3">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">공유 세션 24시간</div>
+          <div class="text-muted small">{{ ops_text.summary_share_24h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.share_24h }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-3">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">완료 공유 24시간</div>
+          <div class="text-muted small">{{ ops_text.summary_share_finalized_24h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.share_finalized_24h }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-3">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">업로드 파일 24시간</div>
+          <div class="text-muted small">{{ ops_text.summary_upload_24h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.upload_24h }}</div>
         </div>
       </div>
       <div class="col-12 col-md-4 col-xl-3">
         <div class="border rounded-3 p-3 bg-light-subtle">
-          <div class="text-muted small">매출 전송 24시간</div>
+          <div class="text-muted small">{{ ops_text.summary_sales_24h }}</div>
           <div class="fw-semibold fs-5">{{ ops_summary.sales_24h }}</div>
         </div>
       </div>
@@ -97,23 +99,23 @@
 
     <div class="card card-soft mb-3">
       <div class="card-body">
-        <h6 class="mb-3">장치 관측성</h6>
+        <h6 class="mb-3">{{ ops_text.device_observability_title }}</h6>
         <div class="table-responsive">
           <table class="table table-hover align-middle">
             <thead>
               <tr>
-                <th>Device</th>
-                <th>조직/지점</th>
-                <th>마지막 통신</th>
-                <th>온라인</th>
-                <th>인터넷</th>
-                <th>카메라</th>
-                <th>프린터</th>
-                <th>잠금</th>
-                <th>대기 업로드</th>
-                <th>대기 매출</th>
-                <th>대기 heartbeat</th>
-                <th>총 큐</th>
+                <th>{{ common_text.device }}</th>
+                <th>{{ dashboard_ui.text.devices.table_org_branch }}</th>
+                <th>{{ dashboard_ui.text.devices.table_last_seen }}</th>
+                <th>{{ dashboard_ui.text.devices.table_online }}</th>
+                <th>{{ dashboard_ui.text.devices.table_internet }}</th>
+                <th>{{ dashboard_ui.text.devices.table_camera }}</th>
+                <th>{{ dashboard_ui.text.devices.table_printer }}</th>
+                <th>{{ dashboard_ui.text.devices.table_lock }}</th>
+                <th>{{ ops_text.table_pending_upload }}</th>
+                <th>{{ ops_text.table_pending_sales }}</th>
+                <th>{{ ops_text.table_pending_heartbeat }}</th>
+                <th>{{ ops_text.table_total_queue }}</th>
               </tr>
             </thead>
             <tbody>
@@ -122,18 +124,18 @@
                 <td><code>{{ row.device.device_code }}</code></td>
                 <td>{{ row.device.org.code }}/{{ row.device.branch.code }}</td>
                 <td>{% if row.device.last_seen_at %}{{ row.device.last_seen_at }}{% else %}-{% endif %}</td>
-                <td>{% if row.online %}<span class="badge text-bg-success">ONLINE</span>{% else %}<span class="badge text-bg-secondary">OFFLINE</span>{% endif %}</td>
-                <td>{% if row.internet_ok == True %}정상{% elif row.internet_ok == False %}오류{% else %}-{% endif %}</td>
-                <td>{% if row.camera_ok == True %}정상{% elif row.camera_ok == False %}오류{% else %}-{% endif %}</td>
-                <td>{% if row.printer_ok == True %}정상{% elif row.printer_ok == False %}오류{% else %}-{% endif %}</td>
-                <td>{% if row.server_lock_active %}<span class="badge text-bg-danger">LOCKED</span>{% else %}<span class="badge text-bg-light">정상</span>{% endif %}</td>
+                <td>{% if row.online %}<span class="badge text-bg-success">{{ common_text.online_badge }}</span>{% else %}<span class="badge text-bg-secondary">{{ common_text.offline_badge }}</span>{% endif %}</td>
+                <td>{% if row.internet_ok == True %}{{ common_text.ok }}{% elif row.internet_ok == False %}{{ common_text.issue }}{% else %}-{% endif %}</td>
+                <td>{% if row.camera_ok == True %}{{ common_text.ok }}{% elif row.camera_ok == False %}{{ common_text.issue }}{% else %}-{% endif %}</td>
+                <td>{% if row.printer_ok == True %}{{ common_text.ok }}{% elif row.printer_ok == False %}{{ common_text.issue }}{% else %}-{% endif %}</td>
+                <td>{% if row.server_lock_active %}<span class="badge text-bg-danger">{{ ops_text.lock_locked }}</span>{% else %}<span class="badge text-bg-light">{{ ops_text.lock_normal }}</span>{% endif %}</td>
                 <td>{{ row.offline_queue_share_pending }}</td>
                 <td>{{ row.offline_queue_sale_pending }}</td>
                 <td>{{ row.offline_queue_heartbeat_pending }}</td>
                 <td>{{ row.offline_queue_total }}</td>
               </tr>
               {% empty %}
-              <tr><td colspan="12" class="text-center text-muted py-4">표시할 장치가 없습니다.</td></tr>
+              <tr><td colspan="12" class="text-center text-muted py-4">{{ ops_text.empty_devices }}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -143,17 +145,17 @@
 
     <div class="card card-soft">
       <div class="card-body">
-        <h6 class="mb-3">최근 공유 세션</h6>
+        <h6 class="mb-3">{{ ops_text.recent_shares_title }}</h6>
         <div class="table-responsive">
           <table class="table table-hover align-middle">
             <thead>
               <tr>
-                <th>시간</th>
-                <th>Device</th>
-                <th>토큰</th>
-                <th>상태</th>
-                <th>파일 키</th>
-                <th>업로드 파일 수</th>
+                <th>{{ common_text.time }}</th>
+                <th>{{ common_text.device }}</th>
+                <th>{{ common_text.token }}</th>
+                <th>{{ common_text.status }}</th>
+                <th>{{ ops_text.table_file_keys }}</th>
+                <th>{{ ops_text.table_upload_count }}</th>
               </tr>
             </thead>
             <tbody>
@@ -167,7 +169,7 @@
                 <td>{{ row.upload_count }}</td>
               </tr>
               {% empty %}
-              <tr><td colspan="6" class="text-center text-muted py-4">최근 공유 세션이 없습니다.</td></tr>
+              <tr><td colspan="6" class="text-center text-muted py-4">{{ ops_text.empty_shares }}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -176,4 +178,5 @@
     </div>
   </div>
 </div>
+{% endwith %}
 {% endblock %}

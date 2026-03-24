@@ -102,6 +102,8 @@ def _clear_pending_remote_action(device: Device, expected_id: str = "") -> None:
     device.pending_remote_action = {}
     device.pending_remote_action_updated_at = timezone.now()
     device.save(update_fields=["pending_remote_action", "pending_remote_action_updated_at", "updated_at"])
+
+
 def _merge_health_payload(existing: dict, incoming: dict) -> dict:
     merged = dict(existing or {})
     for key, value in dict(incoming or {}).items():
@@ -198,7 +200,14 @@ class ConfigView(APIView):
             "allow_celebrity_mode": bool(getattr(device, "allow_celebrity_mode", True)),
             "allow_ai_mode": bool(getattr(device, "allow_ai_mode", True)),
         }
-        return Response({"config_version": version_tag, "config": config, "device_lock": _lock_payload(device)})
+        return Response(
+            {
+                "config_version": version_tag,
+                "config": config,
+                "device_lock": _lock_payload(device),
+                "remote_action": _remote_action_payload(device),
+            }
+        )
 
 
 class ConfigAppliedView(APIView):

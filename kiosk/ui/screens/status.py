@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 try:
-    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtCore import QTimer, QRect, Qt
     from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import QLabel, QWidget
 except ImportError:
     try:
-        from PyQt6.QtCore import QRect, Qt
+        from PyQt6.QtCore import QTimer, QRect, Qt
         from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
         from PyQt6.QtWidgets import QLabel, QWidget
     except ImportError:
-        from PyQt5.QtCore import QRect, Qt
+        from PyQt5.QtCore import QTimer, QRect, Qt
         from PyQt5.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
         from PyQt5.QtWidgets import QLabel, QWidget
 
@@ -70,6 +70,8 @@ class _HotspotOverlay(QWidget):
 
 
 class StaticImageScreen(QWidget):
+    SCREEN_TIMEOUT_RECT = (1690, 24, 180, 64)
+
     def __init__(
         self,
         main_window,
@@ -84,8 +86,80 @@ class StaticImageScreen(QWidget):
         self._overlay = _HotspotOverlay(self)
         self._image = QPixmap(str(image_path))
         self._missing_text = missing_text or screen_name
+        self._screen_timeout_total_sec = 0
+        self._screen_timeout_remaining_sec = 0
+        self._screen_timeout_callback: Optional[Callable[[], None]] = None
+        self._screen_timeout_timer = QTimer(self)
+        self._screen_timeout_timer.setInterval(1000)
+        self._screen_timeout_timer.timeout.connect(self._on_screen_timeout_tick)
+        self._screen_timeout_label = QLabel("", self)
+        self._screen_timeout_label.setAlignment(ALIGN_CENTER)
+        self._screen_timeout_label.setStyleSheet(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 150); "
+            "font-size: 34px; font-weight: 800; border-radius: 10px; "
+            "border: 2px solid rgba(255,255,255,90); }"
+        )
+        self._screen_timeout_label.setAttribute(WA_TRANSPARENT, True)
+        self._screen_timeout_label.hide()
         if self._image.isNull():
             print(f"[{screen_name.upper()}] image not found: {image_path}")
+
+    def configure_screen_timeout(
+        self,
+        total_sec: int,
+        callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._screen_timeout_total_sec = max(0, int(total_sec))
+        self._screen_timeout_remaining_sec = self._screen_timeout_total_sec
+        self._screen_timeout_callback = callback
+        self._refresh_screen_timeout_label()
+
+    def _raise_screen_timeout_overlay(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            return
+        self._screen_timeout_label.raise_()
+        self._overlay.raise_()
+
+    def _refresh_screen_timeout_label(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            self._screen_timeout_label.hide()
+            return
+        remaining = max(0, int(self._screen_timeout_remaining_sec))
+        minutes = remaining // 60
+        seconds = remaining % 60
+        self._screen_timeout_label.setText(f"{minutes:02d}:{seconds:02d}")
+        self._screen_timeout_label.show()
+        self._raise_screen_timeout_overlay()
+
+    def _start_screen_timeout(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            self._screen_timeout_timer.stop()
+            self._screen_timeout_label.hide()
+            return
+        self._screen_timeout_remaining_sec = self._screen_timeout_total_sec
+        self._refresh_screen_timeout_label()
+        self._screen_timeout_timer.start()
+
+    def _stop_screen_timeout(self) -> None:
+        self._screen_timeout_timer.stop()
+        self._screen_timeout_label.hide()
+
+    def _on_screen_timeout_tick(self) -> None:
+        if self._screen_timeout_total_sec <= 0 or not self.isVisible():
+            self._stop_screen_timeout()
+            return
+        self._screen_timeout_remaining_sec = max(0, int(self._screen_timeout_remaining_sec) - 1)
+        self._refresh_screen_timeout_label()
+        if self._screen_timeout_remaining_sec > 0:
+            return
+        self._screen_timeout_timer.stop()
+        callback = self._screen_timeout_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            print(f"[TIMEOUT] screen={self.screen_name} callback failed: {exc}")
 
     def set_hotspots(self, hotspots: list[Hotspot]) -> None:
         self.hotspots = hotspots
@@ -98,6 +172,17 @@ class StaticImageScreen(QWidget):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._overlay.setGeometry(self.rect())
+        self._screen_timeout_label.setGeometry(self.design_rect_to_widget(self.SCREEN_TIMEOUT_RECT))
+        if self._screen_timeout_total_sec > 0 and self.isVisible():
+            self._raise_screen_timeout_overlay()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._start_screen_timeout()
+
+    def hideEvent(self, event):  # noqa: N802
+        self._stop_screen_timeout()
+        super().hideEvent(event)
 
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)

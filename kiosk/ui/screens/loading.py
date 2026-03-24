@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 try:
     from PySide6.QtCore import QRect, Qt, QTimer
@@ -36,6 +37,13 @@ if hasattr(Qt, "AlignmentFlag"):
     ALIGN_CENTER = Qt.AlignmentFlag.AlignCenter
 else:
     ALIGN_CENTER = Qt.AlignCenter
+
+if hasattr(Qt, "AspectRatioMode"):
+    KEEP_ASPECT = Qt.AspectRatioMode.KeepAspectRatio
+    SMOOTH_TRANSFORM = Qt.TransformationMode.SmoothTransformation
+else:
+    KEEP_ASPECT = Qt.KeepAspectRatio
+    SMOOTH_TRANSFORM = Qt.SmoothTransformation
 
 
 def _event_pos(event: QMouseEvent):
@@ -74,6 +82,19 @@ class LoadingScreen(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(max(150, min(250, int(interval_ms))))
         self._timer.timeout.connect(self._advance_frame)
+        self._status_message = ""
+        self._status_animate = False
+        self._status_phase = 0
+        self._status_percent: int | None = None
+        self._status_lines: list[str] = []
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(260)
+        self._status_timer.timeout.connect(self._advance_status_phase)
+        self._preview_frames: list[QPixmap] = []
+        self._preview_frame_index = 0
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setInterval(100)
+        self._preview_timer.timeout.connect(self._advance_preview_frame)
 
     def _load_frames(self) -> list[QPixmap]:
         frames_dir = ROOT_DIR / "assets" / "ui" / "8_after_camera_loadingpage"
@@ -113,14 +134,98 @@ class LoadingScreen(QWidget):
         self._frame_index = (self._frame_index + 1) % len(self._frames)
         self.update()
 
+    def _advance_status_phase(self) -> None:
+        self._status_phase = (self._status_phase + 1) % 4
+        if self._status_message:
+            self.update()
+
+    def _advance_preview_frame(self) -> None:
+        if len(self._preview_frames) <= 1:
+            return
+        self._preview_frame_index = (self._preview_frame_index + 1) % len(self._preview_frames)
+        self.update()
+
+    def set_preview_animation(
+        self,
+        frames_by_shot: dict[int, list[bytes]] | None,
+        interval_ms: int = 100,
+    ) -> None:
+        preview_frames: list[QPixmap] = []
+        if isinstance(frames_by_shot, dict):
+            for shot_index in sorted(frames_by_shot.keys()):
+                bucket = frames_by_shot.get(shot_index) or []
+                shot_frames: list[QPixmap] = []
+                for raw in bucket:
+                    if not raw:
+                        continue
+                    pixmap = QPixmap()
+                    if pixmap.loadFromData(raw):
+                        shot_frames.append(pixmap)
+                if not shot_frames:
+                    continue
+                preview_frames.extend(shot_frames)
+                linger_frames = max(1, min(3, len(shot_frames) // 3))
+                preview_frames.extend([shot_frames[-1]] * linger_frames)
+        self._preview_frames = preview_frames
+        self._preview_frame_index = 0
+        self._preview_timer.stop()
+        self._preview_timer.setInterval(max(80, min(250, int(interval_ms or 100))))
+        if len(self._preview_frames) > 1 and self.isVisible():
+            self._preview_timer.start()
+        self.update()
+
+    def clear_preview_animation(self) -> None:
+        self._preview_timer.stop()
+        self._preview_frames = []
+        self._preview_frame_index = 0
+        self.update()
+
+    def set_status_message(self, message: str, animate: bool = False) -> None:
+        self._status_message = str(message or "").strip()
+        self._status_percent = None
+        self._status_lines = []
+        parsed_lines = [line.strip() for line in self._status_message.splitlines() if line.strip()]
+        for line in parsed_lines:
+            match = re.search(r"(\d{1,3})\s*%", line)
+            if match:
+                try:
+                    value = int(match.group(1))
+                except Exception:
+                    value = 0
+                self._status_percent = max(0, min(100, value))
+                continue
+            self._status_lines.append(line)
+        self._status_animate = bool(animate and self._status_message)
+        self._status_phase = 0
+        if self._status_animate and self.isVisible():
+            self._status_timer.start()
+        else:
+            self._status_timer.stop()
+        self.update()
+
+    def clear_status_message(self) -> None:
+        self._status_message = ""
+        self._status_animate = False
+        self._status_phase = 0
+        self._status_percent = None
+        self._status_lines = []
+        self._status_timer.stop()
+        self.update()
+
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         if self._frames:
             self._timer.start()
+        if self._status_animate and self._status_message:
+            self._status_timer.start()
+        if len(self._preview_frames) > 1:
+            self._preview_timer.start()
 
     def hideEvent(self, event):  # noqa: N802
         super().hideEvent(event)
         self._timer.stop()
+        self._status_timer.stop()
+        self._preview_timer.stop()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -134,6 +239,91 @@ class LoadingScreen(QWidget):
         else:
             painter.setPen(QColor(255, 255, 255))
             painter.drawText(self.rect(), ALIGN_CENTER, "Loading...")
+
+        if self._preview_frames:
+            box_w = max(260, int(self.width() * 0.42))
+            box_h = max(180, int(self.height() * 0.36))
+            box_x = int((self.width() - box_w) / 2)
+            box_y = int(self.height() * 0.18)
+            box_rect = QRect(box_x, box_y, box_w, box_h)
+            painter.fillRect(box_rect, QColor(0, 0, 0, 160))
+            preview_pen = QPen(QColor(255, 255, 255, 210))
+            preview_pen.setWidth(3)
+            painter.setPen(preview_pen)
+            painter.drawRect(box_rect)
+
+            frame = self._preview_frames[self._preview_frame_index % len(self._preview_frames)]
+            if not frame.isNull():
+                inner_rect = QRect(
+                    box_x + 18,
+                    box_y + 18,
+                    max(1, box_w - 36),
+                    max(1, box_h - 36),
+                )
+                scaled = frame.scaled(inner_rect.size(), KEEP_ASPECT, SMOOTH_TRANSFORM)
+                draw_x = inner_rect.x() + max(0, int((inner_rect.width() - scaled.width()) / 2))
+                draw_y = inner_rect.y() + max(0, int((inner_rect.height() - scaled.height()) / 2))
+                painter.drawPixmap(draw_x, draw_y, scaled)
+
+        if self._status_message:
+            w = int(self.width() * 0.72)
+            h = max(130, int(self.height() * 0.22))
+            x = int((self.width() - w) / 2)
+            y = int(self.height() * 0.70)
+            box_rect = QRect(x, y, w, h)
+            painter.fillRect(box_rect, QColor(0, 0, 0, 175))
+            pen = QPen(QColor(255, 255, 255, 210))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawRect(box_rect)
+
+            if self._status_percent is not None:
+                percent = max(0, min(100, int(self._status_percent)))
+                bar_x = x + 32
+                bar_y = y + 22
+                bar_h = 36
+                percent_w = 96
+                bar_w = max(120, w - 32 - 24 - percent_w)
+                track_rect = QRect(bar_x, bar_y, bar_w, bar_h)
+                painter.fillRect(track_rect, QColor(255, 255, 255, 26))
+                track_pen = QPen(QColor(255, 255, 255, 130))
+                track_pen.setWidth(1)
+                painter.setPen(track_pen)
+                painter.drawRect(track_rect)
+
+                seg_gap = 6
+                seg_count = 10
+                inner_x = bar_x + 8
+                inner_y = bar_y + 8
+                inner_w = max(10, bar_w - 16)
+                inner_h = max(8, bar_h - 16)
+                seg_w = max(4, int((inner_w - (seg_gap * (seg_count - 1))) / seg_count))
+                filled = max(0, min(seg_count, int((percent + 9) / 10)))
+                cursor = inner_x
+                for idx in range(seg_count):
+                    seg_rect = QRect(cursor, inner_y, seg_w, inner_h)
+                    color = QColor(70, 190, 255, 230) if idx < filled else QColor(255, 255, 255, 40)
+                    painter.fillRect(seg_rect, color)
+                    cursor += seg_w + seg_gap
+
+                painter.setPen(QColor(255, 255, 255))
+                percent_rect = QRect(bar_x + bar_w + 8, bar_y, percent_w, bar_h)
+                painter.drawText(percent_rect, ALIGN_CENTER, f"{percent}%")
+
+                if self._status_lines:
+                    info = "\n".join(self._status_lines[:2])
+                    info_rect = QRect(x + 24, bar_y + bar_h + 14, w - 48, max(20, h - (bar_h + 42)))
+                    painter.drawText(info_rect, ALIGN_CENTER, info)
+            else:
+                dots = "." * self._status_phase if self._status_animate else ""
+                lines = [line for line in self._status_message.splitlines() if line.strip()]
+                if not lines:
+                    return
+                if dots:
+                    lines = [f"{line}{dots}" for line in lines]
+                display = "\n".join(lines)
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(box_rect, ALIGN_CENTER, display)
 
     def mousePressEvent(self, event: QMouseEvent):  # noqa: N802
         if event.button() != LEFT_BUTTON:
@@ -161,4 +351,3 @@ class LoadingScreen(QWidget):
             max(1, int(w * sx)),
             max(1, int(h * sy)),
         )
-

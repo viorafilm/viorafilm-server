@@ -1,38 +1,40 @@
-﻿{% extends "dashboard/base.html" %}
+{% extends "dashboard/base.html" %}
 {% block content %}
+{% with photo_text=dashboard_ui.text.photos common_text=dashboard_ui.text.common %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h5 class="mb-0">사진 관리</h5>
+  <h5 class="mb-0">{{ photo_text.title }}</h5>
 </div>
 <form class="row g-2 mb-3" method="get">
+  <input type="hidden" name="lang" value="{{ dashboard_ui.lang }}">
   <div class="col-12 col-md-4 col-lg-3">
-    <label class="form-label mb-1">조직</label>
+    <label class="form-label mb-1">{{ common_text.organization }}</label>
     <select class="form-select form-select-sm" name="org_id">
-      <option value="">전체 조직</option>
+      <option value="">{{ common_text.all_organizations }}</option>
       {% for o in filter_orgs %}
       <option value="{{ o.id }}" {% if filter_org_id == o.id %}selected{% endif %}>{{ o.code }} - {{ o.name }}</option>
       {% endfor %}
     </select>
   </div>
   <div class="col-12 col-md-4 col-lg-3">
-    <label class="form-label mb-1">지점</label>
+    <label class="form-label mb-1">{{ common_text.branch }}</label>
     <select class="form-select form-select-sm" name="branch_id">
-      <option value="">전체 지점</option>
+      <option value="">{{ common_text.all_branches }}</option>
       {% for b in filter_branches %}
       <option value="{{ b.id }}" {% if filter_branch_id == b.id %}selected{% endif %}>{{ b.org.code }}/{{ b.code }} - {{ b.name }}</option>
       {% endfor %}
     </select>
   </div>
   <div class="col-12 col-md-4 col-lg-3">
-    <label class="form-label mb-1">Token 검색</label>
-    <input type="text" class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="token 검색">
+    <label class="form-label mb-1">{{ photo_text.token_search }}</label>
+    <input type="text" class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="{{ photo_text.token_search_placeholder }}">
   </div>
   <div class="col-12 col-lg-3 d-flex align-items-end gap-2">
-    <button class="btn btn-sm btn-primary" type="submit">필터 적용</button>
-    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_photos' %}">필터 초기화</a>
+    <button class="btn btn-sm btn-primary" type="submit">{{ common_text.apply_filters }}</button>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_photos' %}?lang={{ dashboard_ui.lang }}">{{ common_text.reset_filters }}</a>
   </div>
 </form>
 <p class="text-muted small mb-3">
-  {% if q %}검색 결과{% else %}최근 7일 기준{% endif %}
+  {% if q %}{{ photo_text.search_results }}{% else %}{{ photo_text.recent_7days }}{% endif %}
 </p>
 
 <div class="card card-soft">
@@ -41,15 +43,15 @@
       <table class="table table-hover align-middle mb-0">
         <thead>
           <tr>
-            <th>생성 시간</th>
-            <th>장치</th>
-            <th>Token</th>
-            <th>상태</th>
-            <th>만료</th>
-            <th>조회수</th>
-            <th>미리보기</th>
-            <th>다운로드</th>
-            <th>공유</th>
+            <th>{{ photo_text.table_created_at }}</th>
+            <th>{{ common_text.device }}</th>
+            <th>{{ photo_text.table_token }}</th>
+            <th>{{ photo_text.table_status }}</th>
+            <th>{{ photo_text.table_expires }}</th>
+            <th>{{ photo_text.table_views }}</th>
+            <th>{{ photo_text.table_preview }}</th>
+            <th>{{ photo_text.table_download }}</th>
+            <th>{{ photo_text.table_share }}</th>
           </tr>
         </thead>
         <tbody>
@@ -58,7 +60,7 @@
             <td>{{ row.session.created_at }}</td>
             <td>{{ row.session.device.device_code }}</td>
             <td><code>{{ row.session.token }}</code></td>
-            <td>{% if row.is_expired %}EXPIRED{% else %}ACTIVE{% endif %}</td>
+            <td>{% if row.is_expired %}{{ photo_text.status_expired }}{% else %}{{ photo_text.status_active }}{% endif %}</td>
             <td>{{ row.session.expires_at }}</td>
             <td>{{ row.session.view_count }}</td>
             <td>
@@ -67,22 +69,23 @@
               {% if not row.print_url and not row.gif_url %}<span class="text-muted">-</span>{% endif %}
             </td>
             <td>
-              {% if row.print_url %}<a href="{{ row.print_url }}" target="_blank">print</a><br>{% endif %}
-              {% if row.frame_url %}<a href="{{ row.frame_url }}" target="_blank">frame</a><br>{% endif %}
-              {% if row.gif_url %}<a href="{{ row.gif_url }}" target="_blank">gif</a><br>{% endif %}
-              {% if row.video_url %}<a href="{{ row.video_url }}" target="_blank">video</a><br>{% endif %}
-              {% for u in row.original_urls %}
-                <a href="{{ u }}" target="_blank">original {{ forloop.counter }}</a><br>
+              {% if row.print_url %}<a href="{{ row.print_url }}" target="_blank">{{ photo_text.download_print }}</a><br>{% endif %}
+              {% if row.frame_url %}<a href="{{ row.frame_url }}" target="_blank">{{ photo_text.download_frame }}</a><br>{% endif %}
+              {% if row.gif_url %}<a href="{{ row.gif_url }}" target="_blank">{{ photo_text.download_gif }}</a><br>{% endif %}
+              {% if row.video_url %}<a href="{{ row.video_url }}" target="_blank">{{ photo_text.download_video }}</a><br>{% endif %}
+              {% for original in row.original_links %}
+                <a href="{{ original.url }}" target="_blank">{{ original.label }}</a><br>
               {% endfor %}
             </td>
-            <td><a href="{{ row.share_url }}" target="_blank">open</a></td>
+            <td><a href="{{ row.share_url }}" target="_blank">{{ photo_text.share_open }}</a></td>
           </tr>
           {% empty %}
-          <tr><td colspan="9" class="text-center text-muted py-4">공유 세션이 없습니다.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted py-4">{{ photo_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   </div>
 </div>
+{% endwith %}
 {% endblock %}

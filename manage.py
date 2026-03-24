@@ -1,9 +1,19 @@
 #!/usr/bin/env python
 import os
+import runpy
 import sys
+from pathlib import Path
 
 
 def main() -> None:
+    base_dir = Path(__file__).resolve().parent
+    src_manage = base_dir / "src" / "manage.py"
+    if src_manage.exists():
+        os.chdir(src_manage.parent)
+        sys.argv[0] = str(src_manage)
+        runpy.run_path(str(src_manage), run_name="__main__")
+        return
+
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
     try:
         from django.core.management import execute_from_command_line

@@ -64,7 +64,8 @@ def notify(device: Device, title: str, text: str):
             webhook = channel.config.get("webhook_url")
             if webhook:
                 try:
-                    requests.post(webhook, json={"text": f"{title}\n{text}"}, timeout=5)
+                    response = requests.post(webhook, json={"text": f"{title}\n{text}"}, timeout=5)
+                    response.raise_for_status()
                 except Exception:
                     logger.exception("[ALERT][SLACK] send failed device=%s", device.device_code)
         elif channel.type == ChannelType.EMAIL:

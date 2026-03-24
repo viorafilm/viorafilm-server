@@ -6,9 +6,9 @@ from django.conf import settings
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
+from audit.service import log_event
 from core.models import Device
 from sales.models import SaleTransaction
-from audit.service import log_event
 
 from .models import Alert, AlertType, ChannelType, NotificationChannel, Severity
 from .notifier import notify, parse_email_targets, send_email_targets
@@ -161,14 +161,14 @@ def _build_daily_report_body(
         code = row.get("branch__code") or "-"
         total = int(row.get("total_amount") or 0)
         tx = int(row.get("tx_count") or 0)
-        top_branch_ko.append(f"{idx}. {code}: KRW {_format_money(total)} ({tx}\uAC74)")
+        top_branch_ko.append(f"{idx}. {code}: KRW {_format_money(total)} ({tx}건)")
         top_branch_en.append(f"{idx}. {code}: KRW {_format_money(total)} ({tx} tx)")
     if not top_branch_ko:
         top_branch_ko = ["-"]
     if not top_branch_en:
         top_branch_en = ["-"]
     lines = [
-        f"[KO] 비오라필름 일일 운영 리포트 ({scope_name})",
+        f"[KO] Viorafilm 일일 운영 리포트 ({scope_name})",
         f"날짜: {date_str}",
         f"거래 건수: {tx_count}",
         f"총 매출: KRW {_format_money(total_amount)}",
@@ -177,7 +177,7 @@ def _build_daily_report_body(
         f"장치 온라인/오프라인: {online_count}/{offline_count}",
         f"잠금 장치 수: {locked_count}",
         f"미해결 알림 수: {open_alert_count}",
-        f"미해결 알림 타입: {open_lines}",
+        f"미해결 알림 유형: {open_lines}",
         f"지점별 매출 TOP {top_n_label}:",
         *top_branch_ko,
         "",
@@ -278,7 +278,7 @@ def check_device_health():
                 _notify_alert(
                     device,
                     alert,
-                    ko="프린터 상태를 확인하세요. (오프라인/용지/오류 가능)",
+                    ko="프린터 상태를 확인해 주세요. (오프라인/용지/오류 가능)",
                     en="Check printer status (offline/paper/error).",
                     detail_ko=printer_detail_ko,
                     detail_en=printer_detail_en,

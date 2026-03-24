@@ -1,0 +1,598 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>     
+	<style type="text/css" media="screen">
+		div {
+        margin: 10px 0px;
+		width :900px;
+        text-align: center;
+      }
+      .a {
+        border: 1px dashed #bcbcbc;
+      }
+	</style>
+    <script type="text/javascript" src="jquery-1.9.1.min.js" ></script>
+    <script type="text/javascript" src="jquery.form.js" ></script>
+    <script type="text/javascript" src="jquery.blockUI.js" ></script>
+</head>
+<body>
+<form name="form" method="post">
+<style="margin-top:30px;background-color:#FFF;">
+<div class="a">
+<div>NICE NVCAT HTTP 연동테스트프로그램</div>
+
+<table>	
+	<tr align="center">
+		<td><font size="2"> * 아래 거래 유형을 선택 후 테스트 진행해주세요.</font></td>
+	</tr>
+</table>
+
+<table align="center" cellspacing="0" cellpadding="0" style="width:800px; border:2px solid #ddd;background-color:#FFF;">
+	<tr bgcolor="blue" align ="center">
+		<p><td colspan = "3" span style="color:white"> 거래 유형 </td></p>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="credit"/>신용승인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="credit_fallback"/>신용승인(FALLBACK)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="credit_cancel"/>신용취소</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cup"/>해외은련승인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cup_cancel"/>해외은련취소</td>
+
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_keyin"/>현금승인(키인)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_keyin_cancel"/>현금취소(키인)</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_card"/>현금승인(카드)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_card_cancel2"/>현금취소(카드)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_touch"/>현금승인(터치)</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cash_touch_cancel"/>현금취소(터치)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC"/>현금IC승인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC_touch"/>현금IC승인(터치)</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC_cancel"/>현금IC취소</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC_jan"/>현금IC잔액조회</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC_app_result"/>현금IC승인결과</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="cashIC_cancel_result"/>현금IC취소결과</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_auth"/>카카오승인인증</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_money"/>카카오머니</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_approval"/>카카오카드승인</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_auth_cancel"/>카카오취소인증</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_money_cancel"/>카카오머니취소(바코드)</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="kakao_card_cancel"/>카카오카드취소(OTC)</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="paypro"/>PAYPRO간편결제승인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="paypro_cancel"/>PAYPRO간편결제취소</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="req_bill"/>수표조회</td>
+	</tr>	
+</table>
+<table align="center" cellspacing="0" cellpadding="0" style="width:800px; border:2px solid #ddd;background-color:#FFF;">
+	<tr bgcolor="blue" align ="center">
+		<p><td colspan = "3" span style="color:white"> 기타 API </td></p>	
+	</tr>	
+	<tr align="left">		
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="req_stop"/>카드리딩 요청취소</td>	
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="restart"/>NVCAT 재시작</td>			
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="nvcatshutdown"/>NVCATSHUTDOWN</td>	
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="reader_reset"/>리더기초기화</td>	
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="get_appr"/>직전거래 승인내역 조회</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cardbin"/>카드BIN요청</td>
+	</tr>
+	<tr align="left">					
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cashic"/>(리더기)현금IC 계좌 수 확인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cashic_mp"/>(멀티패드)현금IC 계좌 수 확인</td>
+	</tr>
+	<tr align="left">					
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cashic_2"/>(리더기)현금IC 가능 여부 확인</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cashic_mp2"/>(멀티패드)현금IC 가능 여부 확인</td>
+	</tr>
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_membership"/>멤버쉽 카드번호 요청</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cardin"/>(TIT리더기)카드삽입 여부</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="chk_cardin_mp"/>(멀티패드)카드삽입 여부</td>
+	</tr>
+	<tr align="left">	
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="readerportopen"/>리더기 PORT OPEN</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="readerportclose"/>리더기 PORT CLOSE</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="req_cashno"/>고객식별번호</td>		
+	</tr>
+	<tr align="left">		
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="set_server_ip"/>서버IP/PORT설정</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="req_barcode"/>바코드리딩</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="getmac"/>MAC주소가져오기</td>
+	</tr>
+	<tr align="left">		
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="setcnldisableyn"/>부정취소사용여부설정</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="titlock"/>TDR리더기 수동LOCK</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="reg_selectbtn"/>사용자 선택 버튼 기능</td>
+	</tr>	
+	<tr align="left">
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="getdecsigndata"/>BMP->서명데이터 변환</td>
+		<td><input type="radio" name="myRadios" onclick="handleClick(this);" value="req_signdata"/>서명 요청</td>
+	</tr>
+	<tr align="left">
+	</tr>
+</table>
+
+<table align="center" cellspacing="0" cellpadding="0" style="width:800px; border:2px solid #ddd;background-color:#FFF;">
+	<tr bgcolor="blue" align ="center">
+		<p><td colspan = "3" span style="color:white">[요청 파라미터]</td></p>
+	</tr>
+	<tr align="left">
+		<td>승인번호 : <input type="text" name="agreenum" style="width: 100px; height: 15px" value=""></td>
+		<td>승인날짜 : <input type="text" name="agreedate" style="width: 100px; height: 15px" value="220502"></td>
+		<td>CATID : <input type="text" name="catid" style="width: 100px; height: 15px" value=""></td>
+	</tr>
+	<tr align="left">
+		<td>할부 : <input type="text" name="halbu" style="width: 100px; height: 15px" value="00"></td>
+		<td>현금식별번호(바코드) : <input type="text" name="cashno" style="width: 100px; height: 15px" value="01023720000"></td>
+		<td>총금액 : <input type="text" name="money" style="width: 100px; height: 15px" value="1004"></td>
+	</tr>
+	<tr align="left">
+		<td>부가세 : <input type="text" name="tax" style="width: 100px; height: 15px" value="0"></td>
+		<td>봉사료 : <input type="text" name="bongsa" style="width: 100px; height: 15px" value="0"></td>
+		<td>면세금액 : <input type="text" name="myunse" style="width: 100px; height: 15px" value="0"></td>
+	</tr>
+</table>
+
+<br>
+SendData : <input type="text" name="SendData" size="100"><br><br>
+RecvData :
+<textarea name="RecvData" cols="100" rows="5"></textarea>
+<br><br>
+
+<a href="javascript:reqVCAT_HTTP()">VCAT 요청(HTTP방식)</a><p>
+<a href="javascript:Print()">프린트 출력</a><p>
+
+<table align="center" cellspacing="0" cellpadding="0" style="width:800px; border:2px solid #ddd;background-color:#FFF;">
+	<tr bgcolor="blue" align ="center">
+		<p><td colspan = "3" span style="color:white">[ 수표 조회 파라미터 ]</td></p>
+	</tr>
+	<tr align="left">
+		<td colspan = "3">수표종류 : <input type="text" name="billtype" style="width: 100px; height: 15px" value="00"> "00" : 자기앞수표, "01" : 가계수표, "02" : 당좌수표
+	</tr>
+	<tr align="left">	
+		<td colspan = "3">수표권종 : <input type="text" name="billmoney" style="width: 100px; height: 15px" value="13"> "13":10만원, "14":30만원, "15":50만원, "16":100만원, "19":비정액수표전체
+	</tr>
+	<tr align="left">
+		<td colspan = "3">수표번호 : <input type="text" name="billnum" style="width: 100px; height: 15px" value=""> 
+	</tr>
+	<tr align="left">
+		<td>발행일   : <input type="text" name="billdt" style="width: 100px; height: 15px" value="">
+		<td>주민등록번호 : <input type="text" name="billsn" style="width: 100px; height: 15px" value=""> 
+		<td>수표금액 : <input type="text" name="billamt" style="width: 100px; height: 15px" value=""> 
+	</tr>
+	<tr align="left">
+		<td colspan = "3">계좌일련번호 : <input type="text" name="billserial" style="width: 100px; height: 15px" value=""> 
+	</tr>
+</table>
+
+</div>
+</body>	
+</form>
+<div id="btn"></div>
+<div id="log"></div>
+<script type="text/javascript">
+	
+		var TYPE = "VCAT";
+		var TYPE2 = "NICEVCAT";
+		var FS = '\x1C';
+		var H7 = '\x07';
+		var sendbuf;
+		var iFlag = '0';
+		
+		var log = document.getElementById("log");
+	
+		
+		function handleClick(myRadio)
+		{
+			//alert(myRadio.value);			
+			if(myRadio.value == 'credit') //신용승인
+			{
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "10" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + "" + FS + "" + FS + FS + FS + "" + FS + FS + FS + FS + ""+ FS + H7;						
+			}
+			else if(myRadio.value == 'credit_fallback') //신용승인fallback 
+			{
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "10" + FS + "F" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "FALLBACK" + FS + H7;		
+			}
+			else if(myRadio.value == 'credit_cancel') //신용취소
+			{
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "10" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cup') //은련
+			{
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "UP" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cup_cancel') //은련취소
+			{
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "UP" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cash_keyin')  //현금 키인
+			{
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "21" + FS + "K" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + "" + FS + form.myunse.value + FS + FS + FS + FS + "" + FS;
+			}
+			else if(myRadio.value == 'cash_keyin_cancel') //현금 키인 취소
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "21" + FS + "K" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + "" + FS + form.myunse.value + FS + FS + FS + FS + "KEYIN" + FS + H7;
+			}		
+			else if(myRadio.value == 'cash_card')//현금승인 카드
+			{			
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "21" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + "" + FS + form.myunse.value + FS + FS + FS + FS + "CARD" + FS + H7;
+			}				
+			else if(myRadio.value == 'cash_card_cancel2') //현금취소 카드
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "21" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cash_touch') //현금승인 터치
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "21" + FS + "T" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + "" + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}			
+			else if(myRadio.value == 'cash_touch_cancel') //현금취소 터치
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "21" + FS + "T" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + "01" + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + "" + FS + form.myunse.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cashIC') //현금IC
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "I1" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + FS + FS + form.catid.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cashIC_touch') //현금IC 터치
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "I1" + FS + "17" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + FS + FS + form.catid.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cashIC_cancel') //현금IC취소
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "I4" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cashIC_jan') //현금IC잔액조회
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "I3" + FS + "00" + FS + FS + FS + FS + FS + FS + FS + FS + FS + FS + "현금IC잔액조회" + FS;
+			}
+			else if(myRadio.value == 'cashIC_app_result') //현금IC승인결과
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0200" + FS + "I2" + FS + "00" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "" + FS + H7;
+			}
+			else if(myRadio.value == 'cashIC_cancel_result') //현금IC취소결과
+			{	
+				sendbuf = "NICEVCAT" + H7 + "0420" + FS + "I2" + FS + "00" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "" + FS + H7; 
+			}
+			else if(myRadio.value == 'kakao_auth') //카카오승인인증
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0300" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "KKS" + FS + "" + FS + FS + FS + FS + FS + H7;
+			}
+			else if(myRadio.value == 'kakao_money') //카카오머니
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0300" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + "MONY         " + FS + "KKE" + FS + "" + FS + FS + FS + "KKE000001004" + FS + FS + H7;
+			}	
+			else if(myRadio.value == 'kakao_approval') //카카오카드승인
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0300" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + "CARD000000100" + FS + "KKE" + FS + "" + FS + FS + FS + "KKE000001004" + FS + FS + H7;
+			}
+			else if(myRadio.value == 'kakao_auth_cancel') //카카오취소인증
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0520" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "KKS" + FS + "" + FS + form.agreenum.value + FS + FS + FS + FS + H7;
+			}
+			else if(myRadio.value == 'kakao_money_cancel') //카카오 머니 취소 (바코드)
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0520" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "KKE000001004" + FS + "MONY         " + FS + "KKE" + FS + "" + FS + form.agreenum.value + FS + FS + FS + FS + H7 ; 
+			}
+			else if(myRadio.value == 'kakao_card_cancel') //카카오 카드 취소 (OTC)
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0520" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "KKE000001004" + FS + "CARD000000100" + FS + "KKE" + FS + "" + FS + form.agreenum.value + FS + FS + FS + FS+ H7;
+			}
+			else if(myRadio.value == 'paypro') //PAYPRO 통합 승인
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0300" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + "" + FS + "PRO" + FS + "" + FS + FS + FS + FS + FS + H7;
+			}
+			else if(myRadio.value == 'paypro_cancel') //PAYPRO 통합 취소
+			{	
+				sendbuf = "NICEVCATB" + H7  + "0520" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + "" + FS + "PRO" + FS + "" + FS + "" + FS + FS + FS + FS + H7;
+			}		
+			else if(myRadio.value == 'req_bill') //수표조회
+			{	
+				sendbuf = "NICEVCAT" + H7  + "0200" + FS + "20" + FS + "K" + FS + form.billtype.value + FS + form.billmoney.value + FS + form.billnum.value + FS + form.billdt.value + FS + form.billsn.value + FS + form.billamt.value + FS + form.billserial.value + FS + H7;
+			}		
+			else if(myRadio.value == 'req_stop')
+			{
+				sendbuf = "REQ_STOP";				
+			}	
+			else if(myRadio.value == 'restart')
+			{
+				sendbuf = "RESTART" + H7;
+			}		
+			else if(myRadio.value == 'nvcatshutdown')
+			{
+				sendbuf = "NVCATSHUTDOWN" + H7 ;
+			}
+			else if(myRadio.value == 'reader_reset')
+			{
+				sendbuf = "READER_RESET" + H7 + "3" + H7;
+			}			
+			else if(myRadio.value == 'get_appr')
+			{
+				sendbuf = "GET_APPR"+ H7 ;
+			}			
+			else if(myRadio.value == 'chk_cardbin')
+			{
+				sendbuf = "CHK_CARDBIN"+ H7 ;
+			}			
+			else if(myRadio.value == 'chk_cashic')
+			{
+				sendbuf = "CHK_CASHIC"+ H7 ;
+			}			
+			else if(myRadio.value == 'chk_cashic_mp')
+			{
+				sendbuf = "CHK_CASHIC_MP"+ H7 ;
+			}		
+			else if(myRadio.value == 'chk_cashic_2')
+			{
+				sendbuf = "CHK_CASHIC2"+ H7 ;
+			}
+			else if(myRadio.value == 'chk_cashic_mp2')
+			{
+				sendbuf = "CHK_CASHIC_MP2"+ H7 ;
+			}
+			else if(myRadio.value == 'chk_membership')
+			{
+				sendbuf = "CHK_MEMBERSHIP"+ H7 ;
+			}			
+			else if(myRadio.value == 'chk_cardin') //TIT카드삽입여부확인
+			{	
+				sendbuf = "CHK_CARDIN" + H7;
+			}			
+			else if(myRadio.value == 'chk_cardin_mp')
+			{
+				sendbuf = "CHK_CARDIN_MP"+ H7 ;
+			}						
+			else if(myRadio.value == 'readerportopen')
+			{
+				sendbuf = "ReaderPortOpen"+ H7 ;
+			}
+			else if(myRadio.value == 'readerportclose')
+			{
+				sendbuf = "ReaderPortClose"+ H7 ;
+			}
+			else if(myRadio.value == 'req_cashno')
+			{
+				sendbuf = "REQ_CASHNO"+ H7 ;
+			}			
+			else if(myRadio.value == 'set_server_ip')
+			{
+				sendbuf = "Set_SvrInfo"+ H7 + '10.222.141.100' + H7 + "8101" + H7;
+			}						
+			else if(myRadio.value == 'req_barcode')
+			{
+				sendbuf = "REQ_BARCODE" + H7 + "1" + H7;
+			}			
+			else if(myRadio.value == 'getmac')
+			{
+				sendbuf = "GetMac" + H7;
+			}			
+			else if(myRadio.value == 'setcnldisableyn')
+			{
+				sendbuf = "SetCnlDisableYN" + H7 + "T" + H7 + "N" + H7;
+			}			
+			else if(myRadio.value == 'titlock') 
+			{
+				sendbuf = "REQ_TITLOCK" + H7 ;
+			}			
+			else if(myRadio.value == 'reg_selectbtn')
+			{
+				sendbuf = "REQ_SELECTBTN" + H7 + "2" + H7 + "한글이다ABCD" + H7;
+			}
+			else if(myRadio.value == 'req_signdata')
+			{
+				sendbuf = "REQ_SIGNDATA" + H7;
+			}					
+			else if(myRadio.value == 'getdecsigndata')
+			{
+				sendbuf = "GetDecSignData" + H7 + "2" + H7 + "C:\\NICEVCAT\\SignDataBmp.bmp" + H7;
+			}
+			
+			form.SendData.value = sendbuf;			
+						
+		}	
+		
+		function Print() //Print POST : 영수증 프린트
+		{
+			var STX = '\x02';
+			var LF = '\x0A';
+			var ESC = '\x1B';
+			var FS = '\x1C';
+			var GS = '\x1D';
+			var US = '\x1F';
+
+			var sendbuf = 'NICEPRINT';
+			var sendMsg;	
+			var RecvData;
+			
+			// *************** 가로/세로 2배 확대 ***************
+			sendbuf = sendbuf + H7 + "30" + H7 + "115200" + H7;
+            sendbuf = sendbuf + ESC + '\x21' + '\x30';
+            sendbuf = sendbuf + "가로/세로 2배 확대" + LF;
+            sendbuf = sendbuf + "========================" + LF;
+            // *************** 확대 해제 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x00';
+
+			// *************** 세로 2배 확대 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x10';
+            sendbuf = sendbuf + "세로 2배 확대" + LF;
+            sendbuf = sendbuf + "================================================" + LF;
+            // *************** 확대 해제 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x00';
+            
+            // *************** 가로 2배 확대 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x20';
+            sendbuf = sendbuf + "가로 2배 확대" + LF;
+            sendbuf = sendbuf + "========================" + LF;
+            // *************** 확대 해제 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x00';
+            
+            // *************** 한줄에 일부 글자 확대 ***************
+            sendbuf = sendbuf + ESC + '\x21' + '\x30'; //2배확대
+            sendbuf = sendbuf + "여기만 확대!!!";
+            sendbuf = sendbuf + ESC + '\x21' + '\x00'; //확대해제
+            sendbuf = sendbuf + "여기는 축소!!!" + LF;
+            sendbuf = sendbuf + "================================================" + LF;
+            
+            // *************** 글자 출력 ***************
+            sendbuf = sendbuf + "복약지도문" + LF;
+            sendbuf = sendbuf + "홍길동님(27세/남)" + LF;
+            sendbuf = sendbuf + "조제일자: 12.10.23" + LF;
+            sendbuf = sendbuf + "================================================" + LF;
+            
+            // *************** 글자 출력 ***************
+            sendbuf = sendbuf + "약명> 노바스크정10밀리그램" + LF;
+            sendbuf = sendbuf + "용법>1일,3회,1정/3일 *한국화이자제약(주)" + LF;
+            sendbuf = sendbuf + "분류>고혈압/협심증약/고혈압, 심근성허혈증" + LF;
+            sendbuf = sendbuf + "효능>혈관확장 작용으로 혈압을 낮추고, 심장 부담을 감소시키며 심장으로의 산소공급을 늘려주는 약입니다. 증상이 없어도 복용을 중단하지 말고 정해진 용법,용량을 지켜주세요" + LF + LF;
+
+            // *************** 글자 출력 ***************
+            sendbuf = sendbuf + "================================================" + LF;
+
+            // *************** 글자 출력 ***************
+            sendbuf = sendbuf + "약명> 폰탈캅셀" + LF;
+            sendbuf = sendbuf + "용법>1일,3회,1캅셀/3일 *(주)유한양행" + LF;
+            sendbuf = sendbuf + "분류> 해열진통소염제/? 소염진통제? 두통,치통, 요통, 골관절염, 외상후 수술후 분만후 염증 및 동통, 부비동염에 수반하는 동통, 월경통" + LF;
+            sendbuf = sendbuf + "효능> 열을 내리고 염증을 가라앉히며 통증을 해소하는 약입니다. 다른 소염진통제와 병용하기 전 의사,약사와 상의하세요" + LF + LF;
+
+            // *************** 글자 출력 ***************
+            sendbuf = sendbuf + "------------------------------------------------" + LF;
+            sendbuf = sendbuf + "약국: 약학정보원" + LF;
+            sendbuf = sendbuf + "대표자/전화번호 : 김대업 02-581-5877" + LF;
+            sendbuf = sendbuf + "서울 서초구 서초3동 1489-3번지 대한약사회관" + LF + LF;
+            sendbuf = sendbuf + "휴일 및 심야당번약국 안내는 국번없이 1339로 문의하세요" + LF;
+            sendbuf = sendbuf + "www.pharm114.or.kr" + LF + LF;
+
+			// *************** 컷팅 출력 ***************
+			//용지절단 전 3라인 FEEDING
+			sendbuf = sendbuf + '\x1B' + "d" + '\x06'
+			//용지절단
+            sendbuf = sendbuf + ESC + "i";
+            //용지절단 후 3라인 FEEDING
+			sendbuf = sendbuf + '\x1B' + "d" + '\x01'
+
+			log.innerHTML+=
+			"<div>get message:<span class='data'>"+sendbuf+"</span></div>";	
+			
+			form.SendData.value = sendbuf;
+					
+		}
+		
+		function reqVCAT_HTTP(myRadio) 
+		{ 	
+			var sendMsg;	
+			var RecvData;
+
+			
+			form.RecvData.value = "";
+			sendMsg = form.SendData.value;		
+			
+			if(sendMsg.length == 0)
+				alert("거래 유형을 선택해주세요");
+			else{				
+				if(sendMsg == "REQ_STOP")
+				{					
+					sendbuf = make_send_data(sendMsg);					
+					
+					$.ajax
+						({ url         : "http://127.0.0.1:9189"    
+						 , type        : "POST"
+						 , dataType    : "text"
+						 //, timeout     : $("#vanpReqTimeOut").val()
+						 , data        : encodeURI(sendbuf)
+						 , success     : function(data) {							
+							form.RecvData.value = data;		
+						 }
+					});			
+					 
+				}
+				else 
+				{		
+					//요청 시 중복방지로직을 필수로 처리해주세요. 
+					if(iFlag == '0')
+					{
+						sendbuf = make_send_data(sendMsg);
+						iFlag = '1';
+						
+						$.ajax
+							({ url         : "http://127.0.0.1:9188"    
+							 , type        : "POST"
+							 , dataType    : "text"				 
+							 , data        : encodeURI(sendbuf)
+							 , success     : function(data) {							
+								form.RecvData.value = data;							
+								iFlag = '0';
+							 }
+							 , error       : function(request, status, error) {
+								if(sendMsg == "RESTART" || sendMsg == "NVCATSHUTDOWN")
+								{
+									//응답 받지 않아서 예외 처리
+								}
+								else
+									alert('AJAX 통신 실패! NVCAT 실행 여부 확인!');
+								iFlag = '0';
+							 }
+						});		
+					}
+					else	
+						alert('버튼 중복 클릭');				
+				}
+			}			
+				 			
+		}			
+		
+		
+		function make_send_data(senddata) {
+			var m_sendmsg;
+			var m_totlen;
+			var m_bodylen;
+
+			m_bodylen = senddata.NCbyteLength();
+			m_totlen = 12 + m_bodylen;
+
+			return NCpad(m_totlen,4) + "VCAT    " + NCpad(m_bodylen,4) + senddata;
+			
+		}
+
+		String.prototype.NCbyteLength = function(){
+			var l=0;
+			
+			for(var idx = 0; idx < this.length; idx++){
+				var c = escape(this.charAt(idx));
+
+				if(c.length == 1) l++;
+				else if(c.indexOf("%u") != -1) l += 3;
+				else if(c.indexOf("%") != -1) l += c.length/3; //JDK20210427 : UTF-8기준. EUC-KR은 /2로 수정 필요.
+			}
+			
+			return l;
+		};
+
+		
+		function NCpad(n,width)
+		{
+			n = n + '';
+			return n.length >= width ? n : new Array(width - n.length + 1).join('0') + n;
+		}
+
+			
+    </script>	
+
+
+</body>
+</html>

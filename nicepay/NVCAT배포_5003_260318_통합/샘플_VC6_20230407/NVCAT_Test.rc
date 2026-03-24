@@ -1,0 +1,397 @@
+//Microsoft Developer Studio generated resource script.
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include "afxres.h"
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// Korean resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_KOR)
+#ifdef _WIN32
+LANGUAGE LANG_KOREAN, SUBLANG_DEFAULT
+#pragma code_page(949)
+#endif //_WIN32
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "#include ""afxres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "#define _AFX_NO_SPLITTER_RESOURCES\r\n"
+    "#define _AFX_NO_OLE_RESOURCES\r\n"
+    "#define _AFX_NO_TRACKER_RESOURCES\r\n"
+    "#define _AFX_NO_PROPERTY_RESOURCES\r\n"
+    "\r\n"
+    "#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_KOR)\r\n"
+    "#ifdef _WIN32\r\n"
+    "LANGUAGE 18, 1\r\n"
+    "#pragma code_page(949)\r\n"
+    "#endif //_WIN32\r\n"
+    "#include ""res\\NVCAT_Test.rc2""  // non-Microsoft Visual C++ edited resources\r\n"
+    "#include ""l.kor\\afxres.rc""          // Standard components\r\n"
+    "#endif\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+IDR_MAINFRAME           ICON    DISCARDABLE     "res\\NVCAT_Test.ico"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_NVCAT_TEST_DIALOG DIALOGEX 0, 0, 467, 412
+STYLE DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "NVCAT_Test"
+FONT 9, "굴림"
+BEGIN
+    PUSHBUTTON      "READER_RESET (카드리더기 재시작)",IDC_BUTTON1,307,23,
+                    145,17
+    PUSHBUTTON      "RESTART (NVCAT 재시작)",IDC_BUTTON2,307,61,145,17
+    PUSHBUTTON      "리더기 요청취소",IDC_BUTTON3,148,118,65,17
+    LTEXT           "카드리더기 재시작 전 대기시간",IDC_STATIC,309,11,105,13
+    EDITTEXT        IDC_EDIT29,418,7,33,18,ES_AUTOHSCROLL
+    PUSHBUTTON      "CHK_MEMBERSHIP (멤버쉽 카드번호 조회)",IDC_BUTTON4,306,
+                    240,145,17
+    EDITTEXT        IDC_EDIT_RECVDATA,47,176,252,16,ES_AUTOHSCROLL
+    PUSHBUTTON      "CHK_CARDBIN (카드BIN 요청)",IDC_BUTTON5,307,199,145,17
+    PUSHBUTTON      "CHK_CARDIN (카드삽입 확인 (TIT리더기))",IDC_BUTTON6,306,
+                    339,145,17
+    PUSHBUTTON      "CHK_CARDIN_MP (카드삽입 확인 (일반))",IDC_BUTTON7,307,
+                    220,145,17
+    PUSHBUTTON      "REQ_CASHNO (고객식별번호 요청)",IDC_BUTTON8,307,100,145,
+                    17
+    PUSHBUTTON      "REQ_BARCODE (바코드/QR 리딩)",IDC_BUTTON9,307,179,145,
+                    17
+    PUSHBUTTON      "REQ_SIGNDATA (서명 요청)",IDC_BUTTON10,307,81,145,17
+    LTEXT           "리더기/서명패드/터치스크 유형",IDC_STATIC,307,124,109,
+                    13
+    EDITTEXT        IDC_EDIT99,421,121,31,18,ES_AUTOHSCROLL
+    LTEXT           "서버IP",IDC_STATIC,12,286,22,13
+    EDITTEXT        IDC_EDIT_SERVERIP,36,282,92,18,ES_AUTOHSCROLL
+    LTEXT           "서버PORT",IDC_STATIC,134,286,36,13
+    EDITTEXT        IDC_EDIT_SERVERPORT,172,282,40,18,ES_AUTOHSCROLL
+    PUSHBUTTON      "IP/PORT 설정",IDC_BUTTON11,215,281,78,17
+    PUSHBUTTON      "NVCATSHUTDOWN (NVCAT 강제종료)",IDC_BUTTON12,307,41,145,
+                    17
+    PUSHBUTTON      "CHK_CASHIC_MP2 (현금IC 카드 체크 (패드))",IDC_BUTTON13,
+                    306,279,145,17
+    PUSHBUTTON      "부정취소 방지 설정",IDC_BUTTON14,214,316,79,17
+    LTEXT           "가맹점다운로드 테스트여부",IDC_STATIC,8,321,87,13
+    EDITTEXT        IDC_EDIT_CNLTESTYN,95,317,18,18,ES_AUTOHSCROLL
+    LTEXT           "부정취소 미사용 시 ""Y""",IDC_STATIC,116,321,73,13
+    EDITTEXT        IDC_EDIT_CNLUSEYN,190,317,17,18,ES_AUTOHSCROLL
+    PUSHBUTTON      "REQ_TITLOCK (TIT리더기 수동 LOCK)",IDC_BUTTON15,306,299,
+                    145,17
+    PUSHBUTTON      "REQ_SELECTBTN (사용자 선택 화면 요청)",IDC_BUTTON16,307,
+                    159,145,17
+    PUSHBUTTON      "REQ_BALANCE (RF카드 잔액 조회)",IDC_BUTTON17,307,140,
+                    145,17
+    PUSHBUTTON      "CHK_CARDIN_TIT (TIT리더기 상태 체크)",IDC_BUTTON18,306,
+                    319,145,17
+    PUSHBUTTON      "리더기 펌웨어 업데이트",IDC_BUTTON19,214,353,79,17
+    GROUPBOX        "리더기 펌웨어 업데이트",IDC_STATIC,7,341,295,35
+    LTEXT           "리더기유형",IDC_STATIC,12,357,38,13
+    EDITTEXT        IDC_EDIT_READERTYPE,50,353,19,18,ES_AUTOHSCROLL
+    LTEXT           "펌웨어 파일 경로",IDC_STATIC,72,357,54,13
+    EDITTEXT        IDC_EDIT_FWFILEDIR,130,353,82,18,ES_AUTOHSCROLL
+    GROUPBOX        "부정취소 사용여부 설정",IDC_STATIC,7,306,295,34
+    GROUPBOX        "NVCAT IP/PORT 설정 (머니플러스 사용 시 변경 필요)",
+                    IDC_STATIC,7,272,295,34
+    PUSHBUTTON      "CHK_CASHIC2 (현금IC 카드 체크 (일반))",IDC_BUTTON20,306,
+                    259,145,17
+    PUSHBUTTON      "READER_RESET (""0"") (TIT리더기 수동배출)",IDC_BUTTON21,
+                    306,359,145,17
+    GROUPBOX        "승인 요청 DATA",IDC_STATIC,7,7,295,148
+    LTEXT           "거래종류",IDC_STATIC,10,22,29,11
+    COMBOBOX        IDC_COMBO_DEALTP,42,19,97,271,CBS_DROPDOWN | WS_VSCROLL | 
+                    WS_TABSTOP
+    LTEXT           "할부",IDC_STATIC,11,42,29,11
+    COMBOBOX        IDC_COMBO_HALBU,42,39,97,271,CBS_DROPDOWN | WS_VSCROLL | 
+                    WS_TABSTOP
+    LTEXT           "거래금액",IDC_STATIC,149,22,31,9
+    EDITTEXT        IDC_EDIT_MONEY,181,18,41,18,ES_AUTOHSCROLL
+    LTEXT           "부가세",IDC_STATIC,229,22,24,9
+    EDITTEXT        IDC_EDIT_TAX,256,18,41,18,ES_AUTOHSCROLL
+    LTEXT           "봉사료",IDC_STATIC,149,41,31,9
+    EDITTEXT        IDC_EDIT_BONGSA,181,37,34,18,ES_AUTOHSCROLL
+    LTEXT           "승인번호",IDC_STATIC,11,122,31,9
+    EDITTEXT        IDC_EDIT_APPRNO,43,118,33,18,ES_AUTOHSCROLL
+    LTEXT           "승인날짜",IDC_STATIC,80,122,31,9
+    EDITTEXT        IDC_EDIT_APPRDT,112,118,33,18,ES_AUTOHSCROLL
+    LTEXT           "승인CATID",IDC_STATIC,219,41,34,9
+    EDITTEXT        IDC_EDIT_CATID,256,37,40,18,ES_AUTOHSCROLL
+    LTEXT           "고객식별번호(토큰/바코드)",IDC_STATIC,149,61,86,9
+    EDITTEXT        IDC_EDIT_BARCODE,237,57,60,18,ES_AUTOHSCROLL
+    LTEXT           "거래유형",IDC_STATIC,11,81,31,9
+    EDITTEXT        IDC_EDIT_DEALTYPE,43,77,18,18,ES_AUTOHSCROLL
+    LTEXT           "전문TEXT",IDC_STATIC,63,81,36,9
+    EDITTEXT        IDC_EDIT_TXT,100,77,18,18,ES_AUTOHSCROLL
+    LTEXT           "기종구분",IDC_STATIC,123,81,30,9
+    EDITTEXT        IDC_EDIT_DEVICETP,157,77,18,18,ES_AUTOHSCROLL
+    LTEXT           "원거래고유번호",IDC_STATIC,183,81,49,9
+    EDITTEXT        IDC_EDIT_DEALNO,237,77,59,18,ES_AUTOHSCROLL
+    LTEXT           "도메인",IDC_STATIC,11,101,31,9
+    EDITTEXT        IDC_EDIT_DOMAIN,43,97,102,18,ES_AUTOHSCROLL
+    LTEXT           "IP ADDRESS",IDC_STATIC,151,101,41,9
+    EDITTEXT        IDC_EDIT_IPADDRESS,196,97,100,18,ES_AUTOHSCROLL
+    PUSHBUTTON      "전문생성 및 승인요청",IDC_BUTTON22,215,118,80,17
+    LTEXT           "응답전문",IDC_STATIC,11,179,29,9
+    EDITTEXT        IDC_EDIT_SENDDATA,47,158,252,16,ES_AUTOHSCROLL
+    LTEXT           "요청전문",IDC_STATIC,11,162,29,9
+    CONTROL         "현금 KEYIN",IDC_CHECK2,"Button",BS_AUTOCHECKBOX | 
+                    WS_TABSTOP,9,55,49,17
+    CONTROL         "현금 터치",IDC_CHECK3,"Button",BS_AUTOCHECKBOX | 
+                    WS_TABSTOP,60,55,42,17
+    CONTROL         "현금 카드",IDC_CHECK4,"Button",BS_AUTOCHECKBOX | 
+                    WS_TABSTOP,104,55,42,17
+    GROUPBOX        "수표조회 요청데이터",IDC_STATIC,7,196,295,72
+    LTEXT           "수표번호",IDC_STATIC,135,230,31,9
+    EDITTEXT        IDC_EDIT_CHECKNO,165,226,129,18,ES_AUTOHSCROLL
+    LTEXT           "발행일",IDC_STATIC,201,211,24,9
+    EDITTEXT        IDC_EDIT_CHECKDT,227,207,68,18,ES_AUTOHSCROLL
+    LTEXT           "수표금액",IDC_STATIC,12,230,30,9
+    EDITTEXT        IDC_EDIT_CHECKMONEY,44,226,84,18,ES_AUTOHSCROLL
+    LTEXT           "주민번호",IDC_STATIC,168,250,32,9
+    EDITTEXT        IDC_EDIT_CHECKPERSONNO,204,246,90,18,ES_AUTOHSCROLL
+    LTEXT           "거래일련번호",IDC_STATIC,12,250,43,9
+    EDITTEXT        IDC_EDIT_CHECKDEALNO,57,246,107,18,ES_AUTOHSCROLL
+    LTEXT           "수표종류",IDC_STATIC,12,212,29,11
+    COMBOBOX        IDC_COMBO_CHECKTP,44,209,54,271,CBS_DROPDOWN | 
+                    WS_VSCROLL | WS_TABSTOP
+    LTEXT           "수표권종",IDC_STATIC,102,212,29,11
+    COMBOBOX        IDC_COMBO_CHECKAMT,134,209,61,271,CBS_DROPDOWN | 
+                    WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "간편결제 승인요청",IDC_BUTTON23,148,135,74,17
+    PUSHBUTTON      "간편결제 취소요청",IDC_BUTTON24,224,135,71,17
+    PUSHBUTTON      "현금IC 우선 거래 로직 (NEW)",IDC_BUTTON25,7,388,145,17
+    PUSHBUTTON      "간편결제 거래 로직",IDC_BUTTON26,156,388,145,17
+    PUSHBUTTON      "REQ_CASHIC_AL (EMV LABEL 조회)",IDC_BUTTON27,306,379,
+                    145,17
+END
+
+
+#ifndef _MAC
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,1
+ PRODUCTVERSION 1,0,0,1
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x4L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041204B0"
+        BEGIN
+            VALUE "CompanyName", "\0"
+            VALUE "FileDescription", "NVCAT_Test MFC 응용 프로그램\0"
+            VALUE "FileVersion", "1, 0, 0, 1\0"
+            VALUE "InternalName", "NVCAT_Test\0"
+            VALUE "LegalCopyright", "Copyright (C) 2023\0"
+            VALUE "LegalTrademarks", "\0"
+            VALUE "OriginalFilename", "NVCAT_Test.EXE\0"
+            VALUE "ProductName", "NVCAT_Test 응용 프로그램\0"
+            VALUE "ProductVersion", "1, 0, 0, 1\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x412, 1200
+    END
+END
+
+#endif    // !_MAC
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO DISCARDABLE 
+BEGIN
+    IDD_NVCAT_TEST_DIALOG, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 460
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 405
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog Info
+//
+
+IDD_NVCAT_TEST_DIALOG DLGINIT
+BEGIN
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xc5bd, 0xebbf, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 14, 0
+0x4146, 0x4c4c, 0x4142, 0x4b43, 0xbd20, 0xc0c2, 0x00ce, 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xc5bd, 0xebbf, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xf6c7, 0xddb1, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xf6c7, 0xddb1, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xbac0, 0xc3b7, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xbac0, 0xc3b7, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 9, 0
+0xf6bc, 0xa5c7, 0xb6c1, 0xb8c8, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xf6c7, 0xddb1, 0x4349, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xf6c7, 0xddb1, 0x4349, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 25, 0
+0xc5bd, 0xebbf, 0xabb9, 0xabc4, 0xe5b5, 0xebc3, 0xd2bc, 0xc028, 0xb7cf, 
+0xb9c3, 0xc8f8, 0x29a3, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 19, 0
+0xc5bd, 0xebbf, 0xabb9, 0xabc4, 0xe5b5, 0xceba, 0xd0ba, 0xebc3, 0xd2bc, 
+"\000" 
+    IDC_COMBO_DEALTP, 0x403, 15, 0
+0xf6c7, 0xddb1, 0xabb9, 0xabc4, 0xe5b5, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 17, 0
+0xf6c7, 0xddb1, 0x4349, 0xabb9, 0xabc4, 0xe5b5, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 26, 0
+0x4344, 0xbd43, 0xc0c2, 0x28ce, 0xebc3, 0xd2bc, 0xbd20, 0x20c3, 0xc5bd, 
+0xebbf, 0xebc3, 0xd2bc, 0x0029, 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xf7c6, 0xcec0, 0xaec6, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xf7c6, 0xcec0, 0xaec6, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xe2b8, 0xf6b9, 0xb1bd, 0xc2bd, 0xcec0, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 11, 0
+0xe2b8, 0xf6b9, 0xb1bd, 0xebc3, 0xd2bc, "\000" 
+    IDC_COMBO_DEALTP, 0x403, 16, 0
+0x4b53, 0xc550, 0xc5e4, 0xb9ab, 0xc7df, 0x28e0, 0x3153, 0x0029, 
+    IDC_COMBO_DEALTP, 0x403, 16, 0
+0x4b53, 0xc550, 0xc5e4, 0xbdab, 0xc0c2, 0x28ce, 0x3253, 0x0029, 
+    IDC_COMBO_DEALTP, 0x403, 16, 0
+0x4b53, 0xc550, 0xc5e4, 0xc3ab, 0xbceb, 0x28d2, 0x3253, 0x0029, 
+    IDC_COMBO_DEALTP, 0x403, 16, 0
+0x4b53, 0xc550, 0xc5e4, 0xbbab, 0xc1e8, 0x28a6, 0x3353, 0x0029, 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3030, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3130, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3230, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3330, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3430, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3530, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3630, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3730, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3830, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3930, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3031, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3131, "\000" 
+    IDC_COMBO_HALBU, 0x403, 3, 0
+0x3231, "\000" 
+    IDC_COMBO_CHECKTP, 0x403, 16, 0
+0x3030, 0x3a20, 0xc020, 0xb1da, 0xbee2, 0xbcd5, 0xc7f6, 0x00a5, 
+    IDC_COMBO_CHECKTP, 0x403, 14, 0
+0x3130, 0x3a20, 0xb020, 0xb0a1, 0xbce8, 0xc7f6, 0x00a5, 
+    IDC_COMBO_CHECKTP, 0x403, 14, 0
+0x3230, 0x3a20, 0xb420, 0xc1e7, 0xbcc2, 0xc7f6, 0x00a5, 
+    IDC_COMBO_CHECKAMT, 0x403, 12, 0
+0x3331, 0x3a20, 0x3120, 0xb830, 0xbfb8, 0x00f8, 
+    IDC_COMBO_CHECKAMT, 0x403, 12, 0
+0x3431, 0x3a20, 0x3320, 0xb830, 0xbfb8, 0x00f8, 
+    IDC_COMBO_CHECKAMT, 0x403, 12, 0
+0x3531, 0x3a20, 0x3520, 0xb830, 0xbfb8, 0x00f8, 
+    IDC_COMBO_CHECKAMT, 0x403, 13, 0
+0x3631, 0x3a20, 0x3120, 0x3030, 0xb8b8, 0xf8bf, "\000" 
+    IDC_COMBO_CHECKAMT, 0x403, 12, 0
+0x3931, 0x3a20, 0xba20, 0xc1f1, 0xbea4, 0x00d7, 
+    0
+END
+
+#endif    // Korean resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+#define _AFX_NO_SPLITTER_RESOURCES
+#define _AFX_NO_OLE_RESOURCES
+#define _AFX_NO_TRACKER_RESOURCES
+#define _AFX_NO_PROPERTY_RESOURCES
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_KOR)
+#ifdef _WIN32
+LANGUAGE 18, 1
+#pragma code_page(949)
+#endif //_WIN32
+#include "res\NVCAT_Test.rc2"  // non-Microsoft Visual C++ edited resources
+#include "l.kor\afxres.rc"          // Standard components
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
+

@@ -1,0 +1,2 @@
+"""Viorafilm kiosk package."""
+

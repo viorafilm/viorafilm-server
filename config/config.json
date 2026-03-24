@@ -8,11 +8,12 @@
     "test_mode": false,
     "camera_backend": "auto",
     "allow_dummy_when_camera_fail": true,
+    "design_frame_count": 14,
     "countdown_seconds": 1,
     "capture_slots_override": "auto",
     "debug_fullscreen_shutter": false,
     "print_dry_run": true,
-    "upload_dry_run": true,
+    "upload_dry_run": false,
     "qr_enabled": true
   },
   "payment_methods": {
@@ -21,8 +22,8 @@
     "coupon": true
   },
   "modes": {
-    "celebrity_enabled": true,
-    "ai_enabled": false
+    "celebrity_enabled": false,
+    "ai_enabled": true
   },
   "celebrity": {
     "templates_dir": "D:/photoharu/assets/celebrity_templates",
@@ -40,12 +41,14 @@
     "profile": "KR_ONEPLUS_RS232_V1_7",
     "port": "COM3",
     "baud": 9600,
+    "currency_code": "KRW",
     "denoms": {
       "1000": true,
       "5000": true,
       "10000": true,
       "50000": true
-    }
+    },
+    "bill_to_amount": {}
   },
   "printing": {
     "enabled": true,
@@ -54,17 +57,55 @@
       "DS620": {
         "win_name": "DP-DS620",
         "form_4x6": "4x6",
-        "form_2x6": "20x30in"
+        "form_2x6": "2x6",
+        "margin_profiles": {
+          "4x6_portrait": {
+            "horizontal": 5,
+            "vertical": 6
+          },
+          "4x6_landscape": {
+            "horizontal": 6,
+            "vertical": 5
+          }
+        },
+        "margins": {
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        }
       },
       "DS620_STRIP": {
         "win_name": "",
         "form_4x6": "4x6",
-        "form_2x6": ""
+        "form_2x6": "",
+        "margins": {
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        }
       },
       "RX1HS": {
-        "win_name": "DNP RX1HS",
+        "win_name": "Microsoft Print to PDF",
         "form_4x6": "4x6",
-        "form_2x6": "2x6"
+        "form_2x6": "2x6",
+        "margin_profiles": {
+          "4x6_portrait": {
+            "horizontal": 5,
+            "vertical": 6
+          },
+          "4x6_landscape": {
+            "horizontal": 6,
+            "vertical": 5
+          }
+        },
+        "margins": {
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        }
       }
     },
     "default_model": "DS620"
@@ -76,8 +117,12 @@
     "backup_count": 10
   },
   "share": {
-    "base_page_url": "https://example.com/s",
-    "base_file_url": "https://example.com/s"
+    "base_page_url": "https://api.viorafilm.com/s",
+    "base_file_url": "https://api.viorafilm.com/s",
+    "api_base_url": "https://api.viorafilm.com/api",
+    "device_code": "",
+    "device_token": "",
+    "timeout_sec": 12
   },
   "coupon": {
     "enabled": true,
@@ -89,11 +134,13 @@
     ]
   },
   "pricing": {
-    "currency_prefix": "AED",
+    "currency_prefix": "KRW",
     "default_price": 4000,
     "layouts": {
+      "AI_MODE_4641": 5000,
+      "2461": 5000,
       "2641": 1000,
-      "4641": 1000,
+      "4641": 5000,
       "4661": 1000,
       "4681": 4000,
       "6241": 4000
@@ -108,8 +155,8 @@
   },
   "gif": {
     "enabled": true,
-    "frames_per_shot": 3,
-    "interval_ms": 200,
+    "frames_per_shot": 10,
+    "interval_ms": 100,
     "max_width": 480
   },
   "thank_you": {
@@ -123,11 +170,42 @@
   "payment_pricing": {
     "default_price": 4000,
     "pricing_by_layout": {
+      "2461": 5000,
       "2641": 1000,
-      "4641": 1000,
+      "4641": 5000,
       "4661": 1000,
       "4681": 4000,
       "6241": 4000
+    }
+  },
+  "ai_styles": {
+    "kpop_idol": {
+      "label_ko": "KPOP 아이돌",
+      "label_en": "KPOP Idol",
+      "prompt": "Turn this photo into a “K-pop idol photocard frame” style final image.\n\n[Retouch]\n- Keep the person clearly recognizable and true to the original identity, but make them look naturally their best.\n- Skin: reduce blemishes/dark circles/redness/shine while preserving natural texture; add healthy glow.\n- Face & contour: only subtle balance cleanup (gentle jawline/cheek shading refinement), no drastic reshaping.\n- Body/silhouette: apply very subtle, natural proportion tidy-up for any body type only if it improves overall balance. No extreme slimming, stretching, or warping.\n- Color & lighting: crisp K-pop studio high-key, clean tones, subtle glow.\n\n[Frame / Graphics]\n- Vertical photocard layout (4:5 or 3:4).\n- Border: thin, premium frame in {FRAME_THEME} style (e.g., holographic, glitter, neon stage, pastel candy).\n- Small accents: minimal star/heart/sparkle stickers (tasteful, not busy).\n- Text: place “{TOP_TEXT}” at the top and “{BOTTOM_TEXT}” at the bottom in a clean K-pop album typography style (high readability).\n- Do not cover the face/body; keep the overall look modern and minimal, not tacky.",
+      "enabled": true,
+      "order": 1
+    },
+    "caricature": {
+      "label_ko": "Kpop아이돌 에니메이션",
+      "label_en": "Caricature",
+      "prompt": "You are a K-pop idol concept animation (2D/cartoon) retouch artist.\nTransform the user’s photo into a premium anime-style image while preserving identity (the person must remain clearly recognizable).\n\nRules:\n- Preserve key facial identity (face shape, eyes/nose/mouth proportions, unique marks, hairstyle). Do not turn them into a different person.\n- No extreme reshaping: no drastic jaw shrink, no oversized anime eyes, no extreme waist shrink, no unrealistic limb/neck stretching.\n- Body adjustments must be minimal and universal: only subtle balance/proportion tidy-up when needed, with zero distortion.\n- Animation quality: clean linework, natural cel shading; do not over-smooth into plastic.\n- Keep expressions likable (soft smile/confident), avoid exaggerated faces.\n- Ensure accurate details: hands/fingers/teeth/glasses/ears must not warp or miscount.\n- Do not sexualize. Do not change age/gender/ethnicity.\n- Output should be sharp, high-resolution, with the person as the clear focus.",
+      "enabled": true,
+      "order": 2
+    },
+    "anime": {
+      "label_ko": "애니메이션",
+      "label_en": "Anime",
+      "prompt": "Anime portrait style, smooth cel shading, clean lines, high contrast",
+      "enabled": true,
+      "order": 3
+    },
+    "vintage": {
+      "label_ko": "한복",
+      "label_en": "Vintage Film",
+      "prompt": "보이는 사람 모두 한복입혀줘",
+      "enabled": true,
+      "order": 4
     }
   }
 }

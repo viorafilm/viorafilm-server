@@ -1,10 +1,10 @@
 services:
   db:
-    ports: []
+    ports: !reset []
     restart: unless-stopped
 
   redis:
-    ports: []
+    ports: !reset []
     restart: unless-stopped
 
   web:

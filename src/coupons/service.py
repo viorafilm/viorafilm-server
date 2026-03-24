@@ -53,16 +53,14 @@ def _validate_issue_limits(requested_count: int) -> None:
     except Exception:
         count = 0
     if count <= 0:
-        raise ValueError("발행 수량은 1장 이상이어야 합니다.")
+        raise ValueError("발행 수량은 1개 이상이어야 합니다.")
     if count > MAX_COUPON_BATCH_COUNT:
-        raise ValueError(f"1회 발행 최대 수량은 {MAX_COUPON_BATCH_COUNT}장입니다.")
+        raise ValueError(f"1회 발행 최대 수량은 {MAX_COUPON_BATCH_COUNT}개입니다.")
 
     current_total = int(Coupon.objects.count())
     remaining = int(MAX_TOTAL_COUPONS - current_total)
     if count > remaining:
-        raise ValueError(
-            f"전체 쿠폰 한도({MAX_TOTAL_COUPONS}장) 초과입니다. 현재 {current_total}장, 남은 {max(0, remaining)}장"
-        )
+        raise ValueError("전체 쿠폰 발행 한도를 초과했습니다. 시스템 관리 한도를 확인해 주세요.")
 
 
 def issue_coupons_for_batch(batch: CouponBatch, created_by=None):

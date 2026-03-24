@@ -47,6 +47,9 @@ Set at least:
 - `CSRF_TRUSTED_ORIGINS=https://api.viorafilm.com`
 - `SESSION_COOKIE_SECURE=1`
 - `CSRF_COOKIE_SECURE=1`
+- `SESSION_EXPIRE_AT_BROWSER_CLOSE=1`
+- `SESSION_COOKIE_AGE=43200` (12h)
+- `SESSION_SAVE_EVERY_REQUEST=1`
 - `SECURE_SSL_REDIRECT=0` (Nginx handles HTTPS redirect with certbot)
 - R2 values:
   - `R2_ACCOUNT_ID`

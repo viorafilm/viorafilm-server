@@ -22,11 +22,17 @@ class Session:
     meta_path: Path
     created_at: str
     session_id: Optional[str] = None
+    order_id: Optional[str] = None
+    order_state: Optional[str] = None
     layout_id: Optional[str] = None
     design_path: Optional[str] = None
     print_path: Optional[str] = None
     share_url: Optional[str] = None
     qr_path: Optional[Path] = None
+    payment_status: Optional[str] = None
+    payment_provider: Optional[str] = None
+    payment_request_ref: Optional[str] = None
+    payment_transaction_id: Optional[str] = None
     shot_paths: list[Path] = field(default_factory=list)
 
     def set_context(
@@ -45,6 +51,30 @@ class Session:
     def clear_share(self) -> None:
         self.share_url = None
         self.qr_path = None
+        self._write_meta()
+
+    def set_payment_context(
+        self,
+        *,
+        order_id: Optional[str] = None,
+        order_state: Optional[str] = None,
+        payment_status: Optional[str] = None,
+        payment_provider: Optional[str] = None,
+        payment_request_ref: Optional[str] = None,
+        payment_transaction_id: Optional[str] = None,
+    ) -> None:
+        if order_id is not None:
+            self.order_id = order_id
+        if order_state is not None:
+            self.order_state = order_state
+        if payment_status is not None:
+            self.payment_status = payment_status
+        if payment_provider is not None:
+            self.payment_provider = payment_provider
+        if payment_request_ref is not None:
+            self.payment_request_ref = payment_request_ref
+        if payment_transaction_id is not None:
+            self.payment_transaction_id = payment_transaction_id
         self._write_meta()
 
     def save_qr(self, image_source, filename: str = "qr.png") -> Path:
@@ -129,11 +159,17 @@ class Session:
         payload = {
             "created_at": self.created_at,
             "session_id": self.session_id,
+            "order_id": self.order_id,
+            "order_state": self.order_state,
             "layout_id": self.layout_id,
             "design_path": self.design_path,
             "print_path": self.print_path,
             "share_url": self.share_url,
             "qr_path": str(self.qr_path) if self.qr_path else None,
+            "payment_status": self.payment_status,
+            "payment_provider": self.payment_provider,
+            "payment_request_ref": self.payment_request_ref,
+            "payment_transaction_id": self.payment_transaction_id,
         }
         self.meta_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),

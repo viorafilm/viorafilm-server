@@ -1,5 +1,9 @@
 # Photoharu Server (Django)
 
+## Kiosk Install Guide (KR)
+- Store-owner one-page checklist: `docs/KIOSK_INSTALL_CHECKLIST_KR.md`
+- GoDaddy Smart Terminal payment integration: `docs/godaddy_terminal_setup.md`
+
 ## Quick start
 1. Copy `.env.example` -> `.env`
 2. Build and start:
@@ -108,6 +112,49 @@ KIOSK_CARD_RUNTIME_ENABLED=0
 # OTA check interval (milliseconds)
 KIOSK_OTA_CHECK_MS=300000
 ```
+
+### Kiosk OTA auto-download/apply (app side)
+```env
+# Kiosk app version string sent to /api/kiosk/updates/check
+KIOSK_APP_VERSION=1.0.0
+
+# Auto-download update artifact when update_available=true
+KIOSK_OTA_AUTO_DOWNLOAD=1
+KIOSK_OTA_DOWNLOAD_DIR=out/updates
+
+# Auto-apply downloaded artifact
+KIOSK_OTA_AUTO_APPLY=1
+
+# Auto-restart app after zip apply (recommended in kiosk mode)
+KIOSK_OTA_AUTO_RESTART=1
+KIOSK_OTA_RESTART_DELAY_SEC=8
+
+# Persist applied/current version here (so env version edit is not required every patch)
+KIOSK_OTA_STATE_PATH=out/ota_state.json
+
+# Optional apply command template (used only when KIOSK_OTA_AUTO_APPLY=1)
+# Placeholders: {artifact}, {version}
+KIOSK_OTA_APPLY_CMD=powershell -ExecutionPolicy Bypass -File "deploy/windows/apply_update.ps1" -ArtifactPath "{artifact}" -Silent
+```
+- Auto-download verifies `sha256` from server (`/api/kiosk/updates/check`) before saving.
+- Downloaded files are stored in `KIOSK_OTA_DOWNLOAD_DIR` with a `.meta.json` sidecar.
+- Without `KIOSK_OTA_APPLY_CMD`, the app uses the built-in `deploy/windows/apply_update.ps1`.
+- For zip updates, built-in apply writes `KIOSK_OTA_STATE_PATH` with `current_version`.
+
+### Windows build/update scripts
+- Build kiosk release:
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/windows/build_kiosk.ps1 -Version 1.0.0 -AppName ViorafilmKiosk -Entry app/main.py
+```
+- Build real installer (`Setup.exe`):
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/windows/build_installer.ps1 -Version 1.0.0 -InstallInnoIfMissing
+```
+- Apply downloaded installer manually:
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/windows/apply_update.ps1 -ArtifactPath "D:\photoharu\out\updates\v1.0.0_installer.exe" -Silent
+```
+- First run policy: kiosk now requires valid `Device Code + Device Token` registration before entering start screen.
 
 ### Health endpoint (monitoring)
 - `GET /api/health/` now returns DB/Redis checks + active/online device count + open alert count.

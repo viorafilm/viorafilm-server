@@ -1,0 +1,1180 @@
+<html>
+
+<head>
+<script language="Javascript">
+
+var FS = "\x1C";
+var ret;
+var i, j, k;
+var rbuf = "";
+
+function recvdata(rbuf)
+{
+	i = 0;
+	j = 0;
+	k = 0;
+	
+	while(true)
+	{
+		if(rbuf.substr(i, 1) == FS)
+		{
+			j = j + 1;
+			
+			switch(j)
+			{
+			case 1:
+				form.recv01.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 2:
+				form.recv02.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 3:
+				form.recv03.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 4:
+				form.recv04.value = rbuf.substr(k, i-k);
+				break;
+		
+			case 5:
+				form.recv05.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 6:
+				form.recv06.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 7:
+				form.recv07.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 8:
+				form.recv08.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 9:
+				form.recv09.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 10:
+				form.recv10.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 11:
+				form.recv11.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 12:
+				form.recv12.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 13:
+				form.recv13.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 14:
+				form.recv14.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 15:
+				form.recv15.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 16:
+				form.recv16.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 17:
+				form.recv17.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 18:
+				form.recv18.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 19:
+				form.recv19.value = rbuf.substr(k, i-k);
+				break;
+			
+			case 20:
+				form.recv20.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 21:
+				form.recv21.value = rbuf.substr(k, i-k);
+				break;
+				
+			case 22: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv22.value = rbuf.substr(k, i-k);
+				else
+					form.recv28.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 23: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv23.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 24: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv24.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 25: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv25.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 26: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv26.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 27: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv27.value = rbuf.substr(k, i-k);
+				break;
+			}
+			
+			case 28: //LJY20210326 : 추가
+			{
+				if(form.recv01.value == "0520")
+					form.recv28.value = rbuf.substr(k, i-k);
+				break;
+			}
+			}
+				
+			k = i + 1;
+		}
+			
+		i = i + 1;
+		
+		if(form.recv01.value == "0520")		
+		{
+			if(j == 28) //LJY20210326 : 21->22 변경
+				break;
+		}
+		else
+		{
+			if(j == 22) //LJY20210326 : 21->22 변경
+				break;
+		}
+	}
+}
+
+function reqcard() { //신용승인요청
+	var s_buf = "0200" + FS + "10" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "신용승인" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcardFB() { //신용승인요청 FALLBACK
+	var s_buf = "0200" + FS + "10" + FS + "F" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "신용승인FALLBACK" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcardcnl() { //신용취소요청
+	var s_buf = "0420" + FS + "10" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "신용취소" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqnocardcnl() { //LJY20210326 : 신용무취소요청
+	var s_buf = "0420" + FS + "10" + FS + "N" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "신용무카드취소" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqcashp() { //현금영수증승인요청 POS입력
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0200" + FS + "21" + FS + "P" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증승인POS입력" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashpcnl() { //현금영수증취소요청 POS입력
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0420" + FS + "21" + FS + "P" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증취소POS입력" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashk() { //현금영수증승인요청 KEYIN방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0200" + FS + "21" + FS + "K" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증승인KEYIN방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashkcnl() { //현금영수증취소요청 KEYIN방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0420" + FS + "21" + FS + "K" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증취소KEYIN방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashc() { //현금영수증승인요청 CARD방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0200" + FS + "21" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증승인CARD방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashccnl() { //현금영수증취소요청 CARD방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0420" + FS + "21" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증취소CARD방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcasht() { //현금영수증승인요청 터치스크린방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0200" + FS + "21" + FS + "T" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증승인터치방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashtcnl() { //현금영수증취소요청 터치스크린방식
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0420" + FS + "21" + FS + "T" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증취소터치방식" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqnocashcnl() { //LJY20210326 : 현금영수증무카드취소요청
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0420" + FS + "21" + FS + "N" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "현금영수증무카드취소" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqcup() { //해외은련승인요청
+	var s_buf = "0200" + FS + "UP" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "해외은련승인요청" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcupcnl() { //해외은련취소요청
+	var s_buf = "0420" + FS + "UP" + FS + "C" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + form.myunse.value + FS + FS + FS + FS + "해외은련취소요청" + FS + FS + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function readerrest() { //리더기재시작
+	ret = self.document.form.m_nvcat.READERRESET(5); //리더기재시작 (몇초후리셋할지)
+	alert(ret);
+}
+
+
+function reqstop() { //요청 취소
+	ret = self.document.form.m_nvcat.ReqStop(); //요청취소
+	alert(ret);
+}
+
+
+function nvcatrestart() { //NVCAT재시작
+	ret = self.document.form.m_nvcat.RESTART(); //NVCAT재시작
+	alert(ret);
+}
+
+
+function getappr() { //직전거래
+	ret = self.document.form.m_nvcat.GETAPPR(); 
+	if(ret == 1)
+		alert("직전거래데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert(ret);
+}
+
+
+function chkcardbin() { //카드빈
+	ret = self.document.form.m_nvcat.CHKCARDBIN(); //카드빈
+	if(ret == 1)
+		alert("응답데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert("에러");
+}
+
+
+function chkmembership() { //멤버쉽카드요청
+	ret = self.document.form.m_nvcat.CHKMEMBERSHIP(); //멤버쉽카드요청
+	if(ret == 1)
+		alert("응답데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert("에러");
+}
+
+function REQCASHNO() { //고객식별번호요청
+	ret = self.document.form.m_nvcat.REQCASHNO(); //
+	if(ret == 1)
+		alert("응답데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert("에러");
+}
+
+function CHKCARDINMP() { //멀티패드카드삽입여부
+	ret = self.document.form.m_nvcat.CHKCARDINMP(); //
+	if(ret == 1)
+		alert("응답데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert("에러");
+}
+
+function chkcardin() { //TIT카드삽입여부
+	ret = self.document.form.m_nvcat.CHKCARDIN(); //TIT카드삽입여부
+	if(ret == 1)
+		alert("삽입됨");
+	else
+		alert(ret);
+}
+
+function NVCATSHUTDOWN() { //NVCAT강제종료
+	ret = self.document.form.m_nvcat.NVCATSHUTDOWN(); //NVCAT강제종료
+	if(ret == 1)
+		alert("강제종료요청됨");
+	else
+		alert(ret);
+}
+
+
+function chkcashic() { //현금IC체크
+	ret = self.document.form.m_nvcat.CHKCASHIC(); //현금IC체크
+	if(ret == 1)
+		alert("정상");
+	else
+		alert(ret);
+}
+
+function CHKCASHIC2() { //현금IC체크2 (지원은행 체크)
+	ret = self.document.form.m_nvcat.CHKCASHIC2(); //현금IC체크2
+	if(ret == 1)
+		alert("정상");
+	else
+		alert(ret);
+}
+
+function CHKCASHICMP() { //멀티패드현금IC체크
+	ret = self.document.form.m_nvcat.CHKCASHIC(); //현금IC체크
+	if(ret == 1)
+		alert("정상");
+	else
+		alert(ret);
+}
+
+function REQBARCODE() { //바코드요청
+	var type = "1" //"1" : 리더기로 요청 / "2" : 서명패드로 요청
+
+	ret = self.document.form.m_nvcat.REQBARCODE(type); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("바코드번호 : " + rbuf);
+		form.cashno.value = rbuf;
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqcashic() { //현금IC승인
+	var s_buf = "0200" + FS + "I1" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + FS + FS + form.catid.value + FS + FS + FS + FS + "현금IC승인" + FS;
+        
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+
+function reccashiccnl() { //현금IC취소
+	var s_buf = "0420" + FS + "I4" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "현금IC취소" + FS;
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashicbal() { //현금IC잔액조회
+	var s_buf = "0200" + FS + "I3" + FS + "00" + FS + FS + FS + FS + FS + FS + FS + FS + FS + FS + "현금IC잔액조회" + FS;
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashicresult() { //현금IC승인결과
+	var s_buf = "0200" + FS + "I2" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "현금IC승인결과" + FS;
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashiccnlresult() { //현금IC취소결과
+	var s_buf = "0420" + FS + "I2" + FS + "00" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "현금IC취소결과" + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+function reqcashicmp() { //LJY20210326 : 현금IC승인(멀티패드)
+	var s_buf = "0200" + FS + "I1" + FS + "03" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + FS + FS + form.catid.value + FS + FS + FS + FS + "현금IC승인" + FS;
+        
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashiccnlmp() { //LJY20210326 : 현금IC취소(멀티패드)
+	var s_buf = "0420" + FS + "I4" + FS + "03" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "현금IC취소" + FS;
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+function reqnocashiccnl() { //LJY20210326 : 현금IC무카드취소
+	var s_buf = "0420" + FS + "I4" + FS + "02" + FS + form.bongsa.value + FS + form.tax.value + FS + form.money.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + FS + "현금IC취소" + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+		alert("응답전문 : " + self.document.form.m_nvcat.GetRecvData);
+	else //에러
+		alert(ret);
+}
+
+function reqcashb() { //현금영수증승인요청 (바코드)
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0300" + FS + "21" + FS + "P" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "HPS" + FS + "" + FS + FS + FS + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqcashbcnl() { //현금영수증취소요청 (바코드)
+	alert("할부개월 변경해주세요. 소비자:01, 사업자:02, 자진발급:03");
+	
+	var s_buf = "0520" + FS + "21" + FS + "P" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "HPS" + FS + "" + FS + FS + FS + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqbill() { //수표조회
+	var s_buf = "0200" + FS + "20" + FS + "K" + FS + form.billtype.value + FS + form.billmoney.value + FS + form.billnum.value + FS + form.billdt.value + FS + form.billsn.value + FS + form.billamt.value + FS + form.billserial.value + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	if(ret == 1)
+		alert("응답데이터 : " + self.document.form.m_nvcat.GetRecvData);
+	else 
+		alert("에러");
+}
+
+function reqnicehipasscreate() { //LJY20210326 : 나이스하이패스토큰발행
+	var s_buf = "0300" + FS + "N1" + FS + "L" + FS + "1" + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + FS + FS + FS + FS + "나이스하이패스토큰발행" + FS + "881130   00" + FS + FS + FS + FS + FS + "BSM2013057|이주용1" + FS + "" + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqnicehipassappr() { //LJY20210326 : 나이스하이패스승인
+	alert("토큰/암호화된가맹점정보 입력 해주세요");
+	var s_buf = "0300" + FS + "N2" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "나이스하이패스승인" + FS + "" + FS + FS + FS + FS + FS + "BSM2013057|이주용1" + FS + form.nhpinfo.value + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqnicehipasscnl() { //LJY20210326 : 나이스하이패스취소
+	alert("토큰/암호화된가맹점정보 입력 해주세요");
+	var s_buf = "0520" + FS + "N2" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "나이스하이패스취소" + FS + "" + FS + FS + FS + FS + FS + "BSM2013057|이주용1" + FS + form.nhpinfo.value + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqnicehipassdelete() { //LJY20210326 : 나이스하이패스토큰삭제
+	alert("토큰 입력 해주세요");
+	var s_buf = "0300" + FS + "N3" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "나이스하이패스토큰삭제" + FS + "" + FS + FS + FS + FS + FS + "BSM2013057|이주용1" + FS + "" + FS; //LJY20210326 : 뒤에 FS 2개 추가
+	    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqzrp() { //제로페이승인 (바코드)
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+	var s_buf = "0300" + FS + "P1" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "ZRP" + FS + "" + FS + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqzrpcnl() { //제로페이취소 (바코드)
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+	var s_buf = "0520" + FS + "P3" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + "" + FS + FS + FS + FS + FS + "" + FS + FS + "HPS" + FS + "" + FS + form.agreenum.value + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function REQSIGNDATA() { //서명데이터 요청
+	ret = self.document.form.m_nvcat.REQSIGNDATA(); //
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답데이터 : " + rbuf);
+		form.signdata.value = rbuf;
+	}
+	else 
+		alert("에러");
+}
+
+function GetSignBMP() // Url Image Down
+{
+	var ret;
+	//var signdata = '104632310a5235911f5b53d5f99b11e46de326c5d2eb356b6f2d0a77ab91d2cc6f2d0a77ab91d2cc6f2d0a77ab91d2cc6f2d0a77ab91d2cc507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d378582507f51409c7c39c016f6b4040d3785826f2d0a77ab91d2cc6f2d0a77ab91d2cc6f2d0a77ab91d2cc6f2d0a77ab91d2cc';
+	var signdata = '0129313020202020202020202020202020202020202020200218FD00B68004C002E0166009C008801CC0FE0025058005C0F3E066676363607E3F3D30F0F0300818050CFF0E07060A03080108030806FF0E0B0CF81C001A181C0C0E0E0306FF0703030501E200111C1C00FF009B1818307070E0E0C08080007D0101030307070E0E0019';
+	var signlen = signdata.length;
+	
+	ret = self.document.form.m_nvcat.GetSignBMP(signdata, signlen);
+	alert(ret);
+}
+
+
+function SetBmpFile() // Url Image Down
+{
+	var ret;
+	//var signdata = '0316313020202020202020202020202020202020202020200328f90007f8f800026004e006c0e1000a80800065ffff00021e7f7f3838b8f0f00004fefedfcfcfecfc7c07ffff06c3ed070f0e0e86cefefc3070f0f03070f0e0800004050602fef51e0e86ceee7e7e3e7ef0e004c0f10001f8f800058080002a0f0f06000204070203fd0100060301f4000401011f1f1c0e0f0300020507030602070403f40100090f1f3c383f1f3f3e36033702f7f9ee7e7f3f7b7f7f05030207fc00afe0e00580ff98031802980218f83830f0f0c0c000060680fe0009056002e0fbc00002e0e00380c6c0e0f0703070f0e0c0003e7f7f6f030101c1ffff00023f7f700001307fffe3c1c11c1c3e7e7ffbfbdbddddcfcf0f070007707038381c0f1f3f7f037bf7efffff0f7ffffbb33b031ff60f0043010100290707060a070606fe00af';
+	var signdata = '0129313020202020202020202020202020202020202020200218FD00B68004C002E0166009C008801CC0FE0025058005C0F3E066676363607E3F3D30F0F0300818050CFF0E07060A03080108030806FF0E0B0CF81C001A181C0C0E0E0306FF0703030501E200111C1C00FF009B1818307070E0E0C08080007D0101030307070E0E0019';
+	var signlen = signdata.length;
+	
+	ret = self.document.form.m_nvcat.SetBmpFile(signdata, signlen, "C:\\NICEVCAT\\201602160530.bmp");
+	alert(ret);
+}
+
+
+function GetSignBMPOut() // Url Image Down
+{
+	var ret;
+	//var signdata = '0316313020202020202020202020202020202020202020200328f90007f8f800026004e006c0e1000a80800065ffff00021e7f7f3838b8f0f00004fefedfcfcfecfc7c07ffff06c3ed070f0e0e86cefefc3070f0f03070f0e0800004050602fef51e0e86ceee7e7e3e7ef0e004c0f10001f8f800058080002a0f0f06000204070203fd0100060301f4000401011f1f1c0e0f0300020507030602070403f40100090f1f3c383f1f3f3e36033702f7f9ee7e7f3f7b7f7f05030207fc00afe0e00580ff98031802980218f83830f0f0c0c000060680fe0009056002e0fbc00002e0e00380c6c0e0f0703070f0e0c0003e7f7f6f030101c1ffff00023f7f700001307fffe3c1c11c1c3e7e7ffbfbdbddddcfcf0f070007707038381c0f1f3f7f037bf7efffff0f7ffffbb33b031ff60f0043010100290707060a070606fe00af';
+	var signdata = '01913130A600F27D53459B30C74C6531D0AE81FF4A10D9400183EF009D8080C0E070381818F0E00066F8181C040CFF040406FF0703030201DB00030C0EF6FF070E1C18383060E0C0C080800003070F3EF00054010014C0F83F030009010103030206EA0E0001037FF8800064C0F83F07C0C06070381C0C0C040306FF070903EE077FF8006080F0FC7F3B0E070301000680800CC0D48E9CFFFF80005C0E0F0701000780E070381E0F0301000C0101E1FF0F00657CFFC38180000F80E0781E0F0043';
+	var signlen = signdata.length;
+	
+	ret = self.document.form.m_nvcat.GetSignBMPOut(signdata, signlen);
+	alert(ret);
+}
+
+
+function SetBmpFileOut() // Url Image Down
+{
+	var ret;
+	//var signdata = '0316313020202020202020202020202020202020202020200328f90007f8f800026004e006c0e1000a80800065ffff00021e7f7f3838b8f0f00004fefedfcfcfecfc7c07ffff06c3ed070f0e0e86cefefc3070f0f03070f0e0800004050602fef51e0e86ceee7e7e3e7ef0e004c0f10001f8f800058080002a0f0f06000204070203fd0100060301f4000401011f1f1c0e0f0300020507030602070403f40100090f1f3c383f1f3f3e36033702f7f9ee7e7f3f7b7f7f05030207fc00afe0e00580ff98031802980218f83830f0f0c0c000060680fe0009056002e0fbc00002e0e00380c6c0e0f0703070f0e0c0003e7f7f6f030101c1ffff00023f7f700001307fffe3c1c11c1c3e7e7ffbfbdbddddcfcf0f070007707038381c0f1f3f7f037bf7efffff0f7ffffbb33b031ff60f0043010100290707060a070606fe00af';
+	var signdata = form.signdata.value;
+	var signlen = signdata.length;
+
+	ret = self.document.form.m_nvcat.SetBmpFileOut(signdata, signlen, "C:\\NICEVCAT\\SetBmpFileOut_TEST.bmp");
+	alert(ret);
+}
+
+function chkcashicmp2() { //카드리더기로 현금IC 카드 여부 확인 요청
+	ret = self.document.form.m_nvcat.CHKCASHICMP2();
+	alert(ret);
+}
+
+function reqtitlock() { //TDR 리더기 수동 LCOK
+	ret = self.document.form.m_nvcat.REQTITLOCK();
+	alert(ret);
+}
+
+function reqselectbtn() { //사용자 선택 버튼 기능
+	var s_type = '2';
+	var s_buf = '현금IC 결제를 진행하' + '시겠습니까?         ';
+	ret = self.document.form.m_nvcat.REQSELECTBTN(s_type, s_buf);
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("사용자 선택 결과 (01:예, 02:아니오) : " + rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqpayproappr() { //PAYPRO(간편결제) 승인
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+    var s_buf = "0300" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "PRO" + FS + "" + FS + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqpayprocnl() { //PAYPRO(간편결제) 취소
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+    var s_buf = "0520" + FS + "10" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "PRO" + FS + "" + FS + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqbcqrappr() { //BCQR(페이북)/네이버페이/은련QR 승인
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+    var s_buf = "0340" + FS + "10" + FS + "G" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "" + FS + "" + FS + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+function reqbcqrcnl() { //BCQR(페이북)/네이버페이/은련QR 취소
+	alert("바코드/QR 데이터 입력해주세요.");
+	
+    var s_buf = "0560" + FS + "10" + FS + "G" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "" + FS + FS + "" + FS + "" + FS + FS + FS + FS + FS;
+    
+	ret = self.document.form.m_nvcat.NICEVCATB(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+
+function reqskpcreate() { //LJY20221226 : SKP토큰발행 //서명패드표시금액 : 실소유자생년월일/성별(9)+카드비밀번호2자리(2) //도메인 : 가맹점UserID(병록번호)(20)+실소유자명(10) //IP ADDRESS : 국내/해외카드구분자(3)+휴대폰번호(11)+휴대폰통신사(4)
+	var s_buf = "0300" + FS + "S1" + FS + "L" + FS + "1" + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + FS + FS + FS + FS + FS + "SKP Create" + FS + "198811301" + FS + FS + FS + FS + "SCM12345671234567890LEEJUYONG" + FS + "   01023720000SKT " + FS + FS + FS + FS + FS + FS + FS;
+    ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		//recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqskpappr() { //LJY20221226 : SKP승인 //토큰번호 : S1 응답으로 받은 토큰 번호 //도메인 : 가맹점UserID(병록번호)(20)+실소유자명(10) 
+	alert("토큰 입력 해주세요");
+	var s_buf = "0300" + FS + "S2" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "SKP Appr" + FS + "" + FS + FS + FS + FS + "SCM12345671234567890LEEJUYONG" + FS + FS + FS + FS + FS + FS + FS + FS;
+
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		//recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqskpcnl() { //LJY20221226 : SKP취소 //토큰번호 : S1 응답으로 받은 토큰 번호 //도메인 : 가맹점UserID(병록번호)(20)+실소유자명(10) 
+	alert("토큰 입력 해주세요");
+	var s_buf = "0520" + FS + "S2" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + form.agreenum.value + FS + form.agreedate.value + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "SKP Cnl" + FS + "" + FS + FS + FS + FS + "SCM12345671234567890LEEJUYONG" + FS + FS + FS + FS + FS + FS + FS + FS;
+	
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		//recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+function reqskpdelete() { //LJY20221226 : SKP토큰삭제 //토큰번호 : S1 응답으로 받은 토큰 번호 //도메인 : 가맹점UserID(병록번호)(20)+실소유자명(10) 
+	alert("토큰 입력 해주세요");
+	var s_buf = "0300" + FS + "S3" + FS + "L" + FS + form.money.value + FS + form.tax.value + FS + form.bongsa.value + FS + form.halbu.value + FS + "" + FS + "" + FS + form.catid.value + FS + FS + FS + form.cashno.value + FS + FS + FS + FS + FS + "SKP Delete" + FS + "" + FS + FS + FS + FS + "SCM12345671234567890LEEJUYONG" + FS + FS + FS + FS + FS + FS + FS + FS;
+	    
+	ret = self.document.form.m_nvcat.NICEVCAT(s_buf); //요청전문
+	
+	if(ret == 1)
+	{
+		rbuf = self.document.form.m_nvcat.GetRecvData;
+		alert("응답전문 : " + rbuf);
+		
+		//recvdata(rbuf);
+	}
+	else //에러
+		alert(ret);
+}
+
+
+</script>
+</head>
+
+<body bgcolor="white" text="black" link="blue" vlink="purple" alink="red" leftmargin="0" marginwidth="0" topmargin="0" marginheight="0">
+<form name="form" method="post">
+<object classid="CLSID:DDEBDB26-CA8F-4D63-AD0D-B57DFC215961" codebase="NVCATOCX.ocx#version=1,0,0,7" width="0" height="0" id="m_nvcat" idborder="0"></object>
+승인번호 : <input type="text" name="agreenum" value="">
+승인날짜 : <input type="text" name="agreedate" value="210326">
+CATID : <input type="text" name="catid" value="">
+할부 : <input type="text" name="halbu" value="00">
+현금식별번호(거래일련번호/나이스하이패스토큰/바코드/QR) : <input type="text" name="cashno" value="01023720000"><P>
+총금액 : <input type="text" name="money" value="1004">
+부가세 : <input type="text" name="tax" value="0">
+봉사료 : <input type="text" name="bongsa" value="0">
+면세금액 : <input type="text" name="myunse" value="0"><P>
+나이스하이패스암호화된가맹점저장정보 : <input type="text" name="nhpinfo" value=""><P>
+
+요청전문 : <input type="text" name="senddata" value=""><P>
+응답전문 : <input type="text" name="recvdata" value=""><P>
+
+<a href="javascript:reqcard();">신용승인요청</a><P>
+<a href="javascript:reqcardFB();">신용승인요청 FALLBACK</a><P>
+<a href="javascript:reqcardcnl();">신용취소요청</a><P><P>
+<a href="javascript:reqnocardcnl();">신용무카드취소요청</a><P><P>
+
+<a href="javascript:reqcashp();">현금영수증승인요청 (POS입력방식)</a><P>
+<a href="javascript:reqcashpcnl();">현금영수증취소요청 (POS입력방식)</a><P>
+<a href="javascript:reqcashk();">현금영수증승인요청 (KEYIN방식)</a><P>
+<a href="javascript:reqcashkcnl();">현금영수증취소요청 (KEYIN방식)</a><P>
+<a href="javascript:reqcashc();">현금영수증승인요청 (CARD방식)</a><P>
+<a href="javascript:reqcashccnl();">현금영수증취소요청 (CARD방식)</a><P>
+<a href="javascript:reqcasht();">현금영수증승인요청 (터치스크린방식)</a><P>
+<a href="javascript:reqcashtcnl();">현금영수증취소요청 (터치스크린방식)</a><P><P><P>
+<a href="javascript:reqnocashcnl();">현금영수증무카드취소요청</a><P><P><P>
+
+<a href="javascript:reqcup();">해외은련승인요청</a><P>
+<a href="javascript:reqcupcnl();">해외은련취소요청</a><P><P><P>
+
+<a href="javascript:readerrest();">리더기재시작</a><P>
+<a href="javascript:reqstop();">요청취소</a><P>
+<a href="javascript:nvcatrestart();">NVCAT재시작</a><P>
+<a href="javascript:getappr();">직전거래</a><P>
+<a href="javascript:chkcardbin();">카드빈요청</a><P>
+<a href="javascript:chkmembership();">멤버쉽카드요청</a><P>
+<a href="javascript:REQBARCODE();">바코드요청</a><P>
+<a href="javascript:chkcardin();">TIT카드삽입여부</a><P>
+<a href="javascript:CHKCARDINMP();">멀티패드카드삽입여부</a><P>
+<a href="javascript:NVCATSHUTDOWN();">NVCAT강제종료</a><P>
+<a href="javascript:chkcashic();">현금IC체크</a><P>
+<a href="javascript:CHKCASHICMP();">멀티패드현금IC체크</a><P>
+<a href="javascript:CHKCASHIC2();">현금IC체크2</a><P>
+<a href="javascript:REQCASHNO();">고객식별번호요청</a><P>
+
+<a href="javascript:reqcashic();">현금IC승인</a><P><P><P>
+<a href="javascript:reccashiccnl();">현금IC취소</a><P><P><P>
+<a href="javascript:reqcashicbal();">현금IC잔액조회</a><P><P><P>
+<a href="javascript:reqcashicresult();">현금IC승인결과</a><P><P><P>
+<a href="javascript:reqcashiccnlresult();">현금IC취소결과</a><P><P><P>
+
+<a href="javascript:reqcashicmp();">현금IC승인(멀티패드)</a><P><P><P>
+<a href="javascript:reqcashiccnlmp();">현금IC취소(멀티패드)</a><P><P><P>
+<a href="javascript:reqnocashiccnl();">현금IC무카드취소</a><P><P><P>
+
+<a href="javascript:reqcashb();">현금영수증승인요청 (바코드)</a><P>
+<a href="javascript:reqcashbcnl();">현금영수증취소요청 (바코드)</a><P><P><P>
+
+<a href="javascript:reqnicehipasscreate();">나이스하이패스토큰발행</a><P><P><P>
+<a href="javascript:reqnicehipassappr();">나이스하이패스승인</a><P><P><P>
+<a href="javascript:reqnicehipasscnl();">나이스하이패스취소</a><P><P><P>
+<a href="javascript:reqnicehipassdelete();">나이스하이패스토큰삭제</a><P><P><P>
+
+<a href="javascript:reqskpcreate();">SKP토큰발행</a><P><P><P>
+<a href="javascript:reqskpappr();">SKP승인</a><P><P><P>
+<a href="javascript:reqskpcnl();">SKP취소</a><P><P><P>
+<a href="javascript:reqskpdelete();">SKP토큰삭제</a><P><P><P>
+
+<a href="javascript:reqzrp();">제로페이승인 (바코드)</a><P>
+<a href="javascript:reqzrpcnl();">제로페이취소 (바코드)</a><P>
+
+<a href="javascript:reqpayproappr();">PAYPRO(간편결제) 승인</a><P>
+<a href="javascript:reqpayprocnl();">PAYPRO(간편결제) 취소</a><P>
+
+<a href="javascript:reqbcqrappr();">BCQR(페이북)/네이버페이/은련QR 승인</a><P>
+<a href="javascript:reqbcqrcnl();">BCQR(페이북)/네이버페이/은련QR 취소</a><P>
+
+수표종류 : <input type="text" name="billtype" value="00"> "00" : 자기앞수표, "01" : 가계수표, "02" : 당좌수표<P>
+수표권종 : <input type="text" name="billmoney" value="13"> "13" : 10만원권, "14" : 30만원권, "15" : 50만원권, "16" : 100만원권, "19" : 비정액수표전체<P>
+수표번호 : <input type="text" name="billnum" value=""> 
+발행일 : <input type="text" name="billdt" value="">
+주민등록번호 : <input type="text" name="billsn" value=""> 
+수표금액 : <input type="text" name="billamt" value=""> 
+계좌일련번호 : <input type="text" name="billserial" value=""> <P>
+<a href="javascript:reqbill();">수표조회</a><P>
+<a href="javascript:chkcashicmp2();">카드리더기로 현금IC 카드 여부 확인 요청</a><P>
+<a href="javascript:reqtitlock();">TDR 리더기 수동 LOCK</a><P>
+<a href="javascript:reqselectbtn();">사용자 선택 버튼 기능</a><P>
+
+
+=================================[ 서명 관련 ]=================================<P>
+
+<a href="javascript:REQSIGNDATA();">서명데이터 요청</a><P>
+서명데이터 : <input type="text" name="signdata" value=""><P>
+<a href="javascript:GetSignBMP();">GetSignBMP</a><P>
+<a href="javascript:SetBmpFile();">SetBmpFile</a><P>
+<a href="javascript:GetSignBMPOut();">GetSignBMPOut</a><P>
+<a href="javascript:SetBmpFileOut();">SetBmpFileOut</a><P>
+
+=================================================================================<P>
+=================================[ 응답데이터 ]=================================<P>
+거래구분 <input type="text" name="recv01" value="">
+거래유형 <input type="text" name="recv02" value="">
+응답코드 <input type="text" name="recv03" value="">
+거래금액 <input type="text" name="recv04" value=""><P>
+부 가 세 <input type="text" name="recv05" value="">
+봉 사 료 <input type="text" name="recv06" value="">
+할부개월 <input type="text" name="recv07" value="">
+승인번호 <input type="text" name="recv08" value=""><P>
+승인일시 <input type="text" name="recv09" value="">
+발급사코드 <input type="text" name="recv10" value="">
+발급사명 <input type="text" name="recv11" value="">
+매입사코드 <input type="text" name="recv12" value=""><P>
+매입사명 <input type="text" name="recv13" value="">
+가맹점번호 <input type="text" name="recv14" value="">
+승인CATID <input type="text" name="recv15" value="">
+잔액 <input type="text" name="recv16" value=""><P>
+응답메시지 <input type="text" name="recv17" value="">
+카드빈 <input type="text" name="recv18" value="">
+카드구분 <input type="text" name="recv19" value="">
+전문관리번호 <input type="text" name="recv20" value=""><P>
+거래일련번호 <input type="text" name="recv21" value=""><P>
+발생포인트 <input type="text" name="recv22" value=""><P>
+가용포인트 <input type="text" name="recv23" value=""><P>
+누적포인트 <input type="text" name="recv24" value=""><P>
+캐시백가맹점 <input type="text" name="recv25" value=""><P>
+캐시백승인번호 <input type="text" name="recv26" value=""><P>
+Filler <input type="text" name="recv27" value=""><P>
+기기번호 <input type="text" name="recv28" value=""><P>
+
+
+
+</form>
+</body>
+
+</html>

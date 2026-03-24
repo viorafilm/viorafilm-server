@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ctypes
 import base64
@@ -11,6 +11,7 @@ import mimetypes
 import os
 import queue
 import re
+import secrets
 import socket
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from copy import deepcopy
 from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -558,6 +560,19 @@ def _resolve_runtime_config_path() -> Path:
     return runtime_path
 
 
+def _resolve_runtime_payment_config_path() -> Path:
+    config_path = _resolve_runtime_config_path()
+    runtime_path = config_path.parent / "payment_config.json"
+    bundled = ROOT_DIR / "config" / "payment_config.json"
+    try:
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        if (not runtime_path.is_file()) and bundled.is_file():
+            shutil.copy2(bundled, runtime_path)
+    except Exception as exc:
+        _safe_boot_write(f"[BOOT] runtime payment config prepare failed: {exc}\n")
+    return runtime_path
+
+
 def _resolve_runtime_out_dir() -> Path:
     env_override = str(os.environ.get("VIORAFILM_OUT_DIR", "")).strip()
     if env_override:
@@ -897,6 +912,11 @@ from kiosk.print.compose import (
     compose_print,
     resolve_slots,
 )
+from kiosk.layout_meta import (
+    get_layout_meta_grouping,
+    resolve_layout_meta_qr_rect,
+    resolve_layout_meta_slots,
+)
 from kiosk.session import Session, create_session
 from kiosk.ui.hotspots import Hotspot, hit_test, load_hotspots
 from kiosk.ui.screens.how_many_prints import HowManyPrintsScreen
@@ -907,9 +927,20 @@ from kiosk.ui.screens.preview import PreviewScreen
 from kiosk.ui.screens.qr_generating import QrGeneratingScreen
 from kiosk.ui.screens.status import StaticImageScreen, ThankYouScreen
 from kiosk.utils.qr import generate_qr_png
+from payments import (
+    FlowStateResult,
+    OrderFlowState,
+    PaymentProviderType,
+    PaymentResult,
+    PaymentService,
+    PaymentSettings,
+    PaymentStatus,
+    format_amount_for_display,
+)
 
 DESIGN_WIDTH = 1920
 DESIGN_HEIGHT = 1080
+DEFAULT_PAYMENT_SETTINGS = PaymentSettings().to_dict()
 
 if hasattr(Qt, "Key"):
     KEY_F1 = Qt.Key.Key_F1
@@ -1054,27 +1085,28 @@ FRAME_BBOX = {
 }
 
 PRINT_QR_ANCHOR_BY_LAYOUT = {
-    "2641": "rb",  # right-bottom
+    # 2641 print QR should remain in the left-bottom corner of the composed page.
+    "2641": "lb",
     "4641": "lb",  # left-bottom
     "4661": "lt",  # left-top
     "4681": "lb",  # left-bottom
-    "6241": "rb",  # right-bottom (avoid overlap with slot area)
+    "6241": "rt",  # right-top
     "2461": "rb",
     "2462": "rb",
 }
 
 # Print QR sizing (layout-specific).
 PRINT_QR_SIZE_MULTIPLIER_BY_LAYOUT = {
-    "2641": 2.0,
-    "6241": 2.0,
+    "2641": 1.4,
+    "6241": 2.15,
     "2461": 2.0,
     "2462": 2.0,
 }
 
 # Preview should stay smaller than print to avoid visual overlap in design UI.
 PREVIEW_QR_RECT_SCALE_BY_LAYOUT = {
-    "2641": 0.62,
-    "6241": 0.62,
+    "2641": 0.72,
+    "6241": 0.72,
     "2461": 0.62,
     "2462": 0.62,
     "4641": 0.62,
@@ -1082,16 +1114,81 @@ PREVIEW_QR_RECT_SCALE_BY_LAYOUT = {
 
 # Printer trim-safe margin.
 PRINT_QR_MARGIN_MULTIPLIER_BY_LAYOUT = {
-    "2641": 3.6,
+    "2641": 5.2,
     "6241": 3.2,
     "2461": 3.2,
     "2462": 3.2,
+}
+
+PREVIEW_QR_OVERRIDE_RECT_BY_LAYOUT = {
+    "2461": {"base_size": (226, 678), "rect": (180, 625, 30, 30)},
+    "4661": {"base_size": (452, 678), "rect": (14, 14, 52, 52)},
+    "4681": {"base_size": (452, 678), "rect": (16, 608, 48, 48)},
+    "6241": {"base_size": (678, 226), "rect": (628, 12, 40, 40)},
+}
+
+PREVIEW_SLOT_OVERRIDE_BY_LAYOUT = {
+    "2641": {
+        "base_size": (226, 678),
+        "slots": [
+            (13, 13, 200, 142),
+            (13, 169, 200, 141),
+            (13, 324, 200, 141),
+            (13, 479, 200, 142),
+        ],
+    },
+    "4681": {
+        "base_size": (452, 678),
+        "slots": [
+            (23, 23, 200, 142),
+            (229, 23, 200, 142),
+            (23, 171, 200, 142),
+            (229, 171, 200, 142),
+            (23, 319, 200, 142),
+            (229, 319, 200, 142),
+            (23, 467, 200, 142),
+            (229, 467, 200, 142),
+        ],
+    },
+}
+
+BASIC_FRAME_LAYOUT_ALIASES = {
+    "2461": "2641",
+    "2462": "2641",
+}
+
+BASIC_FRAME_CANONICAL_LAYOUTS = {
+    "2641",
+    "4641",
+    "4661",
+    "4681",
+    "6241",
+}
+
+DEFAULT_PRINTER_MARGIN_SETTINGS = {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0,
+}
+
+DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS = {
+    "4x6_portrait": {
+        "horizontal": 5,
+        "vertical": 6,
+    },
+    "4x6_landscape": {
+        "horizontal": 6,
+        "vertical": 5,
+    },
 }
 
 DEFAULT_ADMIN_SETTINGS = {
     "test_mode": False,
     "camera_backend": "auto",
     "allow_dummy_when_camera_fail": False,
+    "allow_canon_remote_capture": False,
+    "design_frame_count": 14,
     "countdown_seconds": 3,
     "capture_slots_override": "auto",
     "debug_fullscreen_shutter": False,
@@ -1125,8 +1222,8 @@ DEFAULT_COUPON_SETTINGS = {
 
 DEFAULT_GIF_SETTINGS = {
     "enabled": True,
-    "frames_per_shot": 3,
-    "interval_ms": 200,
+    "frames_per_shot": 10,
+    "interval_ms": 100,
     "max_width": 480,
 }
 
@@ -1162,27 +1259,31 @@ BILL_PROFILES = {
         },
     },
     "TP70_RS232_COMPAT": {
-        "label": "Overseas (TP70 RS-232 compatible)",
-        "protocol": "FRAME5_ASCII",
+        "label": "TOP TP70 RS-232 8E1 (ICT004)",
+        "protocol": "ICT104U",
         "baud": 9600,
-        "probe_bauds": [9600, 19200],
-        "default_port": "COM3",
-        "parity": "N",
+        "probe_bauds": [9600],
+        "probe_parities": ["E"],
+        "probe_stopbits": [1],
+        "probe_bytesizes": [8],
+        "default_port": "AUTO",
+        "auto_fallback": True,
+        "parity": "E",
         "bytesize": 8,
         "stopbits": 1,
         "strict_init": False,
         "supports_reset": True,
         "supports_config_bits": False,
         "supports_insert_control": True,
-        "recognition_status": [0x05, 0x0B],
-        # 해외 설치 시 운영 통화에 맞게 config.json bill_acceptor.bill_to_amount 값으로 override 가능.
+        "startup_ack": True,
+        "startup_ack_codes": [0x80, 0x8F],
+        "recognition_status": [0x81],
+        # Field-tested TP70 India setup can report 50/100/200 INR on slots 4/5/6.
+        # Currency presets are merged on top, so 1/2/3-style mappings still work.
         "bill_to_amount": {
-            1: 1000,
-            2: 2000,
-            5: 5000,
-            10: 10000,
-            20: 20000,
-            50: 50000,
+            4: 50,
+            5: 100,
+            6: 200,
         },
         "default_denoms": {
             "1000": True,
@@ -1380,9 +1481,17 @@ _CURRENCY_SYMBOL_TO_CODE = {
     "€": "EUR",
     "£": "GBP",
     "¥": "JPY",
+    "₹": "INR",
     "₩": "KRW",
     "₱": "PHP",
     "฿": "THB",
+}
+
+_CURRENCY_TEXT_ALIASES = {
+    "IND": "INR",
+    "RPY": "INR",
+    "RUPEE": "INR",
+    "RUPEES": "INR",
 }
 
 ICT104U_BILL_VALUE_PRESETS = {
@@ -1393,6 +1502,7 @@ ICT104U_BILL_VALUE_PRESETS = {
     "GBP": [5, 10, 20, 50],
     "HKD": [10, 20, 50, 100, 500, 1000],
     "IDR": [1000, 2000, 5000, 10000, 20000, 50000, 100000],
+    "INR": [50, 100, 200],
     "JPY": [1000, 2000, 5000, 10000],
     "KRW": [1000, 5000, 10000, 50000],
     "MYR": [1, 5, 10, 20, 50, 100],
@@ -1406,6 +1516,8 @@ ICT104U_BILL_VALUE_PRESETS = {
     "VND": [10000, 20000, 50000, 100000, 200000, 500000],
 }
 
+BILL_CURRENCY_CHOICES = sorted(ICT104U_BILL_VALUE_PRESETS.keys())
+
 
 def normalize_currency_code(raw: object) -> str:
     text = str(raw or "").strip().upper()
@@ -1413,10 +1525,12 @@ def normalize_currency_code(raw: object) -> str:
         return ""
     token_match = re.search(r"\b([A-Z]{3})\b", text)
     if token_match:
-        return str(token_match.group(1)).upper()
+        token = str(token_match.group(1)).upper()
+        return _CURRENCY_TEXT_ALIASES.get(token, token)
     letters = "".join(ch for ch in text if "A" <= ch <= "Z")
     if len(letters) >= 3:
-        return letters[:3]
+        token = letters[:3]
+        return _CURRENCY_TEXT_ALIASES.get(token, token)
     for symbol, code in _CURRENCY_SYMBOL_TO_CODE.items():
         if symbol in text:
             return code
@@ -1441,14 +1555,18 @@ def suggest_bill_to_amount_map(profile_key: object, currency_hint: object) -> di
     key = str(profile_key or "").strip()
     profile = BILL_PROFILES.get(key, {})
     protocol = str(profile.get("protocol", "FRAME5_ASCII")).strip().upper()
+    result = parse_bill_to_amount_map(profile.get("bill_to_amount"))
     currency_code = normalize_currency_code(currency_hint)
     if protocol == "ICT104U":
         preset = ICT104U_BILL_VALUE_PRESETS.get(currency_code)
+        mapped: dict[int, int] = {}
         if isinstance(preset, list):
             mapped = build_bill_value_map_from_sequence(preset)
-            if mapped:
-                return mapped
-    return parse_bill_to_amount_map(profile.get("bill_to_amount"))
+        elif isinstance(preset, dict):
+            mapped = parse_bill_to_amount_map(preset)
+        for code, amount in mapped.items():
+            result[int(code) & 0xFF] = int(amount)
+    return result
 
 
 def parse_bill_to_amount_map(raw: object) -> dict[int, int]:
@@ -1503,14 +1621,33 @@ DEFAULT_COUPON_VALUE_SETTINGS = {
     "values": {},
 }
 
+DEFAULT_DESIGN_FLIP_HORIZONTAL = True
+
 DEFAULT_PRINTING_SETTINGS = {
     "enabled": True,
     "dry_run": False,
     "printers": {
-        "DS620": {"win_name": "DP-DS620", "form_4x6": "4x6", "form_2x6": "2x6"},
+        "DS620": {
+            "win_name": "DP-DS620",
+            "form_4x6": "4x6",
+            "form_2x6": "2x6",
+            "margin_profiles": deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS),
+            "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
+        },
         # Optional dedicated queue for strip jobs (2x6x2).
-        "DS620_STRIP": {"win_name": "", "form_4x6": "4x6", "form_2x6": ""},
-        "RX1HS": {"win_name": "DNP RX1HS", "form_4x6": "4x6", "form_2x6": "2x6"},
+        "DS620_STRIP": {
+            "win_name": "",
+            "form_4x6": "4x6",
+            "form_2x6": "",
+            "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
+        },
+        "RX1HS": {
+            "win_name": "DNP RX1HS",
+            "form_4x6": "4x6",
+            "form_2x6": "2x6",
+            "margin_profiles": deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS),
+            "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
+        },
     },
     "default_model": "DS620",
 }
@@ -1518,6 +1655,124 @@ DEFAULT_PRINTING_SETTINGS = {
 DEFAULT_LAYOUT_SETTINGS = {
     "strip_2x6": ["2462", "2641", "6241"],
 }
+
+
+def _normalize_printer_margin_settings(raw_settings: object) -> dict[str, int]:
+    result = dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
+    if not isinstance(raw_settings, dict):
+        return result
+    for key in DEFAULT_PRINTER_MARGIN_SETTINGS.keys():
+        raw_value = raw_settings.get(key, raw_settings.get(f"margin_{key}", result[key]))
+        try:
+            result[key] = int(raw_value)
+        except Exception:
+            result[key] = int(DEFAULT_PRINTER_MARGIN_SETTINGS[key])
+    return result
+
+
+def _normalize_simple_margin_profile(raw_profile: object, fallback: dict[str, int]) -> dict[str, int]:
+    result = {
+        "horizontal": int(fallback.get("horizontal", 0)),
+        "vertical": int(fallback.get("vertical", 0)),
+    }
+    if not isinstance(raw_profile, dict):
+        return result
+    for key in ("horizontal", "vertical"):
+        try:
+            result[key] = int(raw_profile.get(key, result[key]))
+        except Exception:
+            result[key] = int(fallback.get(key, result[key]))
+    return result
+
+
+def _normalize_simple_margin_profiles(raw_profiles: object) -> dict[str, dict[str, int]]:
+    result = {
+        key: dict(value)
+        for key, value in DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS.items()
+    }
+    if not isinstance(raw_profiles, dict):
+        return result
+    for profile_key, fallback in DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS.items():
+        result[profile_key] = _normalize_simple_margin_profile(
+            raw_profiles.get(profile_key),
+            fallback,
+        )
+    return result
+
+
+def _has_nonzero_margin_settings(raw_settings: object) -> bool:
+    margins = _normalize_printer_margin_settings(raw_settings)
+    return any(int(margins.get(key, 0)) != 0 for key in DEFAULT_PRINTER_MARGIN_SETTINGS.keys())
+
+
+def _resolve_simple_margin_profile_key(image_size: Optional[tuple[int, int]]) -> str:
+    if not image_size:
+        return "4x6_portrait"
+    width = max(1, int(image_size[0]))
+    height = max(1, int(image_size[1]))
+    return "4x6_landscape" if width >= height else "4x6_portrait"
+
+
+def _resolve_simple_margin_profile(
+    raw_profiles: object,
+    image_size: Optional[tuple[int, int]],
+) -> dict[str, int]:
+    profiles = _normalize_simple_margin_profiles(raw_profiles)
+    profile_key = _resolve_simple_margin_profile_key(image_size)
+    return dict(profiles.get(profile_key, DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS["4x6_portrait"]))
+
+
+def _convert_simple_margins_to_print_margins(
+    profile: object,
+    image_size: Optional[tuple[int, int]],
+) -> dict[str, int]:
+    normalized_profile = _normalize_simple_margin_profile(
+        profile,
+        DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS.get(
+            _resolve_simple_margin_profile_key(image_size),
+            DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS["4x6_portrait"],
+        ),
+    )
+    horizontal = int(normalized_profile.get("horizontal", 0))
+    vertical = int(normalized_profile.get("vertical", 0))
+    image_landscape = bool(image_size and int(image_size[0]) >= int(image_size[1]))
+    if image_landscape:
+        return {
+            "left": horizontal,
+            "right": horizontal,
+            "top": vertical,
+            "bottom": vertical,
+        }
+    return {
+        "left": vertical,
+        "right": vertical,
+        "top": horizontal,
+        "bottom": horizontal,
+    }
+
+
+def _combine_margin_settings(base: object, extra: object) -> dict[str, int]:
+    primary = _normalize_printer_margin_settings(base)
+    secondary = _normalize_printer_margin_settings(extra)
+    return {
+        key: int(primary.get(key, 0)) + int(secondary.get(key, 0))
+        for key in DEFAULT_PRINTER_MARGIN_SETTINGS.keys()
+    }
+
+
+def _read_image_size(image_path: object) -> Optional[tuple[int, int]]:
+    try:
+        path = Path(str(image_path or "")).expanduser()
+    except Exception:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        with Image.open(path) as source:
+            return (int(source.size[0]), int(source.size[1]))
+    except Exception:
+        return None
+
 
 DEFAULT_MODE_SETTINGS = {
     "celebrity_enabled": True,
@@ -1529,7 +1784,11 @@ DEFAULT_CELEBRITY_SETTINGS = {
     "layout_id": "2461",
 }
 
+DESIGN_COMPOSE_CACHE_MAX_EDGE = 2400
+DESIGN_PREVIEW_COMPOSE_CACHE_MAX_EDGE = 960
+
 AI_LAYOUT_ID = "4641"
+AI_MODE_PRICING_LAYOUT_ID = "AI_MODE_4641"
 AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
@@ -1609,14 +1868,152 @@ DEFAULT_FILM_REMAINING_BY_MODEL = {
     "DS620": 400,
     "RX1HS": 400,
 }
+_DNP_PRINTERINFO_DEFAULT_EXE = Path(r"C:\DNPPIA\PrinterInfo\PrinterInfo.exe")
+_DNP_PRINTERINFO_DEFAULT_DLL = Path(r"C:\DNPPIA\PrinterInfo\cspstat.dll")
+_DNP_PRINTERINFO_DEFAULT_X86_POWERSHELL = Path(r"C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe")
+_DNP_PRINTERINFO_MEDIA_PROBE_SCRIPT = r"""param(
+    [Parameter(Mandatory = $true)][string]$DllPath,
+    [Parameter(Mandatory = $true)][string]$Model,
+    [string]$PortHints = "",
+    [int]$MaxIndex = 4,
+    [int]$MaxPort = 8
+)
+$ErrorActionPreference = "Stop"
+$printerTypeMap = @{
+    "DS620" = 20
+    "RX1HS" = 5
+}
+$result = [pscustomobject]@{
+    ok = $false
+    model = [string]$Model
+    port = $null
+    media = $null
+    status = $null
+    serial = ""
+    error = ""
+    checked = @()
+}
+try {
+    $printerType = $printerTypeMap[[string]$Model]
+    if ($null -eq $printerType) {
+        throw "unsupported_model"
+    }
+    $escapedDll = [string]$DllPath
+    $code = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class DnpNative {
+    [DllImport(@"$escapedDll", EntryPoint="GetPrinterPortNum", CallingConvention=CallingConvention.StdCall)]
+    public static extern int GetPrinterPortNum(int printerType, int index);
+    [DllImport(@"$escapedDll", EntryPoint="GetMediaCounter", CallingConvention=CallingConvention.StdCall)]
+    public static extern int GetMediaCounter(int port);
+    [DllImport(@"$escapedDll", EntryPoint="GetStatus", CallingConvention=CallingConvention.StdCall)]
+    public static extern int GetStatus(int port);
+    [DllImport(@"$escapedDll", EntryPoint="GetSerialNo", CallingConvention=CallingConvention.StdCall, CharSet=CharSet.Ansi)]
+    public static extern int GetSerialNo(int port, StringBuilder value);
+}
+"@
+    Add-Type -TypeDefinition $code
+
+    $ports = New-Object System.Collections.Generic.List[int]
+    foreach ($token in [string]$PortHints -split ",") {
+        $text = [string]$token
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        try {
+            $parsed = [int]$text.Trim()
+        } catch {
+            continue
+        }
+        if ($parsed -ge 0 -and -not $ports.Contains($parsed)) {
+            $ports.Add($parsed)
+        }
+    }
+    for ($idx = 0; $idx -le [Math]::Max(0, [int]$MaxIndex); $idx++) {
+        $resolvedPort = -1
+        try {
+            $resolvedPort = [DnpNative]::GetPrinterPortNum([int]$printerType, [int]$idx)
+        } catch {
+            $resolvedPort = -1
+        }
+        if ($resolvedPort -gt 0 -and -not $ports.Contains($resolvedPort)) {
+            $ports.Add($resolvedPort)
+        }
+    }
+    for ($port = 0; $port -le [Math]::Max(0, [int]$MaxPort); $port++) {
+        if (-not $ports.Contains($port)) {
+            $ports.Add($port)
+        }
+    }
+
+    foreach ($port in $ports) {
+        $status = -2147483648
+        $media = -1
+        $serial = ""
+        try {
+            $status = [int][DnpNative]::GetStatus([int]$port)
+        } catch {}
+        try {
+            $media = [int][DnpNative]::GetMediaCounter([int]$port)
+        } catch {}
+        try {
+            $buffer = New-Object System.Text.StringBuilder 128
+            $serialRet = [int][DnpNative]::GetSerialNo([int]$port, $buffer)
+            if ($serialRet -ge 0) {
+                $serial = [string]$buffer.ToString().Trim()
+            }
+        } catch {}
+        $result.checked += [pscustomobject]@{
+            port = [int]$port
+            status = [int]$status
+            media = [int]$media
+            serial = [string]$serial
+        }
+        if ($media -ge 0) {
+            $result.ok = $true
+            $result.port = [int]$port
+            $result.media = [int]$media
+            $result.status = [int]$status
+            $result.serial = [string]$serial
+            break
+        }
+    }
+    if (-not $result.ok) {
+        $result.error = "media_negative"
+    }
+} catch {
+    $result.error = [string]$_.Exception.Message
+}
+$result | ConvertTo-Json -Compress -Depth 4
+"""
 
 _TRANSPARENT_SLOT_CACHE: dict[
     tuple[str, int, int, int],
     tuple[tuple[tuple[int, int, int, int], ...], tuple[int, int]],
 ] = {}
+_SLOT_REFERENCE_PATH_CACHE: dict[
+    tuple[str, str, str, int],
+    str,
+] = {}
 _USED_SLOT_CACHE: dict[
-    tuple[str, str, int, int, int, int],
+    tuple[str, str, str, int, int, int, int],
     tuple[tuple[int, int, int, int], ...],
+] = {}
+_BASIC_FRAME_SLOT_CACHE: dict[
+    tuple[str, str, int, int, int, int, str],
+    tuple[tuple[int, int, int, int], ...],
+] = {}
+_DESIGN_ASSET_PATH_CACHE: dict[
+    tuple[str, int],
+    tuple[
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        Optional[str],
+        str,
+    ],
 ] = {}
 _FRAME_SELECT_BOTTOM_Y_CACHE: dict[tuple[str, str, int, int, int, int], Optional[int]] = {}
 _FRAME_SELECT_BOUNDS_CACHE: dict[
@@ -1762,6 +2159,64 @@ def _wait_spooler_job(printer_name: str, job_id: int, timeout_sec: float = 8.0) 
         win32print.ClosePrinter(handle)
 
 
+def _wait_printer_idle(
+    printer_name: str,
+    timeout_sec: float = 20.0,
+    stable_sec: float = 1.2,
+) -> None:
+    try:
+        import win32print
+    except Exception as exc:
+        raise RuntimeError(f"win32print import failed: {exc}") from exc
+
+    busy_mask = (
+        int(getattr(win32print, "PRINTER_STATUS_BUSY", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_PRINTING", 0))
+    )
+    error_mask = (
+        int(getattr(win32print, "PRINTER_STATUS_OFFLINE", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_ERROR", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_PAPER_OUT", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_PAPER_JAM", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_DOOR_OPEN", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_USER_INTERVENTION", 0))
+        | int(getattr(win32print, "PRINTER_STATUS_NOT_AVAILABLE", 0))
+    )
+    deadline = time.monotonic() + max(1.0, float(timeout_sec))
+    stable_target = max(0.2, float(stable_sec))
+    idle_since: Optional[float] = None
+
+    while time.monotonic() < deadline:
+        status, status_text = _get_printer_status_snapshot(printer_name)
+        print(
+            f"[PRINT] printer status wait printer=\"{printer_name}\" "
+            f"status=0x{status:08X} ({status_text})"
+        )
+        if status & error_mask:
+            raise RuntimeError(
+                f"printer status error while waiting idle "
+                f"status=0x{status:08X} ({status_text})"
+            )
+        if status & busy_mask:
+            idle_since = None
+        else:
+            now = time.monotonic()
+            if idle_since is None:
+                idle_since = now
+            if now - idle_since >= stable_target:
+                print(
+                    f"[PRINT] printer idle confirmed printer=\"{printer_name}\" "
+                    f"stable_sec={stable_target:.1f}"
+                )
+                return
+        time.sleep(0.25)
+
+    print(
+        f"[PRINT] printer idle wait timeout printer=\"{printer_name}\" "
+        f"timeout_sec={timeout_sec:.1f}"
+    )
+
+
 def _internet_probe_urls(api_base_url: str = "") -> list[str]:
     candidates: list[str] = []
     base_candidates = [
@@ -1832,6 +2287,21 @@ def get_printer_health(printer_name: str) -> tuple[bool, str]:
     name = str(printer_name or "").strip()
     if not name:
         return False, "프린터 이름 미설정"
+    name_token = re.sub(r"[^a-z0-9]+", "", name.lower())
+    if any(
+        marker in name_token
+        for marker in (
+            "microsoftprinttopdf",
+            "microsoftxpsdocumentwriter",
+            "onenoteforwindows10",
+            "fax",
+            "adobepdf",
+            "pdfcreator",
+            "printtopdf",
+            "xpsdocumentwriter",
+        )
+    ):
+        return False, "가상 프린터"
 
     try:
         import pywintypes
@@ -2015,10 +2485,20 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
     import win32print
 
     def _compact(text: str) -> str:
-        return re.sub(r"[^0-9a-z]+", "", str(text or "").lower())
+        normalized = str(text or "").lower().replace("×", "x")
+        return re.sub(r"[^0-9a-z]+", "", normalized)
+
+    def _looks_like_multi_cut_form(text: str) -> bool:
+        compact = _compact(text)
+        return (
+            compact.endswith("x2")
+            or compact.endswith("2up")
+            or "x2" in compact
+            or "2up" in compact
+        )
 
     def _extract_dims(text: str) -> Optional[tuple[str, str]]:
-        match = re.search(r"(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)", str(text or ""))
+        match = re.search(r"(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)", str(text or ""))
         if not match:
             return None
         return match.group(1), match.group(2)
@@ -2071,22 +2551,13 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
             return False
 
         resolved = ""
-        try:
-            forms = win32print.EnumForms(handle)
-        except Exception:
-            forms = []
-        form_names: list[str] = []
-        if isinstance(forms, list):
-            for entry in forms:
-                data = entry if isinstance(entry, dict) else {}
-                name = str(data.get("Name", "")).strip()
-                if name:
-                    form_names.append(name)
+        form_names = _enumerate_printer_form_names(handle)
 
         if form_names:
             lower_desired = desired.lower()
             desired_compact = _compact(desired)
             desired_dims = _extract_dims(desired)
+            desired_is_strip = _is_likely_2x6_form_name(desired)
 
             # 1) exact match
             for name in form_names:
@@ -2097,14 +2568,21 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
             # 2) same dimensions (allow swapped orientation: 4x6 == 6x4)
             if not resolved and desired_dims is not None:
                 d1, d2 = desired_dims
+                matching_names: list[str] = []
                 for name in form_names:
                     dims = _extract_dims(name)
                     if dims is None:
                         continue
                     n1, n2 = dims
                     if (n1 == d1 and n2 == d2) or (n1 == d2 and n2 == d1):
-                        resolved = name
-                        break
+                        matching_names.append(name)
+                if matching_names:
+                    preferred = [
+                        name for name in matching_names
+                        if _looks_like_multi_cut_form(name) == desired_is_strip
+                    ]
+                    ordered = preferred or matching_names
+                    resolved = ordered[0]
 
             # 3) compact contains alias (fallback)
             if not resolved and desired_compact:
@@ -2116,11 +2594,18 @@ def _try_apply_printer_form(printer_name: str, hdc, form_name: str) -> bool:
                         desired.lower(),
                     )
                     aliases.add(_compact(swapped))
+                matching_names = []
                 for name in form_names:
                     compact_name = _compact(name)
                     if any(alias and alias in compact_name for alias in aliases):
-                        resolved = name
-                        break
+                        matching_names.append(name)
+                if matching_names:
+                    preferred = [
+                        name for name in matching_names
+                        if _looks_like_multi_cut_form(name) == desired_is_strip
+                    ]
+                    ordered = preferred or matching_names
+                    resolved = ordered[0]
 
         if not resolved:
             # Best-effort fallback: force custom 2x6 paper size (in 0.1mm units).
@@ -2196,6 +2681,7 @@ def win_print_image(
     image_path: str,
     copies: int = 1,
     form_name: str = "",
+    margins: Optional[dict[str, int]] = None,
 ) -> None:
     import win32con
     import win32print
@@ -2211,6 +2697,7 @@ def win_print_image(
         raise FileNotFoundError(f"image not found: {path}")
     if not str(printer_name).strip():
         raise RuntimeError("printer_name is empty")
+    resolved_margins = _normalize_printer_margin_settings(margins)
 
     com_initialized = False
     try:
@@ -2264,9 +2751,30 @@ def win_print_image(
         y1 = (ph - dh) // 2
         x2 = x1 + dw
         y2 = y1 + dh
+        if any(int(resolved_margins[key]) != 0 for key in DEFAULT_PRINTER_MARGIN_SETTINGS.keys()):
+            x1 += int(resolved_margins["left"])
+            x2 -= int(resolved_margins["right"])
+            y1 += int(resolved_margins["top"])
+            y2 -= int(resolved_margins["bottom"])
+            x1 = max(0, min(int(x1), max(0, pw - 1)))
+            y1 = max(0, min(int(y1), max(0, ph - 1)))
+            x2 = max(x1 + 1, min(int(x2), pw))
+            y2 = max(y1 + 1, min(int(y2), ph))
+            if x2 <= x1 or y2 <= y1:
+                raise RuntimeError(
+                    "invalid print margins "
+                    f"L={resolved_margins['left']} R={resolved_margins['right']} "
+                    f"T={resolved_margins['top']} B={resolved_margins['bottom']}"
+                )
         print(
             f"[PRINT] form=\"{str(form_name or '')}\" pw={pw} ph={ph} "
             f"img={iw}x{ih} rotated={1 if rotated else 0} scale={scale:.4f}"
+        )
+        print(
+            "[PRINT] draw_rect "
+            f"x1={x1} y1={y1} x2={x2} y2={y2} "
+            f"margins=L{resolved_margins['left']}/R{resolved_margins['right']}/"
+            f"T{resolved_margins['top']}/B{resolved_margins['bottom']}"
         )
 
         docname = Path(path).name
@@ -2316,31 +2824,59 @@ def win_print_image(
                 pass
 
 
-def _split_print_image_for_2x6(image_path: Path) -> tuple[Path, Path]:
+def _resolve_strip_split_boxes(
+    image_size: tuple[int, int],
+    layout_id: Optional[str] = None,
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    w = max(1, int(image_size[0]))
+    h = max(1, int(image_size[1]))
+    layout_key = str(layout_id or "").strip()
+    grouping = get_layout_meta_grouping(layout_key, "print") if layout_key else None
+    if grouping == "top_bottom":
+        cut_y = max(1, min(h - 1, h // 2))
+        return ((0, 0, w, cut_y), (0, cut_y, w, h))
+    if grouping == "left_right":
+        cut_x = max(1, min(w - 1, w // 2))
+        return ((0, 0, cut_x, h), (cut_x, 0, w, h))
+
+    if w >= h:
+        cut_y = max(1, min(h - 1, h // 2))
+        return ((0, 0, w, cut_y), (0, cut_y, w, h))
+
+    cut_x = max(1, min(w - 1, w // 2))
+    return ((0, 0, cut_x, h), (cut_x, 0, w, h))
+
+
+def _split_image_for_2x6(
+    image_path: Path,
+    layout_id: Optional[str] = None,
+) -> tuple[Image.Image, Image.Image]:
     source_path = Path(image_path)
     if not source_path.is_file():
         raise FileNotFoundError(f"print image missing: {source_path}")
 
     with Image.open(source_path) as src:
-        image = src.convert("RGB")
+        image = src.copy()
     w, h = image.size
     if w <= 1 or h <= 1:
         raise RuntimeError(f"invalid split size: {w}x{h}")
 
-    if w >= h:
-        cut = max(1, h // 2)
-        part_a = image.crop((0, 0, w, cut))
-        part_b = image.crop((0, cut, w, h))
-    else:
-        cut = max(1, w // 2)
-        part_a = image.crop((0, 0, cut, h))
-        part_b = image.crop((cut, 0, w, h))
+    part_a_box, part_b_box = _resolve_strip_split_boxes((w, h), layout_id=layout_id)
+    return image.crop(part_a_box), image.crop(part_b_box)
+
+
+def _split_print_image_for_2x6(
+    image_path: Path,
+    layout_id: Optional[str] = None,
+) -> tuple[Path, Path]:
+    source_path = Path(image_path)
+    part_a, part_b = _split_image_for_2x6(source_path, layout_id=layout_id)
 
     out_dir = source_path.parent
     part_a_path = out_dir / "strip_a.jpg"
     part_b_path = out_dir / "strip_b.jpg"
-    part_a.save(part_a_path, format="JPEG", quality=95)
-    part_b.save(part_b_path, format="JPEG", quality=95)
+    part_a.convert("RGB").save(part_a_path, format="JPEG", quality=95)
+    part_b.convert("RGB").save(part_b_path, format="JPEG", quality=95)
     return part_a_path, part_b_path
 
 
@@ -2348,9 +2884,57 @@ def _is_likely_2x6_form_name(form_name: str) -> bool:
     text = str(form_name or "").strip().lower()
     if not text:
         return False
-    compact = re.sub(r"\s+", "", text)
+    compact = _compact_printer_form_name(text)
     explicit_tokens = ("2x6", "6x2", "50x152", "152x50")
     return any(token in compact for token in explicit_tokens)
+
+
+def _compact_printer_form_name(text: str) -> str:
+    normalized = str(text or "").lower().replace("×", "x")
+    return re.sub(r"[^0-9a-z]+", "", normalized)
+
+
+def _is_likely_4x6_form_name(form_name: str) -> bool:
+    text = str(form_name or "").strip()
+    if not text:
+        return False
+    compact = _compact_printer_form_name(text)
+    explicit_tokens = ("4x6", "6x4", "10x15", "15x10", "100x150", "150x100")
+    return any(token in compact for token in explicit_tokens)
+
+
+def _normalize_printer_form_name_for_job(job_size: str, form_name: str) -> str:
+    size_text = str(job_size or "4x6").strip().lower()
+    candidate = str(form_name or "").strip()
+    if size_text.startswith("2x6"):
+        return candidate if _is_likely_2x6_form_name(candidate) else "2x6"
+    return candidate if _is_likely_4x6_form_name(candidate) else "4x6"
+
+
+def _enumerate_printer_form_names(handle) -> list[str]:
+    import win32print
+
+    try:
+        entries = win32print.EnumForms(handle, 1)
+    except TypeError:
+        try:
+            entries = win32print.EnumForms(handle)
+        except Exception:
+            entries = []
+    except Exception:
+        entries = []
+
+    names: list[str] = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("Name", "")).strip()
+        elif isinstance(entry, (tuple, list)) and entry:
+            name = str(entry[0]).strip()
+        else:
+            name = ""
+        if name:
+            names.append(name)
+    return sorted(set(names))
 
 
 def normalize_serial_port(port: str) -> str:
@@ -2815,6 +3399,75 @@ def _scale_rect(
     )
 
 
+def _expand_slots_with_bleed(
+    slots: list[tuple[int, int, int, int]],
+    canvas_size: tuple[int, int],
+    bleed_px: int,
+) -> list[tuple[int, int, int, int]]:
+    if not slots:
+        return []
+    bleed = max(0, int(bleed_px))
+    if bleed <= 0:
+        return [tuple(int(v) for v in rect) for rect in slots]
+
+    canvas_w = max(1, int(canvas_size[0]))
+    canvas_h = max(1, int(canvas_size[1]))
+    expanded: list[tuple[int, int, int, int]] = []
+    for x, y, w, h in slots:
+        left = max(0, int(x) - bleed)
+        top = max(0, int(y) - bleed)
+        right = min(canvas_w, int(x) + int(w) + bleed)
+        bottom = min(canvas_h, int(y) + int(h) + bleed)
+        if right <= left:
+            right = min(canvas_w, left + max(1, int(w)))
+        if bottom <= top:
+            bottom = min(canvas_h, top + max(1, int(h)))
+        expanded.append((left, top, max(1, right - left), max(1, bottom - top)))
+    return _sort_rects_yx(expanded)
+
+
+def _preview_slot_bleed_px(layout_id: str, canvas_size: tuple[int, int]) -> int:
+    key = str(layout_id or "").strip()
+    if not key:
+        return 0
+    if key == "6241":
+        return 3
+    shortest = max(1, min(int(canvas_size[0]), int(canvas_size[1])))
+    return max(2, int(round(shortest * 0.0045)))
+
+
+def _expand_print_slots_for_layout(
+    layout_id: str,
+    slots: list[tuple[int, int, int, int]],
+    canvas_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    key = str(layout_id or "").strip()
+    if key not in {"4641", "4661", "4681"}:
+        return [tuple(int(v) for v in rect) for rect in slots]
+    if not slots:
+        return []
+
+    canvas_w = max(1, int(canvas_size[0]))
+    canvas_h = max(1, int(canvas_size[1]))
+    shortest = max(1, min(canvas_w, canvas_h))
+    side_bleed = max(2, int(round(shortest * 0.002)))
+    top_bleed = max(side_bleed + 1, int(round(shortest * 0.0035)))
+    bottom_bleed = side_bleed
+
+    expanded: list[tuple[int, int, int, int]] = []
+    for x, y, w, h in slots:
+        left = max(0, int(x) - side_bleed)
+        top = max(0, int(y) - top_bleed)
+        right = min(canvas_w, int(x) + int(w) + side_bleed)
+        bottom = min(canvas_h, int(y) + int(h) + bottom_bleed)
+        if right <= left:
+            right = min(canvas_w, left + max(1, int(w)))
+        if bottom <= top:
+            bottom = min(canvas_h, top + max(1, int(h)))
+        expanded.append((left, top, max(1, right - left), max(1, bottom - top)))
+    return _sort_rects_yx(expanded)
+
+
 def _split_slots_into_copies(
     slots: list[tuple[int, int, int, int]],
     photo_count: int,
@@ -2870,13 +3523,73 @@ def _split_slots_into_copies(
     return groups if groups else [ordered[:photo_count]]
 
 
+def _split_slots_by_gap(
+    rects: list[tuple[int, int, int, int]],
+    photo_count: int,
+    axis: str,
+) -> list[list[tuple[int, int, int, int]]]:
+    ordered = _sort_rects_yx(rects)
+    if len(ordered) != max(1, int(photo_count or 1)) * 2:
+        return []
+
+    if axis == "x":
+        centers = sorted(
+            ((r[0] + r[2] / 2.0, idx) for idx, r in enumerate(ordered)),
+            key=lambda value: value[0],
+        )
+    else:
+        centers = sorted(
+            ((r[1] + r[3] / 2.0, idx) for idx, r in enumerate(ordered)),
+            key=lambda value: value[0],
+        )
+
+    best_gap = -1.0
+    best_idx = -1
+    for i in range(len(centers) - 1):
+        gap = centers[i + 1][0] - centers[i][0]
+        if gap > best_gap:
+            best_gap = gap
+            best_idx = i
+    if best_idx < 0:
+        return []
+
+    first_indices = {idx for _center, idx in centers[: best_idx + 1]}
+    first = [ordered[i] for i in range(len(ordered)) if i in first_indices]
+    second = [ordered[i] for i in range(len(ordered)) if i not in first_indices]
+    if len(first) != photo_count or len(second) != photo_count:
+        return []
+    return [_sort_rects_yx(first), _sort_rects_yx(second)]
+
+
+def _split_slots_into_layout_groups(
+    layout_id: str,
+    slots: list[tuple[int, int, int, int]],
+    photo_count: int,
+) -> list[list[tuple[int, int, int, int]]]:
+    grouping = get_layout_meta_grouping(layout_id, scope="print")
+    if grouping == "left_right":
+        grouped = _split_slots_by_gap(slots, photo_count, axis="x")
+        if grouped:
+            return grouped
+    elif grouping == "top_bottom":
+        grouped = _split_slots_by_gap(slots, photo_count, axis="y")
+        if grouped:
+            return grouped
+    return _split_slots_into_copies(slots, photo_count)
+
+
 def _resolve_used_slots_for_canvas(
     layout_id: str,
     slot_ref_path: Optional[Path],
     canvas_size: tuple[int, int],
     photo_count: int,
+    scope: str = "print",
 ) -> list[tuple[int, int, int, int]]:
     target_count = max(1, int(photo_count or 1))
+    layout_key = str(layout_id or "").strip()
+    strip_like = layout_key in {"6241", "2641", "2461", "2462"}
+    required_slot_count = target_count * 2 if strip_like else target_count
+    scope_key = str(scope or "print").strip().lower() or "print"
     path_text = ""
     path_mtime = 0
     if slot_ref_path is not None:
@@ -2890,6 +3603,7 @@ def _resolve_used_slots_for_canvas(
             path_mtime = 0
     cache_key = (
         str(layout_id or "").strip(),
+        scope_key,
         path_text,
         int(canvas_size[0]),
         int(canvas_size[1]),
@@ -2900,19 +3614,86 @@ def _resolve_used_slots_for_canvas(
     if cached_used:
         return [tuple(int(v) for v in rect) for rect in cached_used]
 
+    basic_frame_slots = _resolve_basic_frame_slots_for_canvas(
+        layout_id=layout_key,
+        canvas_size=canvas_size,
+        photo_count=target_count,
+        scope=scope_key,
+    )
+    if basic_frame_slots:
+        print(
+            f"[DESIGN] basic frame hit layout={layout_id} "
+            f"scope={scope_key} slots={len(basic_frame_slots)}"
+        )
+        _USED_SLOT_CACHE[cache_key] = tuple(tuple(int(v) for v in rect) for rect in basic_frame_slots)
+        return [tuple(int(v) for v in rect) for rect in basic_frame_slots]
+
+    meta_slots = resolve_layout_meta_slots(layout_key, scope_key, canvas_size)
+    if meta_slots:
+        preview_required_count = (
+            required_slot_count
+            if strip_like and scope_key != "print" and len(meta_slots) >= required_slot_count
+            else target_count
+        )
+        enough = (
+            len(meta_slots) >= required_slot_count
+            if strip_like and scope_key == "print"
+            else len(meta_slots) >= target_count
+        )
+        if enough:
+            used = [tuple(int(v) for v in rect) for rect in meta_slots]
+            if scope_key == "print" and len(used) > target_count:
+                grouped_meta = _split_slots_into_layout_groups(layout_key, used, target_count)
+                if grouped_meta:
+                    if strip_like:
+                        grouped_meta = [
+                            _normalize_group_slot_sizes(group[:target_count], canvas_size)
+                            for group in grouped_meta
+                        ]
+                    reordered: list[tuple[int, int, int, int]] = []
+                    for group in grouped_meta:
+                        for rect in group[:target_count]:
+                            reordered.append(tuple(int(v) for v in rect))
+                    if len(reordered) >= len(used):
+                        used = reordered[: len(used)]
+                    elif reordered:
+                        used = reordered
+                    print(
+                        f"[DESIGN] layout meta reordered layout={layout_id} "
+                        f"scope={scope_key} groups={len(grouped_meta)} slots={len(used)}"
+                    )
+            elif scope_key != "print":
+                used = used[:preview_required_count]
+            print(
+                f"[DESIGN] layout meta hit layout={layout_id} "
+                f"scope={scope_key} slots={len(used)}"
+            )
+            _USED_SLOT_CACHE[cache_key] = tuple(used)
+            return used
+
     slots: list[tuple[int, int, int, int]] = []
     ref_size = (0, 0)
 
     if slot_ref_path is not None and slot_ref_path.is_file():
         slots, ref_size = _detect_transparent_slots(slot_ref_path, min_area=620)
-        if not slots:
+        if len(slots) < required_slot_count:
             try:
-                fallback_slots, _slot_source = resolve_slots(slot_ref_path, layout_id)
+                fallback_slots, slot_source = resolve_slots(slot_ref_path, layout_id)
                 with Image.open(slot_ref_path) as fallback_source:
                     ref_size = fallback_source.size
-                slots = fallback_slots
+                if len(fallback_slots) >= required_slot_count:
+                    if slots and len(slots) != len(fallback_slots):
+                        print(
+                            f"[DESIGN] slot fallback layout={layout_id} "
+                            f"detected={len(slots)} fallback={len(fallback_slots)} "
+                            f"source={slot_source} ref={slot_ref_path.name}"
+                        )
+                    slots = fallback_slots
+                elif not slots:
+                    slots = fallback_slots
             except Exception:
-                slots = []
+                if not slots:
+                    slots = []
 
     if not slots:
         return []
@@ -2921,11 +3702,24 @@ def _resolve_used_slots_for_canvas(
         slots = _scale_slots(slots, ref_size, canvas_size)
     if slots:
         slots = _normalize_slots_for_layout(layout_id, slots, canvas_size)
+    if strip_like and len(slots) == target_count:
+        expanded_slots = _expand_single_copy_strip_slots(
+            layout_id=layout_id,
+            slots=slots,
+            bounds_size=canvas_size,
+            target_count=target_count,
+        )
+        if len(expanded_slots) >= required_slot_count:
+            print(
+                f"[DESIGN] strip slot twin layout={layout_id} "
+                f"detected={len(slots)} expanded={len(expanded_slots)}"
+            )
+            slots = expanded_slots
 
-    groups = _split_slots_into_copies(slots, target_count)
+    groups = _split_slots_into_layout_groups(layout_id, slots, target_count)
     if not groups:
         groups = [slots[:target_count]]
-    if layout_id in {"6241", "2641", "2461", "2462"}:
+    if strip_like:
         groups = [
             _normalize_group_slot_sizes(group[:target_count], canvas_size)
             for group in groups
@@ -2937,6 +3731,46 @@ def _resolve_used_slots_for_canvas(
             used.append((int(x), int(y), int(w), int(h)))
     _USED_SLOT_CACHE[cache_key] = tuple(used)
     return used
+
+
+def _resolve_single_copy_strip_preview_slots(
+    layout_id: str,
+    canvas_size: tuple[int, int],
+    photo_count: int,
+) -> list[tuple[int, int, int, int]]:
+    layout_key = str(layout_id or "").strip()
+    target_count = max(1, int(photo_count or 1))
+    grouping = get_layout_meta_grouping(layout_key, scope="print")
+    if grouping == "top_bottom":
+        virtual_canvas = (max(1, int(canvas_size[0])), max(1, int(canvas_size[1])) * 2)
+    elif grouping == "left_right":
+        virtual_canvas = (max(1, int(canvas_size[0])) * 2, max(1, int(canvas_size[1])))
+    else:
+        return []
+
+    virtual_slots = resolve_layout_meta_slots(layout_key, "print", virtual_canvas)
+    if len(virtual_slots) < target_count * 2:
+        return []
+
+    grouped = _split_slots_into_layout_groups(
+        layout_key,
+        [tuple(int(v) for v in rect) for rect in virtual_slots],
+        target_count,
+    )
+    if not grouped:
+        return []
+
+    first_group = [tuple(int(v) for v in rect) for rect in grouped[0][:target_count]]
+    if len(first_group) < target_count:
+        return []
+
+    min_x = min(int(rect[0]) for rect in first_group)
+    min_y = min(int(rect[1]) for rect in first_group)
+    normalized = [
+        (int(x - min_x), int(y - min_y), int(w), int(h))
+        for x, y, w, h in first_group
+    ]
+    return _normalize_group_slot_sizes(normalized, canvas_size)
 
 
 def _median_int(values: list[int]) -> int:
@@ -3002,6 +3836,44 @@ def _normalize_slots_for_layout(
     if key in {"6241", "2641", "2461", "2462"} and slots:
         return _normalize_group_slot_sizes(list(slots), bounds_size)
     return _sort_rects_yx(list(slots))
+
+
+def _expand_single_copy_strip_slots(
+    layout_id: str,
+    slots: list[tuple[int, int, int, int]],
+    bounds_size: tuple[int, int],
+    target_count: int,
+) -> list[tuple[int, int, int, int]]:
+    key = str(layout_id or "").strip()
+    if key not in {"6241", "2641", "2461", "2462"}:
+        return list(slots)
+    if len(slots) != max(1, int(target_count or 1)):
+        return list(slots)
+
+    frame_w = max(1, int(bounds_size[0]))
+    frame_h = max(1, int(bounds_size[1]))
+    expanded: list[tuple[int, int, int, int]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+
+    def _push(rect: tuple[int, int, int, int]) -> None:
+        item = tuple(int(v) for v in rect)
+        if item not in seen:
+            seen.add(item)
+            expanded.append(item)
+
+    for rect in slots:
+        _push(rect)
+
+    for x, y, w, h in slots:
+        if key == "6241":
+            mx = int(x)
+            my = max(0, min(int(frame_h - y - h), max(0, frame_h - h)))
+        else:
+            mx = max(0, min(int(frame_w - x - w), max(0, frame_w - w)))
+            my = int(y)
+        _push((mx, my, int(w), int(h)))
+
+    return _sort_rects_yx(expanded)
 
 
 def _rect_intersects(
@@ -3106,20 +3978,205 @@ def _scale_rect_about_center(
     return (nx, ny, nw, nh)
 
 
+def _scale_rect_from_base(
+    rect: tuple[int, int, int, int],
+    base_size: tuple[int, int],
+    canvas_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    bx, by, bw, bh = rect
+    base_w = max(1, int(base_size[0]))
+    base_h = max(1, int(base_size[1]))
+    canvas_w = max(1, int(canvas_size[0]))
+    canvas_h = max(1, int(canvas_size[1]))
+    sx = float(canvas_w) / float(base_w)
+    sy = float(canvas_h) / float(base_h)
+    return (
+        max(0, int(round(bx * sx))),
+        max(0, int(round(by * sy))),
+        max(1, int(round(bw * sx))),
+        max(1, int(round(bh * sy))),
+    )
+
+
+def _resolve_basic_frame_layout_key(layout_id: str) -> str:
+    key = str(layout_id or "").strip()
+    if not key:
+        return ""
+    return BASIC_FRAME_LAYOUT_ALIASES.get(key, key)
+
+
+def _resolve_basic_frame_path(layout_id: str) -> Optional[Path]:
+    canonical = _resolve_basic_frame_layout_key(layout_id)
+    if canonical not in BASIC_FRAME_CANONICAL_LAYOUTS:
+        return None
+    candidate = ROOT_DIR / "assets" / "ui" / "Basic_Frame" / f"{canonical}.png"
+    return candidate if candidate.is_file() else None
+
+
+def _resolve_basic_frame_slots_for_canvas(
+    layout_id: str,
+    canvas_size: tuple[int, int],
+    photo_count: int,
+    scope: str = "print",
+) -> list[tuple[int, int, int, int]]:
+    basic_frame_path = _resolve_basic_frame_path(layout_id)
+    if basic_frame_path is None:
+        return []
+
+    scope_key = str(scope or "print").strip().lower() or "print"
+    layout_key = str(layout_id or "").strip()
+    target_count = max(1, int(photo_count or 1))
+    try:
+        resolved_path = str(basic_frame_path.resolve())
+    except Exception:
+        resolved_path = str(basic_frame_path)
+    try:
+        mtime_ns = int(basic_frame_path.stat().st_mtime_ns)
+    except Exception:
+        mtime_ns = 0
+    cache_key = (
+        layout_key,
+        resolved_path,
+        mtime_ns,
+        int(canvas_size[0]),
+        int(canvas_size[1]),
+        int(target_count),
+        scope_key,
+    )
+    cached = _BASIC_FRAME_SLOT_CACHE.get(cache_key)
+    if cached is not None:
+        return [tuple(int(v) for v in rect) for rect in cached]
+
+    slots, ref_size = _detect_transparent_slots(basic_frame_path, min_area=20)
+    if not slots:
+        _BASIC_FRAME_SLOT_CACHE[cache_key] = tuple()
+        return []
+
+    strip_like = layout_key in {"6241", "2641", "2461", "2462"}
+    if strip_like and scope_key == "print":
+        grouping = "top_bottom" if layout_key == "6241" else "left_right"
+        if grouping == "top_bottom":
+            single_canvas = (
+                max(1, int(canvas_size[0])),
+                max(1, int(round(float(canvas_size[1]) / 2.0))),
+            )
+        else:
+            single_canvas = (
+                max(1, int(round(float(canvas_size[0]) / 2.0))),
+                max(1, int(canvas_size[1])),
+            )
+        scaled = _scale_slots(slots, ref_size, single_canvas)
+        scaled = _normalize_slots_for_layout(layout_id, scaled, single_canvas)
+        expanded = _expand_single_copy_strip_slots(
+            layout_id=layout_id,
+            slots=scaled,
+            bounds_size=canvas_size,
+            target_count=target_count,
+        )
+        if len(expanded) >= target_count * 2:
+            grouped = _split_slots_into_layout_groups(layout_id, expanded, target_count)
+            if grouped:
+                grouped = [
+                    _normalize_group_slot_sizes(group[:target_count], canvas_size)
+                    for group in grouped
+                ]
+                reordered: list[tuple[int, int, int, int]] = []
+                for group in grouped:
+                    for rect in group[:target_count]:
+                        reordered.append(tuple(int(v) for v in rect))
+                if len(reordered) >= target_count * 2:
+                    expanded = reordered[: target_count * 2]
+                    print(
+                        f"[DESIGN] basic frame reordered layout={layout_id} "
+                        f"scope={scope_key} groups={len(grouped)} slots={len(expanded)}"
+                    )
+            used = [tuple(int(v) for v in rect) for rect in expanded]
+            _BASIC_FRAME_SLOT_CACHE[cache_key] = tuple(used)
+            return used
+        _BASIC_FRAME_SLOT_CACHE[cache_key] = tuple()
+        return []
+
+    scaled = _scale_slots(slots, ref_size, canvas_size)
+    scaled = _normalize_slots_for_layout(layout_id, scaled, canvas_size)
+    if scope_key == "print":
+        scaled = _expand_print_slots_for_layout(layout_id, scaled, canvas_size)
+    if len(scaled) >= target_count:
+        used = [tuple(int(v) for v in rect) for rect in scaled[:target_count]]
+        _BASIC_FRAME_SLOT_CACHE[cache_key] = tuple(used)
+        return used
+
+    _BASIC_FRAME_SLOT_CACHE[cache_key] = tuple()
+    return []
+
+
+def _apply_preview_slot_overrides(
+    layout_id: str,
+    slots: list[tuple[int, int, int, int]],
+    canvas_size: tuple[int, int],
+) -> list[tuple[int, int, int, int]]:
+    key = str(layout_id or "").strip()
+    if _resolve_basic_frame_path(key) is not None:
+        return list(slots)
+    override = PREVIEW_SLOT_OVERRIDE_BY_LAYOUT.get(key)
+    if not isinstance(override, dict):
+        return list(slots)
+    base_size = override.get("base_size")
+    raw_slots = override.get("slots")
+    if not (
+        isinstance(base_size, (tuple, list))
+        and len(base_size) >= 2
+        and isinstance(raw_slots, (list, tuple))
+        and raw_slots
+    ):
+        return list(slots)
+    scaled: list[tuple[int, int, int, int]] = []
+    for item in raw_slots:
+        if not isinstance(item, (tuple, list)) or len(item) < 4:
+            continue
+        scaled.append(
+            _scale_rect_from_base(
+                (int(item[0]), int(item[1]), int(item[2]), int(item[3])),
+                (int(base_size[0]), int(base_size[1])),
+                canvas_size,
+            )
+        )
+    if len(scaled) < len(slots):
+        return list(slots)
+    return scaled[: len(slots)]
+
+
 def _preview_qr_override_rect(
     layout_id: str,
     canvas_size: tuple[int, int],
 ) -> Optional[tuple[int, int, int, int]]:
     key = str(layout_id or "").strip()
     w, h = canvas_size
+    preset = PREVIEW_QR_OVERRIDE_RECT_BY_LAYOUT.get(key)
+    if isinstance(preset, dict):
+        base_size = preset.get("base_size")
+        rect = preset.get("rect")
+        if (
+            isinstance(base_size, (tuple, list))
+            and len(base_size) >= 2
+            and isinstance(rect, (tuple, list))
+            and len(rect) >= 4
+        ):
+            return _scale_rect_from_base(
+                (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])),
+                (int(base_size[0]), int(base_size[1])),
+                canvas_size,
+            )
     if key == "2641":
-        # Keep preview QR small and docked to right-bottom footer area.
-        side = max(40, int(round(min(w, h) * 0.046)))
-        right_margin = max(2, int(round(w * 0.004)))
-        bottom_margin = max(2, int(round(h * 0.006)))
-        x = max(0, w - side - right_margin)
+        # Keep preview QR slightly smaller and docked to left-bottom footer area.
+        side = max(36, int(round(min(w, h) * 0.04)))
+        left_margin = max(10, int(round(w * 0.04)))
+        bottom_margin = max(10, int(round(h * 0.022)))
+        x = max(0, left_margin)
         y = max(0, h - side - bottom_margin)
         return (x, y, side, side)
+    meta_rect = resolve_layout_meta_qr_rect(key, "preview", canvas_size)
+    if meta_rect is not None:
+        return meta_rect
     return None
 
 
@@ -3258,7 +4315,26 @@ def _overlay_qr_per_copy_groups(
         )
 
     normalized_slots = _normalize_slots_for_layout(layout_id, list(occupied_slots), image_rgb.size)
-    groups = _split_slots_into_copies(normalized_slots, target_count)
+    groups = _split_slots_into_layout_groups(layout_id, normalized_slots, target_count)
+    layout_key = str(layout_id or "").strip()
+    if layout_key == "6241" and len(normalized_slots) == target_count * 2:
+        centers_y = sorted(
+            ((r[1] + r[3] / 2.0, idx) for idx, r in enumerate(normalized_slots)),
+            key=lambda v: v[0],
+        )
+        best_y_gap = -1.0
+        best_y_idx = -1
+        for i in range(len(centers_y) - 1):
+            gap = centers_y[i + 1][0] - centers_y[i][0]
+            if gap > best_y_gap:
+                best_y_gap = gap
+                best_y_idx = i
+        if best_y_idx >= 0:
+            top_indices = {idx for _cy, idx in centers_y[: best_y_idx + 1]}
+            top = [normalized_slots[i] for i in range(len(normalized_slots)) if i in top_indices]
+            bottom = [normalized_slots[i] for i in range(len(normalized_slots)) if i not in top_indices]
+            if len(top) == target_count and len(bottom) == target_count:
+                groups = [_sort_rects_yx(top), _sort_rects_yx(bottom)]
     if len(groups) <= 1:
         return _overlay_qr_on_image(
             image_rgb=image_rgb,
@@ -3287,7 +4363,23 @@ def _overlay_qr_per_copy_groups(
         return (int(min_x), int(min_y), int(max_x), int(max_y))
 
     regions: list[tuple[int, int, int, int]] = []
-    if len(groups) == 2 and groups[0] and groups[1]:
+    if layout_key == "6241" and len(groups) == 2 and groups[0] and groups[1]:
+        b0 = _group_bbox(groups[0])
+        b1 = _group_bbox(groups[1])
+        c0y = (b0[1] + b0[3]) / 2.0
+        c1y = (b1[1] + b1[3]) / 2.0
+        if c0y <= c1y:
+            top_idx, bottom_idx = 0, 1
+            top_box, bottom_box = b0, b1
+        else:
+            top_idx, bottom_idx = 1, 0
+            top_box, bottom_box = b1, b0
+        split_y = int(round((top_box[3] + bottom_box[1]) / 2.0))
+        split_y = max(1, min(split_y, image_h - 1))
+        regions = [(0, 0, image_w, image_h), (0, 0, image_w, image_h)]
+        regions[top_idx] = (0, 0, image_w, split_y)
+        regions[bottom_idx] = (0, split_y, image_w, image_h - split_y)
+    elif len(groups) == 2 and groups[0] and groups[1]:
         b0 = _group_bbox(groups[0])
         b1 = _group_bbox(groups[1])
         c0x = (b0[0] + b0[2]) / 2.0
@@ -3347,11 +4439,22 @@ def _overlay_qr_per_copy_groups(
             (int(x - region_x), int(y - region_y), int(w), int(h))
             for x, y, w, h in group
         ]
-        local_rect = _compute_print_qr_rect(
-            layout_id=layout_id,
-            canvas_size=(region_w, region_h),
-            occupied_slots=local_slots,
-        )
+        if layout_key == "6241":
+            qr_size = max(108, int(round(min(region_w, region_h) * 0.095)))
+            right_margin = max(28, int(round(region_w * 0.03)))
+            top_margin = max(24, int(round(region_h * 0.028)))
+            local_rect = (
+                max(0, int(region_w - right_margin - qr_size)),
+                max(0, int(top_margin)),
+                int(qr_size),
+                int(qr_size),
+            )
+        else:
+            local_rect = _compute_print_qr_rect(
+                layout_id=layout_id,
+                canvas_size=(region_w, region_h),
+                occupied_slots=local_slots,
+            )
         gx, gy, gw, gh = local_rect
         global_rect = (int(region_x + gx), int(region_y + gy), int(gw), int(gh))
         result = _overlay_qr_on_image(
@@ -3705,9 +4808,109 @@ def _resolve_frame_by_index(frame_dir: Path, frame_index: int) -> Optional[Path]
     return None
 
 
+def _resolve_slot_reference_path(
+    frame2_dir: Path,
+    frame2_path: Optional[Path],
+    layout_id: str,
+) -> Optional[Path]:
+    try:
+        frame2_dir_key = str(frame2_dir.resolve())
+    except Exception:
+        frame2_dir_key = str(frame2_dir)
+    try:
+        frame2_dir_mtime = int(frame2_dir.stat().st_mtime_ns)
+    except Exception:
+        frame2_dir_mtime = 0
+    frame2_path_key = ""
+    if frame2_path is not None:
+        try:
+            frame2_path_key = str(frame2_path.resolve())
+        except Exception:
+            frame2_path_key = str(frame2_path)
+    cache_key = (
+        frame2_dir_key,
+        frame2_path_key,
+        str(layout_id or "").strip(),
+        frame2_dir_mtime,
+    )
+    cached_path_text = _SLOT_REFERENCE_PATH_CACHE.get(cache_key)
+    if cached_path_text is not None:
+        return Path(cached_path_text) if cached_path_text else None
+
+    candidates: list[Path] = []
+    direct_path = frame2_dir / "10.png"
+    if direct_path.is_file():
+        candidates.append(direct_path)
+
+    # Recent asset drops sometimes keep the real hole-reference under a helper
+    # subdirectory such as "로고제거/10.png" while the top-level 10.png is flattened.
+    try:
+        for path in sorted(frame2_dir.rglob("10.png"), key=lambda item: str(item).lower()):
+            if path not in candidates:
+                candidates.append(path)
+    except Exception:
+        pass
+
+    if not candidates:
+        resolved = frame2_path if frame2_path is not None and frame2_path.is_file() else None
+        _SLOT_REFERENCE_PATH_CACHE[cache_key] = str(resolved) if resolved is not None else ""
+        return resolved
+
+    scored: list[tuple[int, int, Path]] = []
+    for candidate in candidates:
+        slot_count = 0
+        if candidate.suffix.lower() == ".png":
+            try:
+                detected_slots, _detected_size = _detect_transparent_slots(candidate, min_area=520)
+                slot_count = len(detected_slots)
+            except Exception:
+                slot_count = 0
+        try:
+            depth = len(candidate.relative_to(frame2_dir).parts)
+        except Exception:
+            depth = 99
+        scored.append((slot_count, -depth, candidate))
+
+    best_count, _best_depth, best_path = max(scored, key=lambda item: (item[0], item[1]))
+    if best_count > 0 and best_path != direct_path:
+        try:
+            rel_text = str(best_path.relative_to(frame2_dir))
+        except Exception:
+            rel_text = best_path.name
+        print(
+            f"[DESIGN] slot ref override layout={layout_id} "
+            f"path={rel_text} detected={best_count}"
+        )
+    if best_count > 0:
+        _SLOT_REFERENCE_PATH_CACHE[cache_key] = str(best_path)
+        return best_path
+    if direct_path.is_file():
+        _SLOT_REFERENCE_PATH_CACHE[cache_key] = str(direct_path)
+        return direct_path
+    resolved = frame2_path if frame2_path is not None and frame2_path.is_file() else None
+    _SLOT_REFERENCE_PATH_CACHE[cache_key] = str(resolved) if resolved is not None else ""
+    return resolved
+
+
 def resolve_design_asset_paths(layout_id: str, frame_index: int) -> dict[str, Optional[Path]]:
     layout_text = str(layout_id or "").strip()
     frame_num = max(1, int(frame_index or 1))
+    asset_cache_key = (layout_text, frame_num)
+    cached_assets = _DESIGN_ASSET_PATH_CACHE.get(asset_cache_key)
+    if cached_assets is not None:
+        frame1_text, frame2_text, preview_text, slot_ref_text, chosen_layout = cached_assets
+        if chosen_layout != layout_text:
+            print(
+                f"[DESIGN] asset layout fallback requested={layout_text} "
+                f"resolved={chosen_layout} root={_design_assets_base_dir(layout_text)}"
+            )
+        return {
+            "frame1_path": Path(frame1_text) if frame1_text else None,
+            "frame2_path": Path(frame2_text) if frame2_text else None,
+            "preview_frame_path": Path(preview_text) if preview_text else None,
+            "slot_ref_path": Path(slot_ref_text) if slot_ref_text else None,
+        }
+
     frame_root = _design_assets_base_dir(layout_text)
 
     candidate_layouts = [layout_text]
@@ -3729,9 +4932,7 @@ def resolve_design_asset_paths(layout_id: str, frame_index: int) -> dict[str, Op
     frame1_path = _resolve_frame_by_index(frame1_dir, frame_num)
     frame2_path = _resolve_frame_by_index(frame2_dir, frame_num)
     preview_frame_path = _resolve_frame_by_index(preview_dir, frame_num)
-    slot_ref_path = frame2_dir / "10.png"
-    if not slot_ref_path.is_file():
-        slot_ref_path = frame2_path
+    slot_ref_path = _resolve_slot_reference_path(frame2_dir, frame2_path, layout_text)
 
     if frame1_path is None:
         print(f"[DESIGN] missing asset: {frame1_dir / f'{frame_num}.png'}")
@@ -3746,6 +4947,14 @@ def resolve_design_asset_paths(layout_id: str, frame_index: int) -> dict[str, Op
             f"[DESIGN] asset layout fallback requested={layout_text} "
             f"resolved={chosen_layout} root={frame_root}"
         )
+
+    _DESIGN_ASSET_PATH_CACHE[asset_cache_key] = (
+        str(frame1_path) if frame1_path is not None else None,
+        str(frame2_path) if frame2_path is not None else None,
+        str(preview_frame_path) if preview_frame_path is not None else None,
+        str(slot_ref_path) if slot_ref_path is not None else None,
+        chosen_layout,
+    )
 
     return {
         "frame1_path": frame1_path,
@@ -3783,6 +4992,7 @@ def _detect_transparent_slots(
         min_area=max(1, int(min_area)),
     )
     if not components:
+        _TRANSPARENT_SLOT_CACHE[cache_key] = (tuple(), frame_rgba.size)
         return [], frame_rgba.size
     max_area = max(area for _rect, area in components)
     threshold = max(min_area, int(max_area * area_ratio_threshold))
@@ -3815,6 +5025,11 @@ def _compose_over_template(
     return composed.convert("RGB")
 
 
+class PaymentEventBridge(QObject):
+    payment_update = Signal(object)
+    payment_complete = Signal(object)
+
+
 class HotspotOverlay(QWidget):
     def __init__(self, screen: "ImageScreen") -> None:
         super().__init__(screen)
@@ -3836,6 +5051,8 @@ class HotspotOverlay(QWidget):
 
 
 class ImageScreen(QWidget):
+    SCREEN_TIMEOUT_RECT = (1690, 24, 180, 64)
+
     def __init__(
         self,
         main_window: "KioskMainWindow",
@@ -3848,9 +5065,81 @@ class ImageScreen(QWidget):
         self.hotspots: list[Hotspot] = []
         self._background = QPixmap(str(background_path))
         self._overlay = HotspotOverlay(self)
+        self._screen_timeout_total_sec = 0
+        self._screen_timeout_remaining_sec = 0
+        self._screen_timeout_callback: Optional[Callable[[], None]] = None
+        self._screen_timeout_timer = QTimer(self)
+        self._screen_timeout_timer.setInterval(1000)
+        self._screen_timeout_timer.timeout.connect(self._on_screen_timeout_tick)
+        self._screen_timeout_label = QLabel("", self)
+        self._screen_timeout_label.setAlignment(ALIGN_CENTER)
+        self._screen_timeout_label.setStyleSheet(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 150); "
+            "font-size: 34px; font-weight: 800; border-radius: 10px; "
+            "border: 2px solid rgba(255,255,255,90); }"
+        )
+        self._screen_timeout_label.setAttribute(WA_TRANSPARENT, True)
+        self._screen_timeout_label.hide()
 
         if self._background.isNull():
             print(f"[WARN] Background image not found: {background_path}")
+
+    def configure_screen_timeout(
+        self,
+        total_sec: int,
+        callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._screen_timeout_total_sec = max(0, int(total_sec))
+        self._screen_timeout_remaining_sec = self._screen_timeout_total_sec
+        self._screen_timeout_callback = callback
+        self._refresh_screen_timeout_label()
+
+    def _refresh_screen_timeout_label(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            self._screen_timeout_label.hide()
+            return
+        remaining = max(0, int(self._screen_timeout_remaining_sec))
+        minutes = remaining // 60
+        seconds = remaining % 60
+        self._screen_timeout_label.setText(f"{minutes:02d}:{seconds:02d}")
+        self._screen_timeout_label.show()
+        self._raise_screen_timeout_overlay()
+
+    def _raise_screen_timeout_overlay(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            return
+        self._screen_timeout_label.raise_()
+        self._overlay.raise_()
+
+    def _start_screen_timeout(self) -> None:
+        if self._screen_timeout_total_sec <= 0:
+            self._screen_timeout_timer.stop()
+            self._screen_timeout_label.hide()
+            return
+        self._screen_timeout_remaining_sec = self._screen_timeout_total_sec
+        self._refresh_screen_timeout_label()
+        self._screen_timeout_timer.start()
+
+    def _stop_screen_timeout(self) -> None:
+        self._screen_timeout_timer.stop()
+        self._screen_timeout_label.hide()
+
+    def _on_screen_timeout_tick(self) -> None:
+        if self._screen_timeout_total_sec <= 0 or not self.isVisible():
+            self._stop_screen_timeout()
+            return
+        self._screen_timeout_remaining_sec = max(0, int(self._screen_timeout_remaining_sec) - 1)
+        self._refresh_screen_timeout_label()
+        if self._screen_timeout_remaining_sec > 0:
+            return
+        self._screen_timeout_timer.stop()
+        callback = self._screen_timeout_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            print(f"[TIMEOUT] screen={self.screen_name} callback failed: {exc}")
 
     def set_hotspots(self, hotspots: list[Hotspot]) -> None:
         self.hotspots = hotspots
@@ -3863,6 +5152,17 @@ class ImageScreen(QWidget):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._overlay.setGeometry(self.rect())
+        self._screen_timeout_label.setGeometry(self.design_rect_to_widget(self.SCREEN_TIMEOUT_RECT))
+        if self._screen_timeout_total_sec > 0 and self.isVisible():
+            self._raise_screen_timeout_overlay()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._start_screen_timeout()
+
+    def hideEvent(self, event):  # noqa: N802
+        self._stop_screen_timeout()
+        super().hideEvent(event)
 
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
@@ -4003,8 +5303,8 @@ class CelebrityTemplateSelectScreen(ImageScreen):
             price_label = QLabel("", self)
             price_label.setAlignment(ALIGN_CENTER)
             price_label.setStyleSheet(
-                "QLabel { color: #FFD34A; font-size: 30px; font-weight: 800; background-color: rgba(0,0,0,165); "
-                "border-radius: 8px; }"
+                "QLabel { color: #111111; font-size: 30px; font-weight: 800; background-color: #FFFFFF; "
+                "border: 2px solid #111111; border-radius: 8px; }"
             )
             price_label.setAttribute(WA_TRANSPARENT, True)
             self._card_price_labels.append(price_label)
@@ -4358,6 +5658,7 @@ class SelectPhotoScreen(ImageScreen):
         self._notice_timer.timeout.connect(self._hide_notice)
         self._notice_label = QLabel("", self)
         self._notice_label.setAlignment(ALIGN_CENTER)
+        self._notice_label.setWordWrap(True)
         self._notice_label.setStyleSheet(
             "QLabel { color: white; background-color: rgba(0, 0, 0, 180); "
             "font-size: 42px; font-weight: 700; border: 2px solid rgba(255,255,255,150); }"
@@ -4968,7 +6269,12 @@ class SelectPhotoScreen(ImageScreen):
         self._ai_original_paths = []
         for index in range(len(self.left_rects)):
             source = self.captured_paths[index] if index < len(self.captured_paths) else None
-            thumb = self.prepared_thumb_paths[index] if index < len(self.prepared_thumb_paths) else None
+            if self._is_ai_mode_4641() and source is not None:
+                # AI select thumbnails should use the real AI candidate image so the
+                # left-side preview matches the selected right-side rendering path.
+                thumb = self._selection_path_for_source(source, prefer_ai=True)
+            else:
+                thumb = self.prepared_thumb_paths[index] if index < len(self.prepared_thumb_paths) else None
             if thumb is None:
                 thumb = source
             if thumb is not None and not thumb.is_file():
@@ -5099,6 +6405,7 @@ class SelectPhotoScreen(ImageScreen):
         self.next_hint_label.raise_()
         self.next_hint_btn.raise_()
         self._notice_label.raise_()
+        self._raise_screen_timeout_overlay()
         self._overlay.raise_()
 
     def _first_empty_slot(self) -> Optional[int]:
@@ -5115,12 +6422,25 @@ class SelectPhotoScreen(ImageScreen):
         sy = max(0, (scaled.height() - target_size.height()) // 2)
         return scaled.copy(sx, sy, target_size.width(), target_size.height())
 
+    def _prepare_display_pixmap(self, pixmap: QPixmap) -> QPixmap:
+        if pixmap.isNull() or not DEFAULT_DESIGN_FLIP_HORIZONTAL:
+            return pixmap
+        # Keep select-photo thumbnails aligned with the mirrored live view
+        # and the mirrored design preview without mutating the source file.
+        image = pixmap.toImage()
+        if image.isNull():
+            return pixmap
+        mirrored = image.mirrored(True, False)
+        prepared = QPixmap.fromImage(mirrored)
+        return prepared if not prepared.isNull() else pixmap
+
     def _set_label_cover(self, label: QLabel, source_path: Optional[Path], empty_text: str) -> None:
         label.setText("")
         label.setPixmap(QPixmap())
         if source_path is not None and source_path.is_file():
             pixmap = QPixmap(str(source_path))
             if not pixmap.isNull():
+                pixmap = self._prepare_display_pixmap(pixmap)
                 covered = self._cover_pixmap(pixmap, label.size())
                 if not covered.isNull():
                     label.setPixmap(covered)
@@ -5162,7 +6482,7 @@ class SelectPhotoScreen(ImageScreen):
         slot = self._first_empty_slot()
         if slot is None:
             print("[SELECT_PHOTO] blocked: slots full")
-            self.show_notice("슬롯이 가득 찼습니다", duration_ms=800)
+            self.show_notice("슬롯이 가득 찼습니다\nAll slots are full", duration_ms=1000)
             return
 
         self.selected_paths[slot] = selected_path
@@ -5359,6 +6679,56 @@ class SelectPhotoScreen(ImageScreen):
             return
         print("[SELECT_PHOTO] NEXT clicked")
         self.main_window._continue_from_select_photo()
+
+    def auto_fill_remaining_random(self) -> int:
+        if not self.selected_paths:
+            return 0
+
+        candidates: list[tuple[Path, Path]] = []
+        seen_keys: set[str] = set()
+        source_entries: list[tuple[Optional[Path], bool]] = []
+        if self._is_ai_mode_4641():
+            source_entries.extend((path, True) for path in self._left_source_paths)
+            source_entries.extend((path, False) for path in self._ai_original_paths)
+        else:
+            source_entries.extend((path, False) for path in self._left_source_paths)
+
+        for source_path, prefer_ai in source_entries:
+            if source_path is None or not source_path.is_file():
+                continue
+            selected_path = self._selection_path_for_source(source_path, prefer_ai=prefer_ai)
+            if selected_path is None or not selected_path.is_file():
+                continue
+            selected_key = str(selected_path)
+            if selected_key in seen_keys or selected_key in self.shot_to_slot:
+                continue
+            seen_keys.add(selected_key)
+            candidates.append((source_path, selected_path))
+
+        if not candidates:
+            return 0
+
+        secrets.SystemRandom().shuffle(candidates)
+        filled = 0
+        while candidates:
+            slot = self._first_empty_slot()
+            if slot is None:
+                break
+            source_path, selected_path = candidates.pop(0)
+            selected_key = str(selected_path)
+            if selected_key in self.shot_to_slot:
+                continue
+            self.selected_paths[slot] = selected_path
+            if slot >= len(self.selected_source_keys):
+                self.selected_source_keys.extend([None] * (slot - len(self.selected_source_keys) + 1))
+            self.selected_source_keys[slot] = str(source_path)
+            self.shot_to_slot[selected_key] = slot
+            filled += 1
+            print(f"[SELECT_PHOTO] timeout auto-select shot={selected_path.name} -> slot={slot + 1}")
+
+        if filled > 0:
+            self._refresh_views()
+        return filled
 
     def _on_left_thumb_clicked(self, index: int) -> None:
         if index < 0 or index >= len(self._left_source_paths):
@@ -5591,6 +6961,40 @@ class PreloadSelectPhotoWorker(QThread):
         top = max(0, (resized_h - target_h) // 2)
         return resized.crop((left, top, left + target_w, top + target_h))
 
+    @staticmethod
+    def _compose_cache_image(image: Image.Image, max_edge: int) -> Image.Image:
+        source = image.convert("RGB")
+        target_edge = max(512, int(max_edge or DESIGN_COMPOSE_CACHE_MAX_EDGE))
+        longest = max(source.width, source.height)
+        if longest <= target_edge:
+            return source
+        scale = float(target_edge) / float(longest)
+        resized_w = max(1, int(round(source.width * scale)))
+        resized_h = max(1, int(round(source.height * scale)))
+        if hasattr(Image, "Resampling"):
+            return source.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
+        return source.resize((resized_w, resized_h), Image.LANCZOS)
+
+    @classmethod
+    def _write_compose_cache(
+        cls,
+        source_path: Path,
+        target_path: Path,
+        *,
+        max_edge: int = DESIGN_COMPOSE_CACHE_MAX_EDGE,
+    ) -> Optional[Path]:
+        if not source_path.is_file():
+            return None
+        try:
+            with Image.open(source_path) as source:
+                cached = cls._compose_cache_image(source, max_edge=max_edge)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            cached.save(target_path, format="JPEG", quality=92)
+            return target_path
+        except Exception as exc:
+            print(f"[DESIGN] compose cache failed source={source_path.name} err={exc}")
+            return None
+
     def _build_share_gif(self, payload: dict) -> None:
         if not self.gif_enabled:
             return
@@ -5599,9 +7003,12 @@ class PreloadSelectPhotoWorker(QThread):
             return
 
         frames: list[Image.Image] = []
+        frame_durations: list[int] = []
         total_grabs = 0
-        for shot_index in sorted(self.gif_frames_by_shot.keys()):
+        shot_indices = sorted(self.gif_frames_by_shot.keys())
+        for shot_pos, shot_index in enumerate(shot_indices):
             bucket = self.gif_frames_by_shot.get(shot_index) or []
+            shot_frames: list[Image.Image] = []
             for raw in bucket:
                 total_grabs += 1
                 try:
@@ -5614,9 +7021,18 @@ class PreloadSelectPhotoWorker(QThread):
                                 image = image.resize((self.gif_max_width, target_h), Image.Resampling.LANCZOS)
                             else:
                                 image = image.resize((self.gif_max_width, target_h), Image.LANCZOS)
-                        frames.append(image)
+                        shot_frames.append(image)
                 except Exception:
                     continue
+            shot_frame_count = len(shot_frames)
+            for frame_pos, image in enumerate(shot_frames):
+                duration_ms = max(80, int(self.gif_interval_ms))
+                if shot_pos == 0 and frame_pos == 0:
+                    duration_ms = max(duration_ms, int(round(self.gif_interval_ms * 1.4)))
+                if frame_pos == shot_frame_count - 1:
+                    duration_ms = max(duration_ms, int(round(self.gif_interval_ms * 1.8)))
+                frames.append(image)
+                frame_durations.append(duration_ms)
 
         print(f"[GIF] build start shots={len(self.gif_frames_by_shot)} frames={total_grabs}")
         if len(frames) < 2:
@@ -5633,7 +7049,7 @@ class PreloadSelectPhotoWorker(QThread):
                 format="GIF",
                 save_all=True,
                 append_images=rest,
-                duration=self.gif_interval_ms,
+                duration=frame_durations if len(frame_durations) == len(frames) else self.gif_interval_ms,
                 loop=0,
                 optimize=False,
             )
@@ -5720,6 +7136,8 @@ class PreloadSelectPhotoWorker(QThread):
             "left_rects": [],
             "right_rects": [],
             "thumb_paths": [],
+            "compose_path_map": {},
+            "preview_compose_path_map": {},
             "ai_candidate_paths": [],
             "ai_candidate_map": {},
             "video_gif_path": None,
@@ -5748,7 +7166,9 @@ class PreloadSelectPhotoWorker(QThread):
 
             cache_root = self.session_dir if self.session_dir is not None else _resolve_runtime_out_dir()
             thumbs_dir = cache_root / "cache" / "thumbs"
+            compose_dir = cache_root / "cache" / "compose"
             thumbs_dir.mkdir(parents=True, exist_ok=True)
+            compose_dir.mkdir(parents=True, exist_ok=True)
             ai_candidates = self._build_ai_candidate_paths(payload)
             thumb_sources: list[Path] = list(self.captured_paths)
             thumb_pairs: list[tuple[Path, Optional[Path]]] = []
@@ -5768,6 +7188,31 @@ class PreloadSelectPhotoWorker(QThread):
                     return
                 if not source_path.is_file():
                     continue
+                compose_path = compose_dir / f"compose_{index:02d}.jpg"
+                cached_source = self._write_compose_cache(source_path, compose_path)
+                if cached_source is not None:
+                    payload["compose_path_map"][str(source_path)] = str(cached_source)
+                preview_compose_path = compose_dir / f"preview_compose_{index:02d}.jpg"
+                preview_cached_source = self._write_compose_cache(
+                    source_path,
+                    preview_compose_path,
+                    max_edge=DESIGN_PREVIEW_COMPOSE_CACHE_MAX_EDGE,
+                )
+                if preview_cached_source is not None:
+                    payload["preview_compose_path_map"][str(source_path)] = str(preview_cached_source)
+                if ai_pair_path is not None and ai_pair_path.is_file():
+                    ai_compose_path = compose_dir / f"compose_ai_{index:02d}.jpg"
+                    cached_ai = self._write_compose_cache(ai_pair_path, ai_compose_path)
+                    if cached_ai is not None:
+                        payload["compose_path_map"][str(ai_pair_path)] = str(cached_ai)
+                    preview_ai_compose_path = compose_dir / f"preview_compose_ai_{index:02d}.jpg"
+                    preview_cached_ai = self._write_compose_cache(
+                        ai_pair_path,
+                        preview_ai_compose_path,
+                        max_edge=DESIGN_PREVIEW_COMPOSE_CACHE_MAX_EDGE,
+                    )
+                    if preview_cached_ai is not None:
+                        payload["preview_compose_path_map"][str(ai_pair_path)] = str(preview_cached_ai)
                 target_w = 320
                 target_h = 220
                 if index - 1 < len(left_rects):
@@ -5793,6 +7238,12 @@ class PreloadSelectPhotoWorker(QThread):
                         f"썸네일 생성중 ({index}/{thumb_total})",
                         f"Building thumbnails ({index}/{thumb_total})",
                     )
+            compose_cache_count = len(payload["compose_path_map"])
+            if compose_cache_count > 0:
+                print(f"[DESIGN] compose cache prepared count={compose_cache_count}")
+            preview_compose_cache_count = len(payload["preview_compose_path_map"])
+            if preview_compose_cache_count > 0:
+                print(f"[DESIGN] preview compose cache prepared count={preview_compose_cache_count}")
 
             self._build_share_gif(payload)
             self._emit_progress(100, "AI 생성 완료", "AI generation complete")
@@ -5956,6 +7407,8 @@ class SelectDesignScreen(ImageScreen):
         "4641": (140, 190, 930, 810),
         # 4661 preview also overlaps title area; move down and reduce size.
         "4661": (150, 200, 920, 790),
+        # 4681 is tall and needs extra breathing room under the title.
+        "4681": (150, 185, 920, 820),
     }
     COLOR_ICON_RECT = (1291, 340, 79, 79)
     GRAY_ICON_RECT = (1410, 340, 79, 79)
@@ -5978,9 +7431,11 @@ class SelectDesignScreen(ImageScreen):
         super().__init__(main_window, "select_design", background)
         self.layout_id: Optional[str] = None
         self.selected_print_paths: list[Path] = []
+        self.prepared_compose_path_map: dict[str, Path] = {}
+        self.prepared_preview_compose_path_map: dict[str, Path] = {}
         self.frame_index = 1
         self.is_gray = False
-        self.flip_horizontal = False
+        self.flip_horizontal = DEFAULT_DESIGN_FLIP_HORIZONTAL
         self.qr_enabled = True
         self._frame_indices: list[int] = []
         self._preview_job_id = 0
@@ -6148,18 +7603,31 @@ class SelectDesignScreen(ImageScreen):
                 return fallback
         return direct
 
+    def _max_frame_count(self) -> int:
+        getter = getattr(self.main_window, "get_design_frame_count", None)
+        if callable(getter):
+            try:
+                value = int(getter())
+            except Exception:
+                value = int(DEFAULT_ADMIN_SETTINGS["design_frame_count"])
+        else:
+            value = int(DEFAULT_ADMIN_SETTINGS["design_frame_count"])
+        return max(1, min(14, value))
+
     def _available_frame_indices(self, layout_id: Optional[str]) -> list[int]:
+        max_count = self._max_frame_count()
         frame_dir = self._frame_dir(layout_id)
         if not frame_dir.is_dir():
-            return list(range(1, 15))
+            return list(range(1, max_count + 1))
         numbers: list[int] = []
         for path in frame_dir.glob("*.png"):
             number = self._extract_frame_number(path)
             if number is not None and number > 0:
                 numbers.append(number)
         if not numbers:
-            return list(range(1, 15))
-        return sorted(set(numbers))
+            return list(range(1, max_count + 1))
+        limited = [number for number in sorted(set(numbers)) if number <= max_count]
+        return limited or list(range(1, max_count + 1))
 
     def _resolve_frame_path(self, layout_id: Optional[str], frame_index: int) -> Optional[Path]:
         frame_dir = self._frame_dir(layout_id)
@@ -6209,6 +7677,7 @@ class SelectDesignScreen(ImageScreen):
         if self._ai_loading_overlay.isVisible():
             self._ai_loading_overlay.raise_()
         self._notice_label.raise_()
+        self._raise_screen_timeout_overlay()
 
     def _layout_ai_loading_overlay(self) -> None:
         if self._ai_loading_overlay.width() <= 0 or self._ai_loading_overlay.height() <= 0:
@@ -6282,8 +7751,9 @@ class SelectDesignScreen(ImageScreen):
         selected_paths: list[str],
         frame_index: int = 1,
         is_gray: bool = False,
-        flip_horizontal: bool = False,
+        flip_horizontal: bool = DEFAULT_DESIGN_FLIP_HORIZONTAL,
         qr_enabled: bool = True,
+        prepared: Optional[dict] = None,
     ) -> None:
         desired_base_dir = self._design_ui_dir_for_layout(layout_id)
         if desired_base_dir != self._base_dir:
@@ -6291,11 +7761,26 @@ class SelectDesignScreen(ImageScreen):
             self._reload_design_ui_assets()
             print(f"[SELECT_DESIGN] ui_base={self._base_dir}")
 
+        # Invalidate any in-flight preview job and clear the last session's preview
+        # before the next render is requested. Otherwise the previous composition can
+        # remain visible briefly until the new async preview finishes.
+        self._preview_job_id += 1
+        self.preview_label.setPixmap(QPixmap())
+        self.preview_label.setText("")
+        self._hide_ai_loading_overlay()
+
         self.layout_id = layout_id
         self.selected_print_paths = [Path(p) for p in selected_paths if p and Path(p).is_file()]
+        prepared_dict = prepared if isinstance(prepared, dict) else {}
+        self.prepared_compose_path_map = self._normalize_prepared_path_map(
+            prepared_dict.get("compose_path_map")
+        )
+        self.prepared_preview_compose_path_map = self._normalize_prepared_path_map(
+            prepared_dict.get("preview_compose_path_map")
+        )
         self._frame_indices = self._available_frame_indices(layout_id)
         if not self._frame_indices:
-            self._frame_indices = list(range(1, 15))
+            self._frame_indices = list(range(1, self._max_frame_count() + 1))
 
         if frame_index in self._frame_indices:
             self.frame_index = int(frame_index)
@@ -6327,7 +7812,64 @@ class SelectDesignScreen(ImageScreen):
             is_gray=self.is_gray,
             flip_horizontal=self.flip_horizontal,
             qr_enabled=self.qr_enabled,
+            prepared={
+                "compose_path_map": {
+                    str(source): str(target)
+                    for source, target in self.prepared_compose_path_map.items()
+                    if isinstance(source, str) and isinstance(target, Path) and target.is_file()
+                },
+                "preview_compose_path_map": {
+                    str(source): str(target)
+                    for source, target in self.prepared_preview_compose_path_map.items()
+                    if isinstance(source, str) and isinstance(target, Path) and target.is_file()
+                }
+            },
         )
+
+    @staticmethod
+    def _normalize_prepared_path_map(value: object) -> dict[str, Path]:
+        if not isinstance(value, dict):
+            return {}
+        normalized: dict[str, Path] = {}
+        for raw_source, raw_target in value.items():
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            if not isinstance(raw_target, str) or not raw_target.strip():
+                continue
+            target_path = Path(raw_target)
+            if not target_path.is_file():
+                continue
+            normalized[str(Path(raw_source))] = target_path
+        return normalized
+
+    def _resolve_compose_paths(self, selected_paths: list[Path]) -> list[Path]:
+        resolved: list[Path] = []
+        for path in selected_paths:
+            if not isinstance(path, Path):
+                continue
+            mapped = self.prepared_compose_path_map.get(str(path))
+            if mapped is not None and mapped.is_file():
+                resolved.append(mapped)
+            else:
+                resolved.append(path)
+        return resolved
+
+    def _resolve_preview_compose_paths(self, selected_paths: list[Path]) -> list[Path]:
+        resolved: list[Path] = []
+        for path in selected_paths:
+            if not isinstance(path, Path):
+                continue
+            raw_key = str(path)
+            mapped = self.prepared_preview_compose_path_map.get(raw_key)
+            if mapped is not None and mapped.is_file():
+                resolved.append(mapped)
+                continue
+            fallback = self.prepared_compose_path_map.get(raw_key)
+            if fallback is not None and fallback.is_file():
+                resolved.append(fallback)
+                continue
+            resolved.append(path)
+        return resolved
 
     def _set_icon_pixmap(self, label: QLabel, pixmap: QPixmap) -> None:
         if label.width() <= 0 or label.height() <= 0:
@@ -6401,17 +7943,10 @@ class SelectDesignScreen(ImageScreen):
         self._ai_loading_tick = 0
         self._ai_loading_is_ai_mode = bool(ai_mode)
         self._ai_loading_progress = 8 if self._ai_loading_is_ai_mode else 12
-        if self._ai_loading_is_ai_mode:
-            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=True)
-            print(f"[AI_MODE] preview loading start job={job_id}")
-        else:
-            self._set_ai_loading_progress_visual(self._ai_loading_progress, ai_mode=False)
-            print(f"[SELECT_DESIGN] preview loading start job={job_id}")
-        self._layout_ai_loading_overlay()
-        self._ai_loading_overlay.show()
-        self._ai_loading_overlay.raise_()
-        if not self._ai_loading_timer.isActive():
-            self._ai_loading_timer.start()
+        self._ai_loading_timer.stop()
+        self._ai_loading_overlay.hide()
+        print(f"[SELECT_DESIGN] preview loading ui disabled job={job_id} ai={1 if ai_mode else 0}")
+        return
 
     def _hide_ai_loading_overlay(self, job_id: Optional[int] = None) -> None:
         if job_id is not None and self._ai_loading_active_job != int(job_id):
@@ -6435,7 +7970,7 @@ class SelectDesignScreen(ImageScreen):
 
     def _advance_frame(self, delta: int) -> None:
         if not self._frame_indices:
-            self._frame_indices = list(range(1, 15))
+            self._frame_indices = list(range(1, self._max_frame_count() + 1))
         if self.frame_index not in self._frame_indices:
             self.frame_index = self._frame_indices[0]
         try:
@@ -6513,6 +8048,18 @@ class SelectDesignScreen(ImageScreen):
             self.preview_label.setPixmap(QPixmap())
             self._hide_ai_loading_overlay()
             return
+        if not ai_mode_4641:
+            resolved_preview_paths = self._resolve_preview_compose_paths(selected_paths_for_preview)
+            cached_count = sum(
+                1
+                for source_path, resolved_path in zip(selected_paths_for_preview, resolved_preview_paths)
+                if str(source_path) != str(resolved_path)
+            )
+            if cached_count > 0:
+                print(
+                    f"[SELECT_DESIGN] preview source cache hit {cached_count}/{len(resolved_preview_paths)}"
+                )
+            selected_paths_for_preview = resolved_preview_paths
         assets = resolve_design_asset_paths(self.layout_id, self.frame_index)
         if assets.get("preview_frame_path") is None and assets.get("frame2_path") is None:
             self.preview_label.setText("frame missing")
@@ -6633,43 +8180,144 @@ class SelectDesignScreen(ImageScreen):
         with Image.open(preview_frame_path) as source:
             preview_rgba = source.convert("RGBA")
 
+        layout_key = str(layout_id or "").strip()
+        strip_like = layout_key in {"6241", "2641", "2461", "2462"}
         target_slots = max(1, len(photos))
-        slots, preview_size = _detect_transparent_slots(preview_frame_path, min_area=240)
-        if len(slots) < target_slots and slot_ref_path is not None and slot_ref_path.is_file():
-            ref_slots, ref_size = _detect_transparent_slots(slot_ref_path, min_area=520)
-            if ref_slots:
-                slots = _scale_slots(ref_slots, ref_size, preview_rgba.size)
-
+        desired_preview_slots = target_slots
+        slots: list[tuple[int, int, int, int]] = _resolve_used_slots_for_canvas(
+            layout_id=layout_id,
+            slot_ref_path=slot_ref_path if slot_ref_path is not None else preview_frame_path,
+            canvas_size=preview_rgba.size,
+            photo_count=target_slots,
+            scope="preview",
+        )
+        slot_source = "basic_frame_or_used_cache" if slots else ""
+        preview_meta_slots: list[tuple[int, int, int, int]] = []
+        prefer_detected_preview_slots = layout_key == "6241"
         if not slots:
-            fallback_path = slot_ref_path if slot_ref_path is not None else preview_frame_path
-            try:
-                fallback_slots, _source = resolve_slots(fallback_path, layout_id)
-                with Image.open(fallback_path) as fallback_source:
-                    fallback_size = fallback_source.size
-                slots = _scale_slots(fallback_slots, fallback_size, preview_rgba.size)
-            except Exception:
-                slots = []
+            preview_meta_slots = resolve_layout_meta_slots(
+                layout_id,
+                "preview",
+                preview_rgba.size,
+                variant=str(frame_index),
+            )
+        if strip_like and not slots and preview_meta_slots and not prefer_detected_preview_slots:
+            slots = preview_meta_slots
+            slot_source = "meta_variant"
+        if strip_like and not slots:
+            detected_preview_slots, _preview_detected_size = _detect_transparent_slots(
+                preview_frame_path,
+                min_area=240,
+            )
+            if layout_key == "6241" and len(detected_preview_slots) > target_slots:
+                detected_preview_slots = sorted(
+                    detected_preview_slots,
+                    key=lambda rect: (rect[2] * rect[3], rect[2], rect[3]),
+                    reverse=True,
+                )[:target_slots]
+                detected_preview_slots = _sort_rects_yx(detected_preview_slots)
+            if len(detected_preview_slots) >= target_slots:
+                normalized_detected = _normalize_slots_for_layout(
+                    layout_id,
+                    detected_preview_slots,
+                    preview_rgba.size,
+                )
+                grouped_detected = _split_slots_into_layout_groups(
+                    layout_id,
+                    normalized_detected,
+                    target_slots,
+                )
+                if grouped_detected and len(grouped_detected[0]) >= target_slots:
+                    slots = grouped_detected[0][:target_slots]
+                else:
+                    slots = normalized_detected[:target_slots]
+                slot_source = "detected"
+                print(
+                    f"[DESIGN] preview detected slots layout={layout_id} "
+                    f"slots={len(slots)} size={preview_rgba.size}"
+                )
+            if not slots:
+                slots = _resolve_single_copy_strip_preview_slots(
+                    layout_id=layout_id,
+                    canvas_size=preview_rgba.size,
+                    photo_count=target_slots,
+                )
+                if slots:
+                    slot_source = "strip_virtual"
+            if slots:
+                print(
+                    f"[DESIGN] preview strip slots layout={layout_id} "
+                    f"slots={len(slots)} size={preview_rgba.size}"
+                )
+        if not slots:
+            slots = preview_meta_slots or resolve_layout_meta_slots(layout_id, "preview", preview_rgba.size)
+            if slots:
+                slot_source = slot_source or "meta"
+        if slots:
+            print(
+                f"[DESIGN] preview slots source={slot_source or 'unknown'} "
+                f"layout={layout_id} scope=preview slots={len(slots)}"
+            )
+        else:
+            slots, preview_size = _detect_transparent_slots(preview_frame_path, min_area=240)
+            if len(slots) < target_slots and slot_ref_path is not None and slot_ref_path.is_file():
+                ref_slots, ref_size = _detect_transparent_slots(slot_ref_path, min_area=520)
+                if ref_slots:
+                    slots = _scale_slots(ref_slots, ref_size, preview_rgba.size)
+
+            if not slots:
+                fallback_path = slot_ref_path if slot_ref_path is not None else preview_frame_path
+                try:
+                    fallback_slots, _source = resolve_slots(fallback_path, layout_id)
+                    with Image.open(fallback_path) as fallback_source:
+                        fallback_size = fallback_source.size
+                    slots = _scale_slots(fallback_slots, fallback_size, preview_rgba.size)
+                except Exception:
+                    slots = []
 
         if not slots:
             raise RuntimeError("preview slots missing")
         slots = _normalize_slots_for_layout(layout_id, slots, preview_rgba.size)
-        if len(slots) > target_slots:
-            grouped_slots = _split_slots_into_copies(slots, target_slots)
-            if grouped_slots and grouped_slots[0]:
-                slots = grouped_slots[0][:target_slots]
+        if strip_like and len(slots) >= target_slots * 2:
+            desired_preview_slots = target_slots * 2
+        if len(slots) > desired_preview_slots:
+            grouped_slots = _split_slots_into_layout_groups(layout_id, slots, target_slots)
+            if grouped_slots:
+                flattened_slots: list[tuple[int, int, int, int]] = []
+                for group in grouped_slots:
+                    flattened_slots.extend(group[:target_slots])
+                    if len(flattened_slots) >= desired_preview_slots:
+                        break
+                if flattened_slots:
+                    slots = flattened_slots[:desired_preview_slots]
+                else:
+                    slots = slots[:desired_preview_slots]
             else:
-                slots = slots[:target_slots]
-        elif len(slots) < target_slots:
+                slots = slots[:desired_preview_slots]
+        elif len(slots) < desired_preview_slots:
             fallback_used = _resolve_used_slots_for_canvas(
                 layout_id=layout_id,
                 slot_ref_path=slot_ref_path if slot_ref_path is not None else preview_frame_path,
                 canvas_size=preview_rgba.size,
                 photo_count=target_slots,
+                scope="preview",
             )
             if fallback_used:
-                slots = fallback_used[:target_slots]
-        if len(slots) < target_slots:
+                fallback_target = (
+                    target_slots * 2
+                    if strip_like and len(fallback_used) >= target_slots * 2
+                    else target_slots
+                )
+                desired_preview_slots = max(desired_preview_slots, fallback_target)
+                slots = fallback_used[:desired_preview_slots]
+        if len(slots) < desired_preview_slots:
             raise RuntimeError("preview slots incomplete")
+        slots = _apply_preview_slot_overrides(layout_id, slots, preview_rgba.size)
+        slots = _expand_slots_with_bleed(
+            slots,
+            preview_rgba.size,
+            _preview_slot_bleed_px(layout_id, preview_rgba.size),
+        )
 
         composed = _compose_over_template(
             template_rgba=preview_rgba,
@@ -6678,20 +8326,18 @@ class SelectDesignScreen(ImageScreen):
             is_gray=is_gray,
             flip_horizontal=flip_horizontal,
         )
+        preview_slots = [tuple(int(v) for v in s) for s in slots[: len(photos)]]
         if qr_enabled and qr_value:
-            preview_slots = [tuple(int(v) for v in s) for s in slots[: len(photos)]]
             layout_key = str(layout_id or "").strip()
-            anchor_override = "rt" if layout_key == "6241" else None
             preview_qr_rect: Optional[tuple[int, int, int, int]] = _preview_qr_override_rect(
                 layout_key,
                 composed.size,
             )
             if preview_qr_rect is None:
                 preview_qr_rect = _compute_print_qr_rect(
-                layout_id=layout_id,
-                canvas_size=composed.size,
-                occupied_slots=preview_slots,
-                anchor_override=anchor_override,
+                    layout_id=layout_id,
+                    canvas_size=composed.size,
+                    occupied_slots=preview_slots,
                 )
             preview_scale = float(PREVIEW_QR_RECT_SCALE_BY_LAYOUT.get(layout_key, 1.0))
             if preview_qr_rect is not None and abs(preview_scale - 1.0) > 0.001:
@@ -6751,6 +8397,7 @@ class SelectDesignScreen(ImageScreen):
             slot_ref_path=slot_ref_path,
             canvas_size=frame2_rgba.size,
             photo_count=len(photos),
+            scope="print",
         )
         if not used_slots:
             raise RuntimeError("confirm slots missing")
@@ -7166,6 +8813,7 @@ class SelectDesignScreen(ImageScreen):
 
         self._emit_compose_progress(progress_cb, 88, "프레임 합성중", "Composing frame")
         mapped_paths = [source_a, ai_a, ai_b, source_b]
+        mapped_paths = self._resolve_compose_paths(mapped_paths)
         composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
             layout_id=self.layout_id or AI_LAYOUT_ID,
             frame_index=self.frame_index,
@@ -7192,11 +8840,19 @@ class SelectDesignScreen(ImageScreen):
         if self._is_ai_mode_4641():
             valid_selected = [Path(p) for p in self.selected_print_paths if Path(p).is_file()]
             if len(valid_selected) >= AI_FRAME_SELECT_SLOTS:
+                resolved_selected = self._resolve_compose_paths(self.selected_print_paths)
+                cached_count = sum(
+                    1
+                    for source_path, resolved_path in zip(self.selected_print_paths, resolved_selected)
+                    if str(source_path) != str(resolved_path)
+                )
+                if cached_count > 0:
+                    print(f"[DESIGN] final source cache hit {cached_count}/{len(resolved_selected)}")
                 self._emit_compose_progress(progress_cb, 22, "선택 사진 합성중", "Composing selected photos")
                 composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
                     layout_id=self.layout_id,
                     frame_index=self.frame_index,
-                    selected_paths=self.selected_print_paths,
+                    selected_paths=resolved_selected,
                     is_gray=self.is_gray,
                     flip_horizontal=self.flip_horizontal,
                 )
@@ -7207,11 +8863,19 @@ class SelectDesignScreen(ImageScreen):
                 self._emit_compose_progress(progress_cb, 99, "합성 마무리", "Finalizing composition")
                 return composed, frame2_path, slot_count, copies_per_page
             return self._build_final_print_ai_4641(progress_cb=progress_cb)
+        resolved_selected = self._resolve_compose_paths(self.selected_print_paths)
+        cached_count = sum(
+            1
+            for source_path, resolved_path in zip(self.selected_print_paths, resolved_selected)
+            if str(source_path) != str(resolved_path)
+        )
+        if cached_count > 0:
+            print(f"[DESIGN] final source cache hit {cached_count}/{len(resolved_selected)}")
         self._emit_compose_progress(progress_cb, 22, "합성 준비중", "Preparing composition")
         composed, slot_count, copies_per_page, frame2_path, used_slots = self.build_confirm_image_static(
             layout_id=self.layout_id,
             frame_index=self.frame_index,
-            selected_paths=self.selected_print_paths,
+            selected_paths=resolved_selected,
             is_gray=self.is_gray,
             flip_horizontal=self.flip_horizontal,
         )
@@ -7389,6 +9053,8 @@ class AppHowManyPrintsScreen(HowManyPrintsScreen):
     def _layout_widgets(self) -> None:
         self.count_label.setGeometry(self.design_rect_to_widget(self.NUMBER_RECT))
         self.count_label.raise_()
+        if hasattr(self, "_raise_screen_timeout_overlay"):
+            self._raise_screen_timeout_overlay()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -7656,6 +9322,8 @@ class AppPaymentMethodScreen(PaymentMethodScreen):
             self.next_label.setPixmap(scaled)
         self.next_label.raise_()
         self._notice_label.raise_()
+        if hasattr(self, "_raise_screen_timeout_overlay"):
+            self._raise_screen_timeout_overlay()
         self._overlay.raise_()
 
     def resizeEvent(self, event):  # noqa: N802
@@ -7873,6 +9541,144 @@ class PayCashScreen(ImageScreen):
         self._notice_timer.start(max(200, int(duration_ms)))
 
 
+class PayCardScreen(ImageScreen):
+    BACK_RECT = (77, 939, 100, 100)
+    PAYMENT_RECT = (1181, 445, 250, 88)
+    STATUS_RECT = (575, 535, 770, 62)
+    DETAIL_RECT = (470, 608, 980, 118)
+    COUNTDOWN_RECT = (748, 748, 424, 58)
+    CANCEL_HINT_RECT = (580, 840, 760, 44)
+    NOTICE_RECT = (450, 430, 1020, 180)
+
+    def __init__(self, main_window: "KioskMainWindow") -> None:
+        path = (
+            ROOT_DIR
+            / "assets"
+            / "ui"
+            / "5_Select_a_payment_Method"
+            / "Paycardmain"
+            / "card_main.png"
+        )
+        super().__init__(main_window, "pay_card", path)
+        self._bg_label = QLabel(self)
+        self._bg_label.setAlignment(ALIGN_CENTER)
+        self._bg_label.setScaledContents(True)
+        self._bg_label.setAttribute(WA_TRANSPARENT, True)
+
+        value_style = (
+            "QLabel { color: #111; background: transparent; font-size: 56px; font-weight: 700; }"
+        )
+        self.payment_label = QLabel("0", self._bg_label)
+        self.payment_label.setAlignment(ALIGN_CENTER)
+        self.payment_label.setStyleSheet(value_style)
+        self.payment_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.status_label = QLabel("", self._bg_label)
+        self.status_label.setAlignment(ALIGN_CENTER)
+        self.status_label.setStyleSheet(
+            "QLabel { color: #111; background: transparent; font-size: 42px; font-weight: 700; }"
+        )
+        self.status_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.detail_label = QLabel("", self._bg_label)
+        self.detail_label.setAlignment(ALIGN_CENTER)
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet(
+            "QLabel { color: #202020; background: transparent; font-size: 24px; font-weight: 500; }"
+        )
+        self.detail_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.countdown_label = QLabel("", self._bg_label)
+        self.countdown_label.setAlignment(ALIGN_CENTER)
+        self.countdown_label.setStyleSheet(
+            "QLabel { color: #7a1414; background: rgba(255,255,255,160); font-size: 26px; "
+            "font-weight: 700; border-radius: 10px; }"
+        )
+        self.countdown_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.cancel_hint_label = QLabel("", self._bg_label)
+        self.cancel_hint_label.setAlignment(ALIGN_CENTER)
+        self.cancel_hint_label.setStyleSheet(
+            "QLabel { color: #ffffff; background: rgba(17,17,17,180); font-size: 22px; "
+            "font-weight: 700; border-radius: 8px; }"
+        )
+        self.cancel_hint_label.setAttribute(WA_TRANSPARENT, True)
+        self.cancel_hint_label.hide()
+
+        self._notice_timer = QTimer(self)
+        self._notice_timer.setSingleShot(True)
+        self._notice_timer.timeout.connect(self._hide_notice)
+        self._notice_label = QLabel("", self)
+        self._notice_label.setAlignment(ALIGN_CENTER)
+        self._notice_label.setStyleSheet(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 180); "
+            "font-size: 42px; font-weight: 700; border: 2px solid rgba(255,255,255,150); }"
+        )
+        self._notice_label.hide()
+        self._layout_widgets()
+
+    def _layout_widgets(self) -> None:
+        self._bg_label.setGeometry(self.design_rect_to_widget((0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)))
+        self.payment_label.setGeometry(self.design_rect_to_widget(self.PAYMENT_RECT))
+        self.status_label.setGeometry(self.design_rect_to_widget(self.STATUS_RECT))
+        self.detail_label.setGeometry(self.design_rect_to_widget(self.DETAIL_RECT))
+        self.countdown_label.setGeometry(self.design_rect_to_widget(self.COUNTDOWN_RECT))
+        self.cancel_hint_label.setGeometry(self.design_rect_to_widget(self.CANCEL_HINT_RECT))
+        self._notice_label.setGeometry(self.design_rect_to_widget(self.NOTICE_RECT))
+        self._bg_label.setPixmap(self._background)
+        self._notice_label.raise_()
+        self.status_label.raise_()
+        self.detail_label.raise_()
+        self.countdown_label.raise_()
+        self.cancel_hint_label.raise_()
+        self._overlay.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_widgets()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._layout_widgets()
+
+    def set_amounts(self, required_amount: int) -> None:
+        self.payment_label.setText(money_fmt(required_amount))
+
+    def set_payment_progress(
+        self,
+        status_text: str,
+        detail_text: str = "",
+        countdown_sec: Optional[int] = None,
+        *,
+        cancellable: bool = False,
+    ) -> None:
+        self.status_label.setText(str(status_text or "카드 결제 대기"))
+        self.detail_label.setText(str(detail_text or "단말기 응답을 기다리는 중입니다"))
+        if countdown_sec is None:
+            self.countdown_label.setText("")
+            self.countdown_label.hide()
+        else:
+            self.countdown_label.setText(f"남은 시간 {max(0, int(countdown_sec))}초")
+            self.countdown_label.show()
+        if cancellable:
+            self.cancel_hint_label.setText("좌측 하단 뒤로가기 버튼으로 결제 취소")
+            self.cancel_hint_label.show()
+        else:
+            self.cancel_hint_label.hide()
+
+    def clear_payment_progress(self) -> None:
+        self.set_payment_progress("", "", None, cancellable=False)
+
+    def _hide_notice(self) -> None:
+        self._notice_label.hide()
+
+    def show_notice(self, message: str, duration_ms: int = 1000) -> None:
+        self._notice_label.setText(message)
+        self._notice_label.show()
+        self._notice_label.raise_()
+        self._notice_timer.start(max(200, int(duration_ms)))
+
+
 class CouponRemainingMethodScreen(ImageScreen):
     CASH_RECT = (519, 377, 369, 376)
     CARD_RECT = (1012, 377, 369, 376)
@@ -7989,6 +9795,161 @@ class PayCashRemainingScreen(ImageScreen):
         self.payment_label.setText(money_fmt(required_amount))
         self.coupon_label.setText(money_fmt(coupon_value))
         self.remaining_label.setText(money_fmt(remaining))
+
+    def _hide_notice(self) -> None:
+        self._notice_label.hide()
+
+    def show_notice(self, message: str, duration_ms: int = 1000) -> None:
+        self._notice_label.setText(message)
+        self._notice_label.show()
+        self._notice_label.raise_()
+        self._notice_timer.start(max(200, int(duration_ms)))
+
+
+class PayCardRemainingScreen(ImageScreen):
+    BACK_RECT = (77, 940, 100, 100)
+    PAYMENT_RECT = (1181, 382, 250, 88)
+    COUPON_RECT = (1181, 519, 250, 88)
+    REMAINING_RECT = (1181, 656, 250, 87)
+    STATUS_RECT = (575, 535, 770, 62)
+    DETAIL_RECT = (470, 608, 980, 118)
+    COUNTDOWN_RECT = (748, 748, 424, 58)
+    CANCEL_HINT_RECT = (580, 840, 760, 44)
+    NOTICE_RECT = (450, 430, 1020, 180)
+
+    def __init__(self, main_window: "KioskMainWindow") -> None:
+        path = (
+            ROOT_DIR
+            / "assets"
+            / "ui"
+            / "5_Select_a_payment_Method"
+            / "Paycardmain"
+            / "Card_if_remaining_amount.png"
+        )
+        super().__init__(main_window, "pay_card_remaining", path)
+        self._bg_label = QLabel(self)
+        self._bg_label.setAlignment(ALIGN_CENTER)
+        self._bg_label.setScaledContents(True)
+        self._bg_label.setAttribute(WA_TRANSPARENT, True)
+
+        value_style = (
+            "QLabel { color: #111; background: transparent; font-size: 56px; font-weight: 700; }"
+        )
+        self.payment_label = QLabel("0", self._bg_label)
+        self.payment_label.setAlignment(ALIGN_CENTER)
+        self.payment_label.setStyleSheet(value_style)
+        self.payment_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.coupon_label = QLabel("0", self._bg_label)
+        self.coupon_label.setAlignment(ALIGN_CENTER)
+        self.coupon_label.setStyleSheet(value_style)
+        self.coupon_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.remaining_label = QLabel("0", self._bg_label)
+        self.remaining_label.setAlignment(ALIGN_CENTER)
+        self.remaining_label.setStyleSheet(value_style)
+        self.remaining_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.status_label = QLabel("", self._bg_label)
+        self.status_label.setAlignment(ALIGN_CENTER)
+        self.status_label.setStyleSheet(
+            "QLabel { color: #111; background: transparent; font-size: 42px; font-weight: 700; }"
+        )
+        self.status_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.detail_label = QLabel("", self._bg_label)
+        self.detail_label.setAlignment(ALIGN_CENTER)
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet(
+            "QLabel { color: #202020; background: transparent; font-size: 24px; font-weight: 500; }"
+        )
+        self.detail_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.countdown_label = QLabel("", self._bg_label)
+        self.countdown_label.setAlignment(ALIGN_CENTER)
+        self.countdown_label.setStyleSheet(
+            "QLabel { color: #7a1414; background: rgba(255,255,255,160); font-size: 26px; "
+            "font-weight: 700; border-radius: 10px; }"
+        )
+        self.countdown_label.setAttribute(WA_TRANSPARENT, True)
+
+        self.cancel_hint_label = QLabel("", self._bg_label)
+        self.cancel_hint_label.setAlignment(ALIGN_CENTER)
+        self.cancel_hint_label.setStyleSheet(
+            "QLabel { color: #ffffff; background: rgba(17,17,17,180); font-size: 22px; "
+            "font-weight: 700; border-radius: 8px; }"
+        )
+        self.cancel_hint_label.setAttribute(WA_TRANSPARENT, True)
+        self.cancel_hint_label.hide()
+
+        self._notice_timer = QTimer(self)
+        self._notice_timer.setSingleShot(True)
+        self._notice_timer.timeout.connect(self._hide_notice)
+        self._notice_label = QLabel("", self)
+        self._notice_label.setAlignment(ALIGN_CENTER)
+        self._notice_label.setStyleSheet(
+            "QLabel { color: white; background-color: rgba(0, 0, 0, 180); "
+            "font-size: 42px; font-weight: 700; border: 2px solid rgba(255,255,255,150); }"
+        )
+        self._notice_label.hide()
+        self._layout_widgets()
+
+    def _layout_widgets(self) -> None:
+        self._bg_label.setGeometry(self.design_rect_to_widget((0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)))
+        self.payment_label.setGeometry(self.design_rect_to_widget(self.PAYMENT_RECT))
+        self.coupon_label.setGeometry(self.design_rect_to_widget(self.COUPON_RECT))
+        self.remaining_label.setGeometry(self.design_rect_to_widget(self.REMAINING_RECT))
+        self.status_label.setGeometry(self.design_rect_to_widget(self.STATUS_RECT))
+        self.detail_label.setGeometry(self.design_rect_to_widget(self.DETAIL_RECT))
+        self.countdown_label.setGeometry(self.design_rect_to_widget(self.COUNTDOWN_RECT))
+        self.cancel_hint_label.setGeometry(self.design_rect_to_widget(self.CANCEL_HINT_RECT))
+        self._notice_label.setGeometry(self.design_rect_to_widget(self.NOTICE_RECT))
+        self._bg_label.setPixmap(self._background)
+        self._notice_label.raise_()
+        self.status_label.raise_()
+        self.detail_label.raise_()
+        self.countdown_label.raise_()
+        self.cancel_hint_label.raise_()
+        self._overlay.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_widgets()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._layout_widgets()
+
+    def set_amounts(self, required_amount: int, coupon_value: int) -> None:
+        remaining = max(0, int(required_amount) - int(coupon_value))
+        self.payment_label.setText(money_fmt(required_amount))
+        self.coupon_label.setText(money_fmt(coupon_value))
+        self.remaining_label.setText(money_fmt(remaining))
+
+    def set_payment_progress(
+        self,
+        status_text: str,
+        detail_text: str = "",
+        countdown_sec: Optional[int] = None,
+        *,
+        cancellable: bool = False,
+    ) -> None:
+        self.status_label.setText(str(status_text or "카드 결제 대기"))
+        self.detail_label.setText(str(detail_text or "단말기 응답을 기다리는 중입니다"))
+        if countdown_sec is None:
+            self.countdown_label.setText("")
+            self.countdown_label.hide()
+        else:
+            self.countdown_label.setText(f"남은 시간 {max(0, int(countdown_sec))}초")
+            self.countdown_label.show()
+        if cancellable:
+            self.cancel_hint_label.setText("좌측 하단 뒤로가기 버튼으로 결제 취소")
+            self.cancel_hint_label.show()
+        else:
+            self.cancel_hint_label.hide()
+
+    def clear_payment_progress(self) -> None:
+        self.set_payment_progress("", "", None, cancellable=False)
 
     def _hide_notice(self) -> None:
         self._notice_label.hide()
@@ -8468,6 +10429,41 @@ class AppPaymentCompleteSuccessScreen(StaticImageScreen):
                     pass
 
 
+class CouponLowScreen(StaticImageScreen):
+    AUTO_MS = 5000
+
+    def __init__(self, main_window) -> None:
+        asset_path = ROOT_DIR / "assets" / "ui" / "errorpage" / "couponlow.png"
+        if not asset_path.is_file():
+            asset_path = ROOT_DIR / "assets" / "ui" / "errorpage" / "error.png"
+        super().__init__(
+            main_window,
+            "coupon_low",
+            asset_path,
+            missing_text="Coupon amount is too low",
+        )
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.timeout.connect(self._on_auto_timer)
+        print(f"[COUPON_LOW] asset={asset_path}")
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._auto_timer.start(self.AUTO_MS)
+        print(f"[COUPON_LOW] enter -> payment_method in {self.AUTO_MS}ms")
+
+    def hideEvent(self, event):  # noqa: N802
+        if self._auto_timer.isActive():
+            self._auto_timer.stop()
+        super().hideEvent(event)
+
+    def _on_auto_timer(self) -> None:
+        if not self.isVisible():
+            return
+        if hasattr(self.main_window, "handle_coupon_low_timeout"):
+            self.main_window.handle_coupon_low_timeout()
+
+
 class BootHealthCheckWorker(QObject):
     completed = Signal(dict)
     failed = Signal(str)
@@ -8478,6 +10474,8 @@ class BootHealthCheckWorker(QObject):
         camera_dll_path: str,
         printer_ds620_candidates: list[str],
         printer_rx1hs_candidates: list[str],
+        printer_ds620_required: bool = True,
+        printer_rx1hs_required: bool = True,
         internet_api_base_url: str = "",
     ) -> None:
         super().__init__()
@@ -8494,9 +10492,13 @@ class BootHealthCheckWorker(QObject):
             for item in list(printer_rx1hs_candidates or [])
             if str(item).strip()
         ]
+        self.printer_ds620_required = bool(printer_ds620_required)
+        self.printer_rx1hs_required = bool(printer_rx1hs_required)
 
     @staticmethod
-    def _check_printer_candidates(candidates: list[str]) -> tuple[bool, str]:
+    def _check_printer_candidates(candidates: list[str], required: bool = True) -> tuple[bool, str]:
+        if not required:
+            return True, "미사용"
         unique: list[str] = []
         seen: set[str] = set()
         for raw in list(candidates or []):
@@ -8525,10 +10527,16 @@ class BootHealthCheckWorker(QObject):
             cam_ok, cam_msg = get_camera_health(self.camera_dll_path, self.camera_backend)
             results["camera"] = {"ok": bool(cam_ok), "msg": str(cam_msg)}
 
-            ds_ok, ds_msg = self._check_printer_candidates(self.printer_ds620_candidates)
+            ds_ok, ds_msg = self._check_printer_candidates(
+                self.printer_ds620_candidates,
+                required=self.printer_ds620_required,
+            )
             results["printer_ds620"] = {"ok": bool(ds_ok), "msg": str(ds_msg)}
 
-            rx_ok, rx_msg = self._check_printer_candidates(self.printer_rx1hs_candidates)
+            rx_ok, rx_msg = self._check_printer_candidates(
+                self.printer_rx1hs_candidates,
+                required=self.printer_rx1hs_required,
+            )
             results["printer_rx1hs"] = {"ok": bool(rx_ok), "msg": str(rx_msg)}
 
             net_ok, net_msg = check_internet(
@@ -8753,6 +10761,44 @@ class BootHealthCheckScreen(ImageScreen):
                 ds620_candidates.append(ds620)
             if rx1hs:
                 rx1hs_candidates.append(rx1hs)
+
+        printers_cfg = printing.get("printers", {}) if isinstance(printing, dict) else {}
+        ds620_cfg = printers_cfg.get("DS620", {}) if isinstance(printers_cfg, dict) else {}
+        ds620_strip_cfg = printers_cfg.get("DS620_STRIP", {}) if isinstance(printers_cfg, dict) else {}
+        rx1hs_cfg = printers_cfg.get("RX1HS", {}) if isinstance(printers_cfg, dict) else {}
+
+        def _configured_name(item: Any) -> str:
+            return str(item.get("win_name", "")).strip() if isinstance(item, dict) else ""
+
+        def _has_physical_name(names: list[str]) -> bool:
+            for raw in names:
+                name = str(raw or "").strip()
+                if not name:
+                    continue
+                if hasattr(self.main_window, "_is_virtual_printer_name") and self.main_window._is_virtual_printer_name(name):
+                    continue
+                return True
+            return False
+
+        printer_ds620_required = _has_physical_name(
+            [
+                _configured_name(ds620_cfg),
+                _configured_name(ds620_strip_cfg),
+                *ds620_candidates,
+            ]
+        )
+        printer_rx1hs_required = _has_physical_name(
+            [
+                _configured_name(rx1hs_cfg),
+                *rx1hs_candidates,
+            ]
+        )
+        if not printer_ds620_required and not printer_rx1hs_required:
+            default_model = str(printing.get("default_model", "DS620")).strip().upper() if isinstance(printing, dict) else "DS620"
+            if default_model == "RX1HS":
+                printer_rx1hs_required = True
+            else:
+                printer_ds620_required = True
         return {
             "camera_backend": self.main_window._resolve_requested_camera_backend()
             if hasattr(self.main_window, "_resolve_requested_camera_backend")
@@ -8763,6 +10809,8 @@ class BootHealthCheckScreen(ImageScreen):
             "internet_api_base_url": internet_api_base_url,
             "printer_ds620_candidates": ds620_candidates,
             "printer_rx1hs_candidates": rx1hs_candidates,
+            "printer_ds620_required": printer_ds620_required,
+            "printer_rx1hs_required": printer_rx1hs_required,
         }
 
     def start_check(self) -> None:
@@ -8786,6 +10834,8 @@ class BootHealthCheckScreen(ImageScreen):
             camera_dll_path=str(payload.get("camera_dll_path", "")),
             printer_ds620_candidates=list(payload.get("printer_ds620_candidates", [])),
             printer_rx1hs_candidates=list(payload.get("printer_rx1hs_candidates", [])),
+            printer_ds620_required=bool(payload.get("printer_ds620_required", True)),
+            printer_rx1hs_required=bool(payload.get("printer_rx1hs_required", True)),
             internet_api_base_url=str(payload.get("internet_api_base_url", "")),
         )
         thread = QThread(self)
@@ -8833,22 +10883,30 @@ class BootHealthCheckScreen(ImageScreen):
         internet_ok = bool(status_map.get("internet", False))
         ds620_ok = bool(status_map.get("printer_ds620", False))
         rx1hs_ok = bool(status_map.get("printer_rx1hs", False))
-        printer_any_ok = ds620_ok or rx1hs_ok
-        all_ok = camera_ok and internet_ok and printer_any_ok
+        ds620_required = str(result.get("printer_ds620", {}).get("msg", "")) != "미사용"
+        rx1hs_required = str(result.get("printer_rx1hs", {}).get("msg", "")) != "미사용"
+        printer_required_ok = (ds620_ok if ds620_required else True) and (rx1hs_ok if rx1hs_required else True)
+        all_ok = camera_ok and printer_required_ok
         print(
-            f"[HEALTH] printer_any={'OK' if printer_any_ok else 'FAIL'} "
-            f"msg=DS620={1 if ds620_ok else 0} RX1HS={1 if rx1hs_ok else 0}"
+            f"[HEALTH] printer_required={'OK' if printer_required_ok else 'FAIL'} "
+            f"msg=DS620={1 if ds620_ok else 0}/{1 if ds620_required else 0} "
+            f"RX1HS={1 if rx1hs_ok else 0}/{1 if rx1hs_required else 0}"
         )
 
         self._all_ok = all_ok
         self.start_button.setEnabled(all_ok)
         if all_ok:
-            self._notice.setText("점검 완료. 잠시 후 시작합니다.")
+            if internet_ok:
+                self._notice.setText("점검 완료. 잠시 후 시작합니다.")
+            else:
+                self._notice.setText("인터넷 연결 확인 권장. 오프라인 상태로 시작합니다.")
             self._notice.show()
             self._auto_timer.start(self.AUTO_START_MS)
         else:
-            if not printer_any_ok:
-                self._notice.setText("프린터(DS620/RX1HS) 중 1대 이상 연결이 필요합니다.")
+            if not camera_ok:
+                self._notice.setText("카메라 연결 확인 필요")
+            elif not printer_required_ok:
+                self._notice.setText("프린트 연결 확인 필요")
             else:
                 self._notice.setText("점검 실패 항목이 있습니다. 재시도하거나 관리자에게 문의하세요.")
             self._notice.show()
@@ -9729,6 +11787,7 @@ class MainPrintWorker(QObject):
         enabled: bool,
         dry_run: bool,
         test_mode: bool,
+        margins: Optional[dict[str, int]] = None,
     ) -> None:
         super().__init__()
         self.image_path = Path(image_path)
@@ -9742,9 +11801,10 @@ class MainPrintWorker(QObject):
         self.enabled = bool(enabled)
         self.dry_run = bool(dry_run)
         self.test_mode = bool(test_mode)
+        self.margins = _normalize_printer_margin_settings(margins)
         self.call_timeout_sec = max(10.0, float(os.environ.get("KIOSK_PRINT_CALL_TIMEOUT_SEC", "45") or 45))
 
-    def _run_single_print_call(self, image_path: Path) -> None:
+    def _run_single_print_call(self, image_path: Path, copies: int = 1) -> None:
         error_box: dict[str, Exception] = {}
 
         def _target() -> None:
@@ -9752,8 +11812,9 @@ class MainPrintWorker(QObject):
                 win_print_image(
                     self.printer_name,
                     str(image_path),
-                    copies=1,
+                    copies=max(1, int(copies)),
                     form_name=self.form_name,
+                    margins=self.margins,
                 )
             except Exception as exc:
                 error_box["error"] = exc
@@ -9785,6 +11846,11 @@ class MainPrintWorker(QObject):
                 f"[PRINT] target model={self.model} win_name=\"{self.printer_name}\" "
                 f"copies={self.copies} form=\"{self.form_name}\""
             )
+            print(
+                "[PRINT] margins "
+                f"L={self.margins['left']} R={self.margins['right']} "
+                f"T={self.margins['top']} B={self.margins['bottom']}"
+            )
 
             if not self.enabled:
                 print("[PRINT] blocked: printing.enabled=0")
@@ -9808,18 +11874,62 @@ class MainPrintWorker(QObject):
                     f"[PRINT] STRIP layout={self.layout_id or 'unknown'} "
                     f"print_count={self.strip_sets * 2} sets={self.strip_sets}"
                 )
-                part_a, part_b = _split_print_image_for_2x6(self.image_path)
+                part_a, part_b = _split_print_image_for_2x6(
+                    self.image_path,
+                    layout_id=self.layout_id,
+                )
                 for _set_index in range(self.strip_sets):
                     print("[PRINT] strip part A -> 2x6")
                     self._run_single_print_call(part_a)
                     print("[PRINT] strip part B -> 2x6")
                     self._run_single_print_call(part_b)
             else:
-                for copy_index in range(max(1, int(self.copies))):
-                    print(
-                        f"[PRINT] fullsheet copy {copy_index + 1}/{max(1, int(self.copies))} -> 4x6"
+                fullsheet_copies = max(1, int(self.copies))
+                grouped_enabled = str(os.environ.get("KIOSK_FULLSHEET_GROUPED_COPIES", "")).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                if grouped_enabled:
+                    print(f"[PRINT] fullsheet grouped copies -> 4x6 count={fullsheet_copies}")
+                    self._run_single_print_call(self.image_path, copies=fullsheet_copies)
+                else:
+                    settle_delay_sec = max(
+                        0.0,
+                        float(os.environ.get("KIOSK_FULLSHEET_COPY_DELAY_SEC", "0.6") or 0.6),
                     )
-                    self._run_single_print_call(self.image_path)
+                    idle_timeout_sec = max(
+                        0.0,
+                        float(os.environ.get("KIOSK_FULLSHEET_IDLE_TIMEOUT_SEC", "20") or 20),
+                    )
+                    idle_stable_sec = max(
+                        0.2,
+                        float(os.environ.get("KIOSK_FULLSHEET_IDLE_STABLE_SEC", "1.2") or 1.2),
+                    )
+                    for copy_index in range(fullsheet_copies):
+                        print(f"[PRINT] fullsheet copy {copy_index + 1}/{fullsheet_copies} -> 4x6")
+                        self._run_single_print_call(self.image_path, copies=1)
+                        if copy_index + 1 < fullsheet_copies:
+                            if idle_timeout_sec > 0:
+                                try:
+                                    print(
+                                        f"[PRINT] fullsheet idle wait -> timeout={idle_timeout_sec:.1f}s "
+                                        f"stable={idle_stable_sec:.1f}s before copy {copy_index + 2}/{fullsheet_copies}"
+                                    )
+                                    _wait_printer_idle(
+                                        self.printer_name,
+                                        timeout_sec=idle_timeout_sec,
+                                        stable_sec=idle_stable_sec,
+                                    )
+                                except Exception as exc:
+                                    print(f"[PRINT] fullsheet idle wait skipped error={exc}")
+                            if settle_delay_sec > 0:
+                                print(
+                                    f"[PRINT] fullsheet settle delay -> {settle_delay_sec:.1f}s "
+                                    f"before copy {copy_index + 2}/{fullsheet_copies}"
+                                )
+                                time.sleep(settle_delay_sec)
             print(
                 f"[PRINT] sent to spooler ok printer=\"{self.printer_name}\" "
                 f"copies={self.copies}"
@@ -9886,8 +11996,9 @@ class BillAcceptorWorker(QThread):
         return result
 
     def _resolve_bill_to_amount_map(self) -> dict[int, int]:
-        result = dict(self.DEFAULT_BILL_TO_AMOUNT)
         profile_data = self._profile_data()
+        protocol = str(profile_data.get("protocol", "FRAME5_ASCII")).strip().upper()
+        result = {} if protocol == "ICT104U" else dict(self.DEFAULT_BILL_TO_AMOUNT)
         for raw_map in (profile_data.get("bill_to_amount"), self.settings.get("bill_to_amount")):
             parsed = parse_bill_to_amount_map(raw_map)
             for bill_code, amount in parsed.items():
@@ -10008,9 +12119,12 @@ class BillAcceptorWorker(QThread):
         self._ict_write_byte(0x3E if enabled else 0x5E)
         self._insert_enabled = bool(enabled)
 
-    def _ict_reset(self) -> None:
+    def _ict_reset(self, settle_delay: float = 2.5) -> None:
         self._ict_write_byte(0x30)
-        time.sleep(2.5)
+        time.sleep(max(0.0, float(settle_delay)))
+
+    def _ict_send_controller_ack(self) -> None:
+        self._ict_write_byte(0x02)
 
     def _ict_accept_current_bill(self) -> None:
         self._ict_write_byte(0x02)
@@ -10080,11 +12194,30 @@ class BillAcceptorWorker(QThread):
                 return True
             if status == 0x11:
                 return False
-            if status in {0x3E, 0x5E, 0x80}:
+            if status in {0x3E, 0x5E, 0x80, 0x8F}:
                 continue
             if 0x20 <= status <= 0x2F:
                 self._log(f"[BILL][ICT104U] stack error=0x{status:02X}")
                 return False
+        return False
+
+    def _ict_complete_startup_handshake(self, ack_codes: set[int], timeout: float = 1.8) -> bool:
+        if not ack_codes:
+            return False
+        deadline = time.monotonic() + max(0.4, float(timeout))
+        while self._running and not self.isInterruptionRequested() and time.monotonic() < deadline:
+            packet = self._ict_read_bytes(timeout=0.2, max_bytes=2)
+            if not packet:
+                continue
+            status = int(packet[0]) & 0xFF
+            if status in ack_codes:
+                self._ict_send_controller_ack()
+                self._log(f"[BILL][ICT104U] startup ack status=0x{status:02X}")
+                return True
+            if status in {0x3E, 0x5E}:
+                return True
+            if 0x20 <= status <= 0x2F:
+                self._log(f"[BILL][ICT104U] startup error=0x{status:02X}")
         return False
 
     def _resolve_probe_bauds(self, profile_data: dict, fallback_baud: int) -> list[int]:
@@ -10297,7 +12430,14 @@ class BillAcceptorWorker(QThread):
                 time.sleep(0.2)
             time.sleep(0.08)
 
-    def _run_ict104u_loop(self, *, strict_init: bool, supports_insert_control: bool) -> None:
+    def _run_ict104u_loop(
+        self,
+        *,
+        strict_init: bool,
+        supports_insert_control: bool,
+        startup_ack: bool,
+        startup_ack_codes: set[int],
+    ) -> None:
         while self._running and not self.isInterruptionRequested():
             try:
                 packet = self._ict_poll(timeout=0.35)
@@ -10350,6 +12490,23 @@ class BillAcceptorWorker(QThread):
                             if strict_init:
                                 raise
                             self._log(f"[BILL][ICT104U] re-enable failed: {exc}")
+                elif status in startup_ack_codes:
+                    self._log(f"[BILL][ICT104U] startup request=0x{status:02X}")
+                    if startup_ack:
+                        try:
+                            self._ict_send_controller_ack()
+                            self._log("[BILL][ICT104U] startup ack ok")
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._log(f"[BILL][ICT104U] startup ack failed: {exc}")
+                    if supports_insert_control:
+                        try:
+                            self._ict_set_enabled(True)
+                        except Exception as exc:
+                            if strict_init:
+                                raise
+                            self._log(f"[BILL][ICT104U] enable after reset failed: {exc}")
                 elif status == 0x80:
                     self._log("[BILL][ICT104U] power-up/reset detected")
                     if supports_insert_control:
@@ -10394,6 +12551,15 @@ class BillAcceptorWorker(QThread):
         supports_reset = bool(profile_data.get("supports_reset", True))
         supports_config_bits = bool(profile_data.get("supports_config_bits", True))
         supports_insert_control = bool(profile_data.get("supports_insert_control", True))
+        startup_ack = bool(profile_data.get("startup_ack", False))
+        startup_ack_codes: set[int] = set()
+        raw_startup_ack_codes = profile_data.get("startup_ack_codes")
+        if isinstance(raw_startup_ack_codes, (list, tuple, set)):
+            for code in raw_startup_ack_codes:
+                try:
+                    startup_ack_codes.add(int(code) & 0xFF)
+                except Exception:
+                    continue
         requested_port = str(
             self.settings.get(
                 "port",
@@ -10468,11 +12634,23 @@ class BillAcceptorWorker(QThread):
             if protocol == "ICT104U":
                 if supports_reset:
                     try:
-                        self._ict_reset()
+                        reset_delay = 0.15 if startup_ack and startup_ack_codes else 2.5
+                        self._ict_reset(settle_delay=reset_delay)
                     except Exception as exc:
                         if strict_init:
                             raise
                         self._log(f"[BILL][ICT104U] reset skipped: {exc}")
+
+                if startup_ack and startup_ack_codes:
+                    try:
+                        handshake_ok = self._ict_complete_startup_handshake(startup_ack_codes)
+                        if not handshake_ok:
+                            self._ict_send_controller_ack()
+                            self._log("[BILL][ICT104U] startup ack forced")
+                    except Exception as exc:
+                        if strict_init:
+                            raise
+                        self._log(f"[BILL][ICT104U] startup ack skipped: {exc}")
 
                 if supports_insert_control:
                     try:
@@ -10487,6 +12665,8 @@ class BillAcceptorWorker(QThread):
                 self._run_ict104u_loop(
                     strict_init=strict_init,
                     supports_insert_control=supports_insert_control,
+                    startup_ack=startup_ack,
+                    startup_ack_codes=startup_ack_codes,
                 )
             else:
                 if supports_reset:
@@ -10622,6 +12802,7 @@ class AdminScreen(QWidget):
 
         self.test_mode_cb = QCheckBox(self)
         self.allow_dummy_cb = QCheckBox(self)
+        self.allow_canon_remote_capture_cb = QCheckBox(self)
         self.debug_fullscreen_shutter_cb = QCheckBox(self)
         self.print_dry_run_cb = QCheckBox(self)
         self.upload_dry_run_cb = QCheckBox(self)
@@ -10678,9 +12859,55 @@ class AdminScreen(QWidget):
             self.ai_style_grid.addWidget(prompt_input, row, 5)
         self.bill_enabled_cb = QCheckBox(self)
         self.bill_profile_combo = QComboBox(self)
+        self.bill_currency_combo = QComboBox(self)
+        self.bill_currency_combo.setEditable(True)
+        self.bill_currency_combo.addItem("")
+        for currency_code in BILL_CURRENCY_CHOICES:
+            self.bill_currency_combo.addItem(currency_code)
         self.bill_port_combo = QComboBox(self)
         self.bill_value_map_input = QLineEdit(self)
-        self.bill_value_map_input.setPlaceholderText("1=5,2=10,3=20,4=50,5=100")
+        self.bill_value_map_input.setPlaceholderText("1=50,2=100,3=200")
+        self.card_payment_enabled_cb = QCheckBox(self)
+        self.card_payment_provider_combo = QComboBox(self)
+        self.card_payment_provider_combo.addItem("MOCK", PaymentProviderType.MOCK.value)
+        self.card_payment_provider_combo.addItem("GoDaddy POS Bridge", PaymentProviderType.GODADDY_POSBRIDGE.value)
+        self.card_payment_provider_combo.addItem("EVCAT3 TCP", PaymentProviderType.EVCAT_TCP.value)
+        self.card_terminal_ip_input = QLineEdit(self)
+        self.card_terminal_port_spin = QSpinBox(self)
+        self.card_terminal_port_spin.setRange(1, 65535)
+        self.card_terminal_port_spin.setValue(55555)
+        self.card_terminal_name_input = QLineEdit(self)
+        self.card_pairing_key_input = QLineEdit(self)
+        self.card_currency_input = QLineEdit(self)
+        self.card_currency_input.setMaxLength(8)
+        self.card_request_timeout_spin = QSpinBox(self)
+        self.card_request_timeout_spin.setRange(250, 300000)
+        self.card_request_timeout_spin.setSingleStep(250)
+        self.card_request_timeout_spin.setValue(5000)
+        self.card_payment_timeout_spin = QSpinBox(self)
+        self.card_payment_timeout_spin.setRange(1, 600)
+        self.card_payment_timeout_spin.setValue(60)
+        self.card_simulation_auto_approve_cb = QCheckBox(self)
+        self.card_simulation_delay_spin = QSpinBox(self)
+        self.card_simulation_delay_spin.setRange(0, 120)
+        self.card_simulation_delay_spin.setValue(2)
+        self.card_simulation_result_combo = QComboBox(self)
+        self.card_simulation_result_combo.addItems(["approve", "decline", "cancel", "timeout"])
+        self.card_auto_print_receipt_cb = QCheckBox(self)
+        self.card_enable_diagnostics_cb = QCheckBox(self)
+        self.card_pair_test_btn = QPushButton("Pair Test", self)
+        self.card_ping_test_btn = QPushButton("Ping Test", self)
+        self.card_mock_test_btn = QPushButton("Mock 승인 테스트", self)
+        self.card_reload_btn = QPushButton("결제 설정 Reload", self)
+        self.card_pair_test_btn.clicked.connect(self._on_payment_pair_test_clicked)
+        self.card_ping_test_btn.clicked.connect(self._on_payment_ping_test_clicked)
+        self.card_mock_test_btn.clicked.connect(self._on_payment_mock_test_clicked)
+        self.card_reload_btn.clicked.connect(self._on_payment_reload_clicked)
+        self.card_enable_diagnostics_cb.toggled.connect(lambda _checked: self._refresh_payment_diagnostics())
+        self.payment_diag_text = QTextEdit(self)
+        self.payment_diag_text.setReadOnly(True)
+        self.payment_diag_text.setMinimumHeight(240)
+        self.payment_diag_text.setMaximumHeight(420)
         self.pricing_prefix_input = QLineEdit(self)
         self.pricing_prefix_input.setPlaceholderText("KRW / ₩")
         self.pricing_prefix_input.setMaxLength(16)
@@ -10704,6 +12931,20 @@ class AdminScreen(QWidget):
         self.print_resolved_ds620_input.setReadOnly(True)
         self.print_resolved_rx1hs_input = QLineEdit(self)
         self.print_resolved_rx1hs_input.setReadOnly(True)
+        self.print_margin_profile_ds620_portrait_widget, self.print_margin_profile_ds620_portrait_inputs = (
+            self._create_simple_margin_profile_row()
+        )
+        self.print_margin_profile_ds620_landscape_widget, self.print_margin_profile_ds620_landscape_inputs = (
+            self._create_simple_margin_profile_row()
+        )
+        self.print_margin_ds620_widget, self.print_margin_ds620_inputs = self._create_margin_row()
+        self.print_margin_profile_rx1hs_portrait_widget, self.print_margin_profile_rx1hs_portrait_inputs = (
+            self._create_simple_margin_profile_row()
+        )
+        self.print_margin_profile_rx1hs_landscape_widget, self.print_margin_profile_rx1hs_landscape_inputs = (
+            self._create_simple_margin_profile_row()
+        )
+        self.print_margin_rx1hs_widget, self.print_margin_rx1hs_inputs = self._create_margin_row()
         self.print_printer_refresh_btn = QPushButton("프린터 목록 새로고침", self)
         self.print_test_ds620_btn = QPushButton("Test Print (DS620)", self)
         self.print_test_rx1hs_btn = QPushButton("Test Print (RX1HS)", self)
@@ -10738,6 +12979,7 @@ class AdminScreen(QWidget):
             label = str(profile.get("label", profile_key))
             self.bill_profile_combo.addItem(label, profile_key)
         self.bill_profile_combo.currentIndexChanged.connect(self._on_bill_profile_changed)
+        self.bill_currency_combo.currentTextChanged.connect(self._on_bill_currency_changed)
         self.bill_port_combo.setEditable(False)
         self.pricing_prefix_input.textChanged.connect(self._on_pricing_prefix_changed)
 
@@ -10747,6 +12989,9 @@ class AdminScreen(QWidget):
         self.capture_slots_override_combo = QComboBox(self)
         self.capture_slots_override_combo.addItems(["auto", "4", "6", "8", "9", "10"])
 
+        self.design_frame_count_spin = QSpinBox(self)
+        self.design_frame_count_spin.setRange(1, 14)
+
         self.countdown_spin = QSpinBox(self)
         self.countdown_spin.setRange(0, 10)
 
@@ -10754,6 +12999,8 @@ class AdminScreen(QWidget):
         form.addRow("test_mode", self.test_mode_cb)
         form.addRow("camera_backend", self.camera_backend_combo)
         form.addRow("allow_dummy_when_camera_fail", self.allow_dummy_cb)
+        form.addRow("allow_canon_remote_capture", self.allow_canon_remote_capture_cb)
+        form.addRow("design_frame_count", self.design_frame_count_spin)
         form.addRow("countdown_seconds", self.countdown_spin)
         form.addRow("capture_slots_override", self.capture_slots_override_combo)
         form.addRow("debug_fullscreen_shutter", self.debug_fullscreen_shutter_cb)
@@ -10767,10 +13014,16 @@ class AdminScreen(QWidget):
         form.addRow("DS620 form_4x6", self.print_form_ds620_4x6_combo)
         form.addRow("DS620 form_2x6", self.print_form_ds620_2x6_combo)
         form.addRow("DS620 resolved", self.print_resolved_ds620_input)
+        form.addRow("DS620 6x4 세로형 출력 위치 조정", self.print_margin_profile_ds620_portrait_widget)
+        form.addRow("DS620 6x4 가로형 출력 위치 조정", self.print_margin_profile_ds620_landscape_widget)
+        form.addRow("DS620 고급 미세조정 L/R/T/B", self.print_margin_ds620_widget)
         form.addRow("printer_RX1HS", self.print_printer_rx1hs_combo)
         form.addRow("RX1HS form_4x6", self.print_form_rx1hs_4x6_combo)
         form.addRow("RX1HS form_2x6", self.print_form_rx1hs_2x6_combo)
         form.addRow("RX1HS resolved", self.print_resolved_rx1hs_input)
+        form.addRow("RX1HS 6x4 세로형 출력 위치 조정", self.print_margin_profile_rx1hs_portrait_widget)
+        form.addRow("RX1HS 6x4 가로형 출력 위치 조정", self.print_margin_profile_rx1hs_landscape_widget)
+        form.addRow("RX1HS 고급 미세조정 L/R/T/B", self.print_margin_rx1hs_widget)
         form.addRow(self._make_section_label("결제/모드 / Payment & Mode"))
         form.addRow("pay_cash", self.payment_cash_cb)
         form.addRow("pay_card", self.payment_card_cb)
@@ -10782,6 +13035,7 @@ class AdminScreen(QWidget):
         form.addRow(self._make_section_label("지폐 인식기 / Bill Acceptor"))
         form.addRow("bill_enabled", self.bill_enabled_cb)
         form.addRow("bill_profile", self.bill_profile_combo)
+        form.addRow("bill_currency", self.bill_currency_combo)
         form.addRow("bill_port", self.bill_port_combo)
         form.addRow("bill_value_map", self.bill_value_map_input)
         denoms_row = QWidget(self)
@@ -10792,6 +13046,21 @@ class AdminScreen(QWidget):
             denoms_layout.addWidget(self.bill_denom_cbs[denom])
         denoms_layout.addStretch(1)
         form.addRow("bill_denoms", denoms_row)
+        form.addRow(self._make_section_label("카드리더기 / Card Terminal"))
+        form.addRow("payment_enabled", self.card_payment_enabled_cb)
+        form.addRow("payment_provider", self.card_payment_provider_combo)
+        form.addRow("terminal_ip", self.card_terminal_ip_input)
+        form.addRow("terminal_port", self.card_terminal_port_spin)
+        form.addRow("terminal_name", self.card_terminal_name_input)
+        form.addRow("pairing_code_or_key", self.card_pairing_key_input)
+        form.addRow("currency", self.card_currency_input)
+        form.addRow("request_timeout_ms", self.card_request_timeout_spin)
+        form.addRow("payment_timeout_sec", self.card_payment_timeout_spin)
+        form.addRow("simulation_auto_approve", self.card_simulation_auto_approve_cb)
+        form.addRow("simulation_delay_sec", self.card_simulation_delay_spin)
+        form.addRow("simulation_result", self.card_simulation_result_combo)
+        form.addRow("auto_print_receipt", self.card_auto_print_receipt_cb)
+        form.addRow("enable_diagnostics_panel", self.card_enable_diagnostics_cb)
         form.addRow(self._make_section_label("가격 / Pricing"))
         form.addRow("pricing_prefix", self.pricing_prefix_input)
         form.addRow("pricing_layouts", self.pricing_layout_widget)
@@ -10826,6 +13095,15 @@ class AdminScreen(QWidget):
         bill_test_row.addWidget(self.bill_test_start_btn)
         bill_test_row.addWidget(self.bill_test_stop_btn)
         self._scroll_layout.addLayout(bill_test_row)
+
+        payment_tools_row = QHBoxLayout()
+        payment_tools_row.setSpacing(10)
+        payment_tools_row.addWidget(self.card_pair_test_btn)
+        payment_tools_row.addWidget(self.card_ping_test_btn)
+        payment_tools_row.addWidget(self.card_mock_test_btn)
+        payment_tools_row.addWidget(self.card_reload_btn)
+        self._scroll_layout.addLayout(payment_tools_row)
+        self._scroll_layout.addWidget(self.payment_diag_text)
 
         self.status_label = QLabel("", self)
         self.status_label.setObjectName("status")
@@ -10887,6 +13165,95 @@ class AdminScreen(QWidget):
         label.setAlignment(ALIGN_CENTER)
         return label
 
+    def _create_margin_row(self) -> tuple[QWidget, dict[str, QSpinBox]]:
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        inputs: dict[str, QSpinBox] = {}
+        for key, label_text in (
+            ("left", "L"),
+            ("right", "R"),
+            ("top", "T"),
+            ("bottom", "B"),
+        ):
+            label = QLabel(label_text, row)
+            spin = QSpinBox(row)
+            spin.setRange(-2000, 2000)
+            spin.setSingleStep(1)
+            spin.setSuffix(" px")
+            layout.addWidget(label)
+            layout.addWidget(spin)
+            inputs[key] = spin
+        layout.addStretch(1)
+        return row, inputs
+
+    def _create_simple_margin_profile_row(self) -> tuple[QWidget, dict[str, QSpinBox]]:
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        inputs: dict[str, QSpinBox] = {}
+        for key, label_text in (
+            ("horizontal", "좌우 여백"),
+            ("vertical", "상하 여백"),
+        ):
+            label = QLabel(label_text, row)
+            spin = QSpinBox(row)
+            spin.setRange(-2000, 2000)
+            spin.setSingleStep(1)
+            spin.setSuffix(" px")
+            layout.addWidget(label)
+            layout.addWidget(spin)
+            inputs[key] = spin
+        layout.addStretch(1)
+        return row, inputs
+
+    def _set_margin_inputs(self, inputs: dict[str, QSpinBox], raw_settings: object) -> None:
+        data = (
+            _normalize_printer_margin_settings(raw_settings)
+            if isinstance(raw_settings, dict)
+            else dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
+        )
+        for key, spin in inputs.items():
+            if isinstance(spin, QSpinBox):
+                spin.setValue(int(data.get(key, DEFAULT_PRINTER_MARGIN_SETTINGS[key])))
+
+    def _set_simple_margin_profile_inputs(
+        self,
+        inputs: dict[str, QSpinBox],
+        raw_profile: object,
+        profile_key: str = "4x6_portrait",
+    ) -> None:
+        profile = _normalize_simple_margin_profile(
+            raw_profile,
+            DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS.get(
+                str(profile_key or "4x6_portrait"),
+                DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS["4x6_portrait"],
+            ),
+        )
+        for key, spin in inputs.items():
+            if isinstance(spin, QSpinBox):
+                spin.setValue(int(profile.get(key, 0)))
+
+    def _collect_margin_inputs(self, inputs: dict[str, QSpinBox]) -> dict[str, int]:
+        result = dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
+        for key, spin in inputs.items():
+            if isinstance(spin, QSpinBox):
+                result[key] = int(spin.value())
+        return result
+
+    def _collect_simple_margin_profile_inputs(self, inputs: dict[str, QSpinBox]) -> dict[str, int]:
+        fallback = dict(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS["4x6_portrait"])
+        result = {
+            "horizontal": int(fallback["horizontal"]),
+            "vertical": int(fallback["vertical"]),
+        }
+        for key, spin in inputs.items():
+            if isinstance(spin, QSpinBox):
+                result[key] = int(spin.value())
+        return result
+
     def set_hotspots(self, hotspots: list[Hotspot]) -> None:
         self.hotspots = hotspots
 
@@ -10897,6 +13264,7 @@ class AdminScreen(QWidget):
         self,
         settings: dict,
         payment_methods: Optional[dict] = None,
+        payment_settings: Optional[dict] = None,
         modes: Optional[dict] = None,
         ai_styles: Optional[dict] = None,
         bill_acceptor: Optional[dict] = None,
@@ -10912,6 +13280,28 @@ class AdminScreen(QWidget):
                     "allow_dummy_when_camera_fail",
                     bool(DEFAULT_ADMIN_SETTINGS["allow_dummy_when_camera_fail"]),
                 )
+            )
+        )
+        self.allow_canon_remote_capture_cb.setChecked(
+            bool(
+                settings.get(
+                    "allow_canon_remote_capture",
+                    bool(DEFAULT_ADMIN_SETTINGS["allow_canon_remote_capture"]),
+                )
+            )
+        )
+        self.design_frame_count_spin.setValue(
+            max(
+                1,
+                min(
+                    14,
+                    int(
+                        settings.get(
+                            "design_frame_count",
+                            int(DEFAULT_ADMIN_SETTINGS["design_frame_count"]),
+                        )
+                    ),
+                ),
             )
         )
         self.debug_fullscreen_shutter_cb.setChecked(
@@ -10951,7 +13341,9 @@ class AdminScreen(QWidget):
         self._load_printing_controls(printing, printer_names)
         self._load_pricing_controls(pricing, layout_ids)
         self._load_bill_acceptor_controls(bill_acceptor)
+        self._load_payment_controls(payment_settings)
         self._refresh_bill_test_buttons()
+        self._refresh_payment_diagnostics()
         self._clear_status()
 
     def _collect_settings(self) -> dict:
@@ -10964,6 +13356,8 @@ class AdminScreen(QWidget):
             "test_mode": self.test_mode_cb.isChecked(),
             "camera_backend": self.camera_backend_combo.currentText().strip().lower(),
             "allow_dummy_when_camera_fail": self.allow_dummy_cb.isChecked(),
+            "allow_canon_remote_capture": self.allow_canon_remote_capture_cb.isChecked(),
+            "design_frame_count": int(self.design_frame_count_spin.value()),
             "countdown_seconds": int(self.countdown_spin.value()),
             "capture_slots_override": capture_override,
             "debug_fullscreen_shutter": self.debug_fullscreen_shutter_cb.isChecked(),
@@ -10977,6 +13371,56 @@ class AdminScreen(QWidget):
             "cash": self.payment_cash_cb.isChecked(),
             "card": self.payment_card_cb.isChecked(),
             "coupon": self.payment_coupon_cb.isChecked(),
+        }
+
+    def _load_payment_controls(self, payment_settings: Optional[dict]) -> None:
+        settings = PaymentSettings.from_dict(payment_settings if isinstance(payment_settings, dict) else DEFAULT_PAYMENT_SETTINGS)
+        self.card_payment_enabled_cb.setChecked(bool(settings.payment_enabled))
+        provider_value = str(settings.payment_provider.value)
+        provider_index = self.card_payment_provider_combo.findData(provider_value)
+        if provider_index < 0:
+            provider_index = 0
+        self.card_payment_provider_combo.setCurrentIndex(provider_index)
+        self.card_terminal_ip_input.setText(str(settings.terminal_ip or ""))
+        self.card_terminal_port_spin.setValue(int(settings.terminal_port))
+        self.card_terminal_name_input.setText(str(settings.terminal_name or ""))
+        self.card_pairing_key_input.setText(str(settings.pairing_code_or_key or ""))
+        self.card_currency_input.setText(str(settings.currency or "CAD"))
+        self.card_request_timeout_spin.setValue(int(settings.request_timeout_ms))
+        self.card_payment_timeout_spin.setValue(int(settings.payment_timeout_sec))
+        self.card_simulation_auto_approve_cb.setChecked(bool(settings.simulation_auto_approve))
+        self.card_simulation_delay_spin.setValue(int(settings.simulation_delay_sec))
+        sim_index = self.card_simulation_result_combo.findText(str(settings.simulation_result or "approve"))
+        if sim_index < 0:
+            sim_index = 0
+        self.card_simulation_result_combo.setCurrentIndex(sim_index)
+        self.card_auto_print_receipt_cb.setChecked(bool(settings.auto_print_receipt))
+        self.card_enable_diagnostics_cb.setChecked(bool(settings.enable_diagnostics_panel))
+
+    def _collect_payment_settings(self) -> dict:
+        provider_data = self.card_payment_provider_combo.currentData()
+        provider_value = str(provider_data or self.card_payment_provider_combo.currentText() or "").strip().lower()
+        if provider_value not in {
+            PaymentProviderType.MOCK.value,
+            PaymentProviderType.GODADDY_POSBRIDGE.value,
+            PaymentProviderType.EVCAT_TCP.value,
+        }:
+            provider_value = PaymentProviderType.MOCK.value
+        return {
+            "payment_enabled": self.card_payment_enabled_cb.isChecked(),
+            "payment_provider": provider_value,
+            "terminal_ip": self.card_terminal_ip_input.text().strip(),
+            "terminal_port": int(self.card_terminal_port_spin.value()),
+            "terminal_name": self.card_terminal_name_input.text().strip(),
+            "pairing_code_or_key": self.card_pairing_key_input.text().strip(),
+            "currency": self.card_currency_input.text().strip().upper() or "CAD",
+            "request_timeout_ms": int(self.card_request_timeout_spin.value()),
+            "payment_timeout_sec": int(self.card_payment_timeout_spin.value()),
+            "simulation_auto_approve": self.card_simulation_auto_approve_cb.isChecked(),
+            "simulation_delay_sec": int(self.card_simulation_delay_spin.value()),
+            "simulation_result": self.card_simulation_result_combo.currentText().strip().lower() or "approve",
+            "auto_print_receipt": self.card_auto_print_receipt_cb.isChecked(),
+            "enable_diagnostics_panel": self.card_enable_diagnostics_cb.isChecked(),
         }
 
     def _collect_modes_settings(self) -> dict:
@@ -11145,6 +13589,40 @@ class AdminScreen(QWidget):
                 path = ""
         self.log_path_input.setText(path)
 
+    def _refresh_payment_diagnostics(self) -> None:
+        text = ""
+        if hasattr(self.main_window, "get_payment_diagnostics_report"):
+            try:
+                text = str(self.main_window.get_payment_diagnostics_report() or "").strip()
+            except Exception as exc:
+                text = f"진단 정보 로드 실패: {exc}"
+        self.payment_diag_text.setVisible(self.card_enable_diagnostics_cb.isChecked())
+        self.payment_diag_text.setPlainText(text or "결제 진단 정보 없음")
+
+    def _on_payment_pair_test_clicked(self) -> None:
+        if hasattr(self.main_window, "pair_payment_terminal"):
+            ok, message = self.main_window.pair_payment_terminal()
+            self._show_status(message, duration_ms=1500 if ok else 2200)
+        self._refresh_payment_diagnostics()
+
+    def _on_payment_ping_test_clicked(self) -> None:
+        if hasattr(self.main_window, "ping_payment_terminal"):
+            ok, message = self.main_window.ping_payment_terminal()
+            self._show_status(message, duration_ms=1500 if ok else 2200)
+        self._refresh_payment_diagnostics()
+
+    def _on_payment_mock_test_clicked(self) -> None:
+        if hasattr(self.main_window, "run_mock_payment_diagnostic"):
+            ok, message = self.main_window.run_mock_payment_diagnostic()
+            self._show_status(message, duration_ms=1500 if ok else 2200)
+        self._refresh_payment_diagnostics()
+
+    def _on_payment_reload_clicked(self) -> None:
+        if hasattr(self.main_window, "reload_payment_settings"):
+            ok, message = self.main_window.reload_payment_settings()
+            self._show_status(message, duration_ms=1500 if ok else 2200)
+        self._refresh_payment_diagnostics()
+
     def _load_printing_controls(self, printing: Optional[dict], printer_names: Optional[list[str]]) -> None:
         settings = printing if isinstance(printing, dict) else {}
         self.printing_enabled_cb.setChecked(bool(settings.get("enabled", True)))
@@ -11156,6 +13634,10 @@ class AdminScreen(QWidget):
         ds620_form_2x6 = "2x6"
         rx1hs_form_4x6 = "4x6"
         rx1hs_form_2x6 = "2x6"
+        ds620_margin_profiles = deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS)
+        ds620_margins = dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
+        rx1hs_margin_profiles = deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS)
+        rx1hs_margins = dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
         if isinstance(printers, dict):
             ds620 = printers.get("DS620")
             rx1hs = printers.get("RX1HS")
@@ -11163,10 +13645,14 @@ class AdminScreen(QWidget):
                 ds620_name = str(ds620.get("win_name", "")).strip()
                 ds620_form_4x6 = str(ds620.get("form_4x6", ds620_form_4x6)).strip() or "4x6"
                 ds620_form_2x6 = str(ds620.get("form_2x6", ds620_form_2x6)).strip() or "2x6"
+                ds620_margin_profiles = _normalize_simple_margin_profiles(ds620.get("margin_profiles"))
+                ds620_margins = _normalize_printer_margin_settings(ds620.get("margins", ds620))
             if isinstance(rx1hs, dict):
                 rx1hs_name = str(rx1hs.get("win_name", "")).strip()
                 rx1hs_form_4x6 = str(rx1hs.get("form_4x6", rx1hs_form_4x6)).strip() or "4x6"
                 rx1hs_form_2x6 = str(rx1hs.get("form_2x6", rx1hs_form_2x6)).strip() or "2x6"
+                rx1hs_margin_profiles = _normalize_simple_margin_profiles(rx1hs.get("margin_profiles"))
+                rx1hs_margins = _normalize_printer_margin_settings(rx1hs.get("margins", rx1hs))
         self._set_combo_items(self.print_printer_ds620_combo, list(printer_names or []), ds620_name)
         self._set_combo_items(self.print_printer_rx1hs_combo, list(printer_names or []), rx1hs_name)
         self._refresh_print_form_controls(
@@ -11175,6 +13661,28 @@ class AdminScreen(QWidget):
             rx1hs_form_4x6=rx1hs_form_4x6,
             rx1hs_form_2x6=rx1hs_form_2x6,
         )
+        self._set_simple_margin_profile_inputs(
+            self.print_margin_profile_ds620_portrait_inputs,
+            ds620_margin_profiles.get("4x6_portrait"),
+            "4x6_portrait",
+        )
+        self._set_simple_margin_profile_inputs(
+            self.print_margin_profile_ds620_landscape_inputs,
+            ds620_margin_profiles.get("4x6_landscape"),
+            "4x6_landscape",
+        )
+        self._set_margin_inputs(self.print_margin_ds620_inputs, ds620_margins)
+        self._set_simple_margin_profile_inputs(
+            self.print_margin_profile_rx1hs_portrait_inputs,
+            rx1hs_margin_profiles.get("4x6_portrait"),
+            "4x6_portrait",
+        )
+        self._set_simple_margin_profile_inputs(
+            self.print_margin_profile_rx1hs_landscape_inputs,
+            rx1hs_margin_profiles.get("4x6_landscape"),
+            "4x6_landscape",
+        )
+        self._set_margin_inputs(self.print_margin_rx1hs_inputs, rx1hs_margins)
         self._refresh_log_path()
 
     def _collect_printing_settings(self) -> dict:
@@ -11185,11 +13693,33 @@ class AdminScreen(QWidget):
         )
         current_printers = current.get("printers", {}) if isinstance(current, dict) else {}
         current_ds620 = current_printers.get("DS620", {}) if isinstance(current_printers, dict) else {}
+        current_strip = current_printers.get("DS620_STRIP", {}) if isinstance(current_printers, dict) else {}
         current_rx1hs = current_printers.get("RX1HS", {}) if isinstance(current_printers, dict) else {}
         ds620_form_4x6 = self.print_form_ds620_4x6_combo.currentText().strip() or "4x6"
         ds620_form_2x6 = self.print_form_ds620_2x6_combo.currentText().strip() or "2x6"
         rx1hs_form_4x6 = self.print_form_rx1hs_4x6_combo.currentText().strip() or "4x6"
         rx1hs_form_2x6 = self.print_form_rx1hs_2x6_combo.currentText().strip() or "2x6"
+        ds620_margin_profiles = {
+            "4x6_portrait": self._collect_simple_margin_profile_inputs(
+                self.print_margin_profile_ds620_portrait_inputs
+            ),
+            "4x6_landscape": self._collect_simple_margin_profile_inputs(
+                self.print_margin_profile_ds620_landscape_inputs
+            ),
+        }
+        ds620_margins = self._collect_margin_inputs(self.print_margin_ds620_inputs)
+        rx1hs_margin_profiles = {
+            "4x6_portrait": self._collect_simple_margin_profile_inputs(
+                self.print_margin_profile_rx1hs_portrait_inputs
+            ),
+            "4x6_landscape": self._collect_simple_margin_profile_inputs(
+                self.print_margin_profile_rx1hs_landscape_inputs
+            ),
+        }
+        rx1hs_margins = self._collect_margin_inputs(self.print_margin_rx1hs_inputs)
+        strip_margins = _normalize_printer_margin_settings(
+            current_strip.get("margins", current_strip) if isinstance(current_strip, dict) else ds620_margins
+        )
         default_model = str(current.get("default_model", "DS620")).strip().upper()
         if default_model not in {"DS620", "RX1HS"}:
             default_model = "DS620"
@@ -11205,11 +13735,21 @@ class AdminScreen(QWidget):
                     "win_name": ds620_name,
                     "form_4x6": ds620_form_4x6 or str(current_ds620.get("form_4x6", "4x6")),
                     "form_2x6": ds620_form_2x6 or str(current_ds620.get("form_2x6", "2x6")),
+                    "margin_profiles": ds620_margin_profiles,
+                    "margins": ds620_margins,
+                },
+                "DS620_STRIP": {
+                    "win_name": str(current_strip.get("win_name", "")).strip() if isinstance(current_strip, dict) else "",
+                    "form_4x6": str(current_strip.get("form_4x6", "4x6")).strip() if isinstance(current_strip, dict) else "4x6",
+                    "form_2x6": str(current_strip.get("form_2x6", "")).strip() if isinstance(current_strip, dict) else "",
+                    "margins": strip_margins,
                 },
                 "RX1HS": {
                     "win_name": rx1hs_name,
                     "form_4x6": rx1hs_form_4x6 or str(current_rx1hs.get("form_4x6", "4x6")),
                     "form_2x6": rx1hs_form_2x6 or str(current_rx1hs.get("form_2x6", "2x6")),
+                    "margin_profiles": rx1hs_margin_profiles,
+                    "margins": rx1hs_margins,
                 },
             },
             "default_model": default_model,
@@ -11242,10 +13782,14 @@ class AdminScreen(QWidget):
         celeb_layout = str(DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461")).strip() or "2461"
         if celeb_layout not in detected:
             detected.append(celeb_layout)
-        ai_layout = str(AI_LAYOUT_ID).strip()
-        if ai_layout and ai_layout not in detected:
-            detected.append(ai_layout)
-        self.pricing_layout_ids = sorted(set(detected))
+        if AI_MODE_PRICING_LAYOUT_ID not in detected:
+            detected.append(AI_MODE_PRICING_LAYOUT_ID)
+        ordered_layout_ids: list[str] = []
+        for layout_id in detected:
+            layout_key = str(layout_id or "").strip()
+            if layout_key and layout_key not in ordered_layout_ids:
+                ordered_layout_ids.append(layout_key)
+        self.pricing_layout_ids = ordered_layout_ids
 
         while self.pricing_layout_grid.count():
             item = self.pricing_layout_grid.takeAt(0)
@@ -11275,6 +13819,8 @@ class AdminScreen(QWidget):
         layout_key = str(layout_id or "").strip()
         if not layout_key:
             return ""
+        if layout_key == AI_MODE_PRICING_LAYOUT_ID:
+            return f"AI모드 ({AI_LAYOUT_ID})"
         tags: list[str] = []
         celeb_layout = str(DEFAULT_CELEBRITY_SETTINGS.get("layout_id", "2461")).strip() or "2461"
         if hasattr(self.main_window, "get_celebrity_settings"):
@@ -11288,8 +13834,6 @@ class AdminScreen(QWidget):
                 pass
         if layout_key == celeb_layout:
             tags.append("유명인모드")
-        if layout_key == AI_LAYOUT_ID:
-            tags.append("AI모드")
         if not tags:
             return layout_key
         return f"{layout_key} ({' / '.join(tags)})"
@@ -11321,6 +13865,22 @@ class AdminScreen(QWidget):
         if text in BILL_PROFILES:
             return text
         return str(DEFAULT_BILL_ACCEPTOR_SETTINGS["profile"])
+
+    def _current_bill_currency_hint(self) -> str:
+        text = self.bill_currency_combo.currentText().strip()
+        currency_code = normalize_currency_code(text)
+        if currency_code:
+            return currency_code
+        return normalize_currency_code(self.pricing_prefix_input.text().strip())
+
+    @staticmethod
+    def _set_combo_box_text(combo: QComboBox, value: object) -> None:
+        text = str(value or "").strip()
+        index = combo.findText(text)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return
+        combo.setEditText(text)
 
     def _refresh_bill_ports(self, selected_port: Optional[str] = None) -> None:
         ports = []
@@ -11374,10 +13934,15 @@ class AdminScreen(QWidget):
         profile_key = self._current_bill_profile_key()
         self._apply_bill_profile_defaults(profile_key)
 
+    def _on_bill_currency_changed(self, _text: str) -> None:
+        if self._loading_bill_controls:
+            return
+        self._refresh_bill_value_map_from_pricing(force=False)
+
     def _suggested_bill_value_map_text(self) -> str:
         profile_key = self._current_bill_profile_key()
-        pricing_prefix = self.pricing_prefix_input.text().strip()
-        return format_bill_to_amount_map(suggest_bill_to_amount_map(profile_key, pricing_prefix))
+        currency_hint = self._current_bill_currency_hint()
+        return format_bill_to_amount_map(suggest_bill_to_amount_map(profile_key, currency_hint))
 
     def _refresh_bill_value_map_from_pricing(self, force: bool = False, fallback_text: str = "") -> None:
         suggested_text = self._suggested_bill_value_map_text().strip() or str(fallback_text or "").strip()
@@ -11407,12 +13972,14 @@ class AdminScreen(QWidget):
         if isinstance(denoms, dict):
             for key in denoms_map.keys():
                 denoms_map[key] = bool(denoms.get(key, denoms_map[key]))
-        pricing_prefix = self.pricing_prefix_input.text().strip()
+        currency_code = normalize_currency_code(
+            incoming.get("currency_code", self.pricing_prefix_input.text().strip())
+        )
         raw_bill_to_amount_text = format_bill_to_amount_map(incoming.get("bill_to_amount"))
         bill_to_amount_text = raw_bill_to_amount_text
         if not bill_to_amount_text:
             bill_to_amount_text = format_bill_to_amount_map(
-                suggest_bill_to_amount_map(profile, pricing_prefix)
+                suggest_bill_to_amount_map(profile, currency_code)
             ) or format_bill_to_amount_map(BILL_PROFILES.get(profile, {}).get("bill_to_amount"))
 
         self._loading_bill_controls = True
@@ -11425,6 +13992,7 @@ class AdminScreen(QWidget):
         if profile_index < 0:
             profile_index = 0
         self.bill_profile_combo.setCurrentIndex(profile_index)
+        self._set_combo_box_text(self.bill_currency_combo, currency_code)
         self._refresh_bill_ports(selected_port=port)
         self.bill_value_map_input.setText(bill_to_amount_text)
         self._last_auto_bill_value_map_text = bill_to_amount_text if not raw_bill_to_amount_text else ""
@@ -11449,24 +14017,31 @@ class AdminScreen(QWidget):
                 else self.bill_port_combo.currentText().strip() or str(DEFAULT_BILL_ACCEPTOR_SETTINGS["port"])
             ),
             "baud": baud,
-            "currency_code": normalize_currency_code(self.pricing_prefix_input.text().strip()),
+            "currency_code": self._current_bill_currency_hint(),
             "denoms": denoms,
             "bill_to_amount": bill_to_amount,
         }
 
     def _on_save_clicked(self) -> None:
-        forced_cash = self.main_window.save_admin_settings(
-            self._collect_settings(),
-            payment_methods=self._collect_payment_methods(),
-            modes=self._collect_modes_settings(),
-            ai_styles=self._collect_ai_style_settings(),
-            bill_acceptor=self._collect_bill_acceptor_settings(),
-            pricing=self._collect_pricing_settings(),
-            printing=self._collect_printing_settings(),
-        )
+        try:
+            forced_cash = self.main_window.save_admin_settings(
+                self._collect_settings(),
+                payment_methods=self._collect_payment_methods(),
+                modes=self._collect_modes_settings(),
+                ai_styles=self._collect_ai_style_settings(),
+                bill_acceptor=self._collect_bill_acceptor_settings(),
+                pricing=self._collect_pricing_settings(),
+                printing=self._collect_printing_settings(),
+            )
+            self.main_window.save_payment_settings(self._collect_payment_settings())
+        except Exception as exc:
+            print(f"[ADMIN] save failed: {exc}")
+            self._show_status(f"저장 실패: {exc}", duration_ms=2200)
+            return
         self.load_settings(
             self.main_window.admin_settings,
             self.main_window.get_payment_methods(),
+            self.main_window.get_payment_settings(),
             self.main_window.get_modes_settings(),
             self.main_window.get_ai_style_settings(),
             self.main_window.get_bill_acceptor_settings(),
@@ -11476,6 +14051,7 @@ class AdminScreen(QWidget):
             self.main_window.list_windows_printers(),
         )
         self._refresh_bill_test_buttons()
+        self._refresh_payment_diagnostics()
         if forced_cash:
             self._show_status("Cash는 최소 1개 필요해 자동 활성화되었습니다", duration_ms=1000)
         else:
@@ -11637,11 +14213,14 @@ EDS_ERR_OBJECT_NOTREADY = 0x0000A102
 EDS_ERR_TAKE_PICTURE_AF_NG = 0x00008D01
 
 K_EDS_PROP_ID_SAVE_TO = 0x0000000B
+K_EDS_SAVE_TO_CAMERA = 1
 K_EDS_SAVE_TO_HOST = 2
 K_EDS_SAVE_TO_BOTH = 3
 K_EDS_PROP_ID_EVF_OUTPUT_DEVICE = 0x00000500
+K_EDS_EVF_OUTPUT_DEVICE_TFT = 0x00000001
 K_EDS_EVF_OUTPUT_DEVICE_PC = 0x00000002
 K_EDS_OBJECT_EVENT_ALL = 0x00000200
+K_EDS_OBJECT_EVENT_DIR_ITEM_CREATED = 0x00000204
 K_EDS_OBJECT_EVENT_DIR_ITEM_REQUEST_TRANSFER = 0x00000208
 K_EDS_CAMERA_COMMAND_TAKE_PICTURE = 0x00000000
 K_EDS_CAMERA_COMMAND_PRESS_SHUTTER_BUTTON = 0x00000004
@@ -11768,15 +14347,30 @@ class LiveViewWorker(QObject):
     frame = Signal(bytes)
     fps = Signal(float)
     capture_success = Signal(str)
+    remote_capture_success = Signal(str)
     capture_failure = Signal(str)
     error = Signal(str)
     stopped = Signal()
 
-    def __init__(self, dll_path: str, retries: int = 200, capture_timeout_ms: int = 5000) -> None:
+    def __init__(
+        self,
+        dll_path: str,
+        retries: int = 200,
+        capture_timeout_ms: int = 5000,
+        allow_external_capture: bool = False,
+        external_capture_dir: Optional[Path | str] = None,
+    ) -> None:
         super().__init__()
         self.dll_path = dll_path
         self.retries = max(1, int(retries))
         self.capture_timeout_ms = max(3000, int(capture_timeout_ms))
+        self.allow_external_capture = bool(allow_external_capture)
+        try:
+            self.external_capture_dir = (
+                Path(external_capture_dir) if external_capture_dir is not None else None
+            )
+        except Exception:
+            self.external_capture_dir = None
         self._running = True
         self._capture_requests = queue.Queue()
         self._capture_pending_path: Optional[Path] = None
@@ -11786,6 +14380,32 @@ class LiveViewWorker(QObject):
         self._diritem_queue = queue.Queue()
         self._obj_cb: Optional[OBJECT_EVENT_HANDLER] = None
         self._user32 = None
+        self._external_latest_camera_key: Optional[str] = None
+        self._external_poll_interval_sec = 1.5
+        self._external_next_poll_at = 0.0
+        self._external_poll_suppress_sec = 2.5
+        try:
+            poll_interval = float(
+                os.environ.get(
+                    "KIOSK_REMOTE_POLL_INTERVAL_SEC",
+                    str(self._external_poll_interval_sec),
+                )
+                or self._external_poll_interval_sec
+            )
+            self._external_poll_interval_sec = max(0.4, min(5.0, poll_interval))
+        except Exception:
+            self._external_poll_interval_sec = 1.5
+        try:
+            suppress_sec = float(
+                os.environ.get(
+                    "KIOSK_REMOTE_POLL_SUPPRESS_SEC",
+                    str(self._external_poll_suppress_sec),
+                )
+                or self._external_poll_suppress_sec
+            )
+            self._external_poll_suppress_sec = max(0.0, min(10.0, suppress_sec))
+        except Exception:
+            self._external_poll_suppress_sec = 2.5
 
     def stop(self) -> None:
         self._running = False
@@ -11930,10 +14550,15 @@ class LiveViewWorker(QObject):
             ctypes.sizeof(current_output),
             ctypes.byref(current_output),
         )
+        preferred_output_mask = K_EDS_EVF_OUTPUT_DEVICE_PC
+        if self.allow_external_capture:
+            # Remote mode works better when the body LCD remains active.
+            preferred_output_mask |= K_EDS_EVF_OUTPUT_DEVICE_TFT
         if err_get == EDS_ERR_OK:
-            target_output = ctypes.c_uint32(current_output.value | K_EDS_EVF_OUTPUT_DEVICE_PC)
+            target_output = ctypes.c_uint32(current_output.value | preferred_output_mask)
         else:
-            target_output = ctypes.c_uint32(K_EDS_EVF_OUTPUT_DEVICE_PC)
+            target_output = ctypes.c_uint32(preferred_output_mask)
+        output_desc = "PC|TFT" if (preferred_output_mask & K_EDS_EVF_OUTPUT_DEVICE_TFT) else "PC"
         self._ensure_ok(
             sdk.EdsSetPropertyData(
                 camera,
@@ -11942,31 +14567,97 @@ class LiveViewWorker(QObject):
                 ctypes.sizeof(target_output),
                 ctypes.byref(target_output),
             ),
-            "EdsSetPropertyData(Evf_OutputDevice=PC)",
+            f"EdsSetPropertyData(Evf_OutputDevice={output_desc})",
+        )
+        print(
+            f"[CAMERA] EVF output current={_hex_err(int(current_output.value))} "
+            f"target={_hex_err(int(target_output.value))} mode={output_desc}"
         )
 
-    def _configure_save_to_host(self, sdk, camera: ctypes.c_void_p) -> None:
-        save_to = ctypes.c_uint32(K_EDS_SAVE_TO_HOST)
-        err_host = sdk.EdsSetPropertyData(
-            camera,
-            K_EDS_PROP_ID_SAVE_TO,
-            0,
-            ctypes.sizeof(save_to),
-            ctypes.byref(save_to),
+    def _camera_storage_available(self, sdk, camera: ctypes.c_void_p) -> bool:
+        if not camera or not camera.value:
+            return False
+        child_count = ctypes.c_uint32(0)
+        try:
+            err_count = int(sdk.EdsGetChildCount(camera, ctypes.byref(child_count)))
+        except Exception as exc:
+            print(f"[CAMERA] storage probe failed: {exc}")
+            return False
+        available = err_count == EDS_ERR_OK and int(child_count.value) > 0
+        print(
+            f"[CAMERA] storage probe err={_hex_err(err_count)} "
+            f"children={int(child_count.value)} available={int(available)}"
         )
-        print(f"[CAMERA] SaveTo Host: 0x{int(err_host):08X}")
-        if err_host != EDS_ERR_OK:
-            save_to = ctypes.c_uint32(K_EDS_SAVE_TO_BOTH)
-            self._ensure_ok(
-                sdk.EdsSetPropertyData(
-                    camera,
-                    K_EDS_PROP_ID_SAVE_TO,
-                    0,
-                    ctypes.sizeof(save_to),
-                    ctypes.byref(save_to),
-                ),
-                "EdsSetPropertyData(SaveTo=Both)",
+        return available
+
+    def _configure_save_to_host(self, sdk, camera: ctypes.c_void_p) -> None:
+        prefer_remote_save = bool(self.allow_external_capture)
+        has_camera_storage = False
+        if prefer_remote_save:
+            has_camera_storage = self._camera_storage_available(sdk, camera)
+        if prefer_remote_save:
+            # External shutter detection is most reliable when the body writes to camera media.
+            # Some Canon bodies report storage inconsistently, so still try camera-backed targets
+            # before falling back to Host-only transfer.
+            save_targets = (
+                (K_EDS_SAVE_TO_BOTH, "Both"),
+                (K_EDS_SAVE_TO_CAMERA, "Camera"),
+                (K_EDS_SAVE_TO_HOST, "Host"),
             )
+        else:
+            save_targets = (
+                (K_EDS_SAVE_TO_HOST, "Host"),
+                (K_EDS_SAVE_TO_BOTH, "Both"),
+            )
+        if prefer_remote_save:
+            order = ">".join(label for _, label in save_targets)
+            print(
+                f"[CAMERA] remote mode save strategy storage={int(has_camera_storage)} "
+                f"order={order}"
+            )
+            if not has_camera_storage:
+                print(
+                    "[CAMERA] remote mode storage probe unavailable -> "
+                    "trying camera-backed SaveTo before Host fallback"
+                )
+        last_err = EDS_ERR_OK
+        active_label = ""
+        for save_value, label in save_targets:
+            save_to = ctypes.c_uint32(save_value)
+            err_save_to = sdk.EdsSetPropertyData(
+                camera,
+                K_EDS_PROP_ID_SAVE_TO,
+                0,
+                ctypes.sizeof(save_to),
+                ctypes.byref(save_to),
+            )
+            print(f"[CAMERA] SaveTo {label}: 0x{int(err_save_to):08X}")
+            last_err = int(err_save_to)
+            if last_err == EDS_ERR_OK:
+                active_label = label
+                break
+        else:
+            stage = (
+                "EdsSetPropertyData(SaveTo=Camera/Both)"
+                if prefer_remote_save
+                else "EdsSetPropertyData(SaveTo=Host)"
+            )
+            self._ensure_ok(last_err, stage)
+
+        if prefer_remote_save:
+            if active_label == "Host":
+                print(
+                    "[CAMERA] remote mode save target fallback: Host "
+                    "(local remote trigger may not be detectable on some bodies)"
+                )
+            elif active_label == "Camera":
+                print(
+                    "[CAMERA] remote mode save target fallback: Camera "
+                    "(remote trigger will rely on on-camera storage polling)"
+                )
+            else:
+                print(f"[CAMERA] remote mode save target active: {active_label}")
+        elif active_label == "Both":
             print("[CAMERA] SaveTo fallback: Both")
 
         save_to_current = ctypes.c_uint32(0)
@@ -11980,7 +14671,7 @@ class LiveViewWorker(QObject):
         if err_current == EDS_ERR_OK:
             print(
                 f"[CAMERA] SaveTo current={save_to_current.value} "
-                "(2=Host,3=Both)"
+                "(1=Camera,2=Host,3=Both)"
             )
         else:
             print(f"[CAMERA] SaveTo current read failed: {_hex_err(int(err_current))}")
@@ -12011,6 +14702,26 @@ class LiveViewWorker(QObject):
         err_info = sdk.EdsGetDirectoryItemInfo(dir_item, ctypes.byref(info))
         if err_info != EDS_ERR_OK:
             return EDS_ERR_OK
+        name = self._decode_eds_filename(info.szFileName)
+        if self.allow_external_capture and self._capture_pending_path is None:
+            if not self._is_external_capture_filename(name):
+                print(
+                    "[CAMERA] external capture object event ignored "
+                    f"event=0x{int(event):08X} name={name or '-'}"
+                )
+                return EDS_ERR_OK
+            if int(event) != K_EDS_OBJECT_EVENT_DIR_ITEM_REQUEST_TRANSFER:
+                print(
+                    "[CAMERA] external capture non-transfer event deferred to polling "
+                    f"event=0x{int(event):08X} name={name or '-'}"
+                )
+                return EDS_ERR_OK
+            if self._is_duplicate_external_camera_item(info, name):
+                print(
+                    "[CAMERA] external capture object duplicate ignored "
+                    f"event=0x{int(event):08X} name={name or '-'}"
+                )
+                return EDS_ERR_OK
 
         err_retain = sdk.EdsRetain(dir_item)
         retained = err_retain == EDS_ERR_OK
@@ -12018,17 +14729,33 @@ class LiveViewWorker(QObject):
             print(f"[CAMERA] retain dir item failed: {_hex_err(int(err_retain))}")
             # Do not keep unretained refs for later; they can become invalid and crash on shutdown.
             target_path = self._capture_pending_path
+            is_external = False
+            if target_path is None:
+                target_path = self._prepare_external_capture_path()
+                is_external = target_path is not None
             if target_path is not None:
                 try:
                     self._download_dir_item(sdk, dir_item, target_path)
                 except Exception as exc:
-                    self._capture_pending_path = None
-                    self._capture_deadline = 0.0
-                    self.capture_failure.emit(str(exc))
+                    if is_external:
+                        print(f"[CAMERA] external capture download failed: {exc}")
+                    else:
+                        self._capture_pending_path = None
+                        self._capture_deadline = 0.0
+                        self.capture_failure.emit(str(exc))
                 else:
-                    self._capture_pending_path = None
-                    self._capture_deadline = 0.0
-                    self.capture_success.emit(str(target_path))
+                    if is_external:
+                        self._mark_external_item_seen(info, name)
+                        self._suppress_external_poll("event_download")
+                        print(f"[CAMERA] external capture saved: {target_path}")
+                        self.remote_capture_success.emit(str(target_path))
+                    else:
+                        if self.allow_external_capture and err_info == EDS_ERR_OK:
+                            self._mark_external_item_seen(info, name)
+                            self._suppress_external_poll("capture_download")
+                        self._capture_pending_path = None
+                        self._capture_deadline = 0.0
+                        self.capture_success.emit(str(target_path))
             return EDS_ERR_OK
         self._diritem_queue.put((dir_item, True))
         return EDS_ERR_OK
@@ -12059,6 +14786,235 @@ class LiveViewWorker(QObject):
             finally:
                 if retained:
                     self._release_ref(sdk, dir_item)
+
+    def _prepare_external_capture_path(self) -> Optional[Path]:
+        if not self.allow_external_capture:
+            return None
+        target_dir = self.external_capture_dir
+        if target_dir is None:
+            return None
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            print(f"[CAMERA] external capture dir prepare failed: {exc}")
+            return None
+        return target_dir / f"remote_{time.time_ns()}.jpg"
+
+    def _suppress_external_poll(self, reason: str = "") -> None:
+        seconds = max(0.0, float(getattr(self, "_external_poll_suppress_sec", 0.0) or 0.0))
+        if seconds <= 0.0:
+            return
+        until_ts = time.perf_counter() + seconds
+        if until_ts > float(self._external_next_poll_at):
+            self._external_next_poll_at = until_ts
+        if reason:
+            print(f"[CAMERA] external poll suppressed {seconds:.2f}s reason={reason}")
+
+    @staticmethod
+    def _decode_eds_filename(raw_name) -> str:
+        try:
+            raw_bytes = bytes(raw_name)
+        except Exception:
+            return ""
+        raw_bytes = raw_bytes.split(b"\x00", 1)[0]
+        if not raw_bytes:
+            return ""
+        for encoding in ("utf-8", "mbcs", "latin-1"):
+            try:
+                return raw_bytes.decode(encoding).strip()
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _is_external_capture_filename(name: str) -> bool:
+        return Path(name or "").suffix.lower() in {".jpg", ".jpeg", ".jpe"}
+
+    def _build_external_camera_key(
+        self,
+        info: EdsDirectoryItemInfo,
+        name: Optional[str] = None,
+    ) -> str:
+        filename = (name or self._decode_eds_filename(info.szFileName) or "").strip()
+        return f"{int(info.groupID)}|{int(info.dateTime)}|{filename.lower()}"
+
+    def _is_duplicate_external_camera_item(
+        self,
+        info: EdsDirectoryItemInfo,
+        name: Optional[str] = None,
+    ) -> bool:
+        key = str(self._build_external_camera_key(info, name) or "").strip()
+        if not key:
+            return False
+        if key != str(self._external_latest_camera_key or "").strip():
+            return False
+        print(f"[CAMERA] external capture duplicate ignored key={key}")
+        return True
+
+    def _mark_external_item_seen(
+        self,
+        info: EdsDirectoryItemInfo,
+        name: Optional[str] = None,
+    ) -> None:
+        self._external_latest_camera_key = self._build_external_camera_key(info, name)
+
+    @staticmethod
+    def _external_candidate_sort_key(info: EdsDirectoryItemInfo, name: str) -> tuple[int, int, int, str]:
+        return (
+            int(getattr(info, "dateTime", 0) or 0),
+            int(getattr(info, "groupID", 0) or 0),
+            int(getattr(info, "size", 0) or 0),
+            (name or "").strip().lower(),
+        )
+
+    def _find_latest_external_camera_item(
+        self,
+        sdk,
+        parent_ref: ctypes.c_void_p,
+        path_prefix: str = "",
+        depth: int = 0,
+    ) -> Optional[dict]:
+        if depth > 8 or not parent_ref or not parent_ref.value:
+            return None
+
+        child_count = ctypes.c_uint32(0)
+        try:
+            err_count = int(sdk.EdsGetChildCount(parent_ref, ctypes.byref(child_count)))
+        except Exception:
+            return None
+        if err_count != EDS_ERR_OK or int(child_count.value) <= 0:
+            return None
+
+        best_candidate: Optional[dict] = None
+
+        for idx in range(int(child_count.value)):
+            child_ref = ctypes.c_void_p()
+            try:
+                err_child = int(sdk.EdsGetChildAtIndex(parent_ref, idx, ctypes.byref(child_ref)))
+            except Exception:
+                continue
+            if err_child != EDS_ERR_OK or not child_ref.value:
+                continue
+
+            keep_child = False
+            try:
+                info = EdsDirectoryItemInfo()
+                try:
+                    err_info = int(sdk.EdsGetDirectoryItemInfo(child_ref, ctypes.byref(info)))
+                except Exception:
+                    err_info = -1
+
+                if err_info == EDS_ERR_OK:
+                    name = self._decode_eds_filename(info.szFileName)
+                    display_path = (
+                        f"{path_prefix}/{name}" if path_prefix and name else (name or path_prefix)
+                    )
+                    if bool(info.isFolder):
+                        candidate = self._find_latest_external_camera_item(
+                            sdk,
+                            child_ref,
+                            display_path,
+                            depth + 1,
+                        )
+                        if candidate is not None:
+                            candidate_key = tuple(candidate.get("sort_key") or ())
+                            best_key = tuple(best_candidate.get("sort_key") or ()) if best_candidate else ()
+                            if best_candidate is None or candidate_key > best_key:
+                                stale_ref = best_candidate.get("ref") if best_candidate else None
+                                if isinstance(stale_ref, ctypes.c_void_p):
+                                    self._release_ref(sdk, stale_ref)
+                                best_candidate = candidate
+                    elif self._is_external_capture_filename(name):
+                        keep_child = True
+                        candidate = {
+                            "ref": child_ref,
+                            "info": info,
+                            "key": self._build_external_camera_key(info, name),
+                            "display_path": display_path or name,
+                            "sort_key": self._external_candidate_sort_key(info, name),
+                        }
+                        candidate_key = tuple(candidate.get("sort_key") or ())
+                        best_key = tuple(best_candidate.get("sort_key") or ()) if best_candidate else ()
+                        if best_candidate is None or candidate_key > best_key:
+                            stale_ref = best_candidate.get("ref") if best_candidate else None
+                            if isinstance(stale_ref, ctypes.c_void_p):
+                                self._release_ref(sdk, stale_ref)
+                            best_candidate = candidate
+                        else:
+                            keep_child = False
+                else:
+                    candidate = self._find_latest_external_camera_item(
+                        sdk,
+                        child_ref,
+                        path_prefix,
+                        depth + 1,
+                    )
+                    if candidate is not None:
+                        candidate_key = tuple(candidate.get("sort_key") or ())
+                        best_key = tuple(best_candidate.get("sort_key") or ()) if best_candidate else ()
+                        if best_candidate is None or candidate_key > best_key:
+                            stale_ref = best_candidate.get("ref") if best_candidate else None
+                            if isinstance(stale_ref, ctypes.c_void_p):
+                                self._release_ref(sdk, stale_ref)
+                            best_candidate = candidate
+            finally:
+                if not keep_child:
+                    self._release_ref(sdk, child_ref)
+        return best_candidate
+
+    def _prime_external_capture_reference(self, sdk, camera: ctypes.c_void_p) -> None:
+        if not self.allow_external_capture:
+            return
+        candidate = self._find_latest_external_camera_item(sdk, camera)
+        if candidate is None:
+            self._external_latest_camera_key = None
+            print("[CAMERA] external capture baseline ready: empty")
+            return
+        try:
+            self._external_latest_camera_key = str(candidate.get("key") or "").strip() or None
+            print(
+                "[CAMERA] external capture baseline ready: "
+                f"{candidate.get('display_path', '-')}"
+            )
+        finally:
+            ref = candidate.get("ref")
+            if isinstance(ref, ctypes.c_void_p):
+                self._release_ref(sdk, ref)
+
+    def _poll_external_capture(self, sdk, camera: ctypes.c_void_p) -> None:
+        if not self.allow_external_capture or self._capture_pending_path is not None:
+            return
+        now = time.perf_counter()
+        if now < self._external_next_poll_at:
+            return
+        self._external_next_poll_at = now + float(self._external_poll_interval_sec)
+
+        candidate = self._find_latest_external_camera_item(sdk, camera)
+        if candidate is None:
+            return
+
+        ref = candidate.get("ref")
+        try:
+            latest_key = str(candidate.get("key") or "").strip()
+            if latest_key and latest_key == (self._external_latest_camera_key or ""):
+                return
+            target_path = self._prepare_external_capture_path()
+            if target_path is None:
+                return
+            self._download_dir_item(sdk, ref, target_path)
+            info = candidate.get("info")
+            if isinstance(info, EdsDirectoryItemInfo):
+                self._mark_external_item_seen(info)
+            print(
+                "[CAMERA] external capture poll saved: "
+                f"{candidate.get('display_path', target_path.name)}"
+            )
+            self.remote_capture_success.emit(str(target_path))
+        except Exception as exc:
+            print(f"[CAMERA] external capture poll failed: {exc}")
+        finally:
+            if isinstance(ref, ctypes.c_void_p):
+                self._release_ref(sdk, ref)
 
     def _download_dir_item(self, sdk, dir_item: ctypes.c_void_p, out_path: Path) -> None:
         info = EdsDirectoryItemInfo()
@@ -12107,6 +15063,37 @@ class LiveViewWorker(QObject):
             try:
                 target_path = self._capture_pending_path
                 if target_path is None:
+                    external_target = self._prepare_external_capture_path()
+                    if external_target is not None:
+                        info = EdsDirectoryItemInfo()
+                        err_info = int(
+                            sdk.EdsGetDirectoryItemInfo(dir_item, ctypes.byref(info))
+                        )
+                        name = self._decode_eds_filename(info.szFileName) if err_info == EDS_ERR_OK else ""
+                        if err_info == EDS_ERR_OK:
+                            if not self._is_external_capture_filename(name):
+                                print(
+                                    "[CAMERA] external capture queue ignored "
+                                    f"name={name or '-'}"
+                                )
+                                continue
+                            if self._is_duplicate_external_camera_item(info, name):
+                                print(
+                                    "[CAMERA] external capture queue duplicate ignored "
+                                    f"name={name or '-'}"
+                                )
+                                continue
+                        try:
+                            self._download_dir_item(sdk, dir_item, external_target)
+                        except Exception as exc:
+                            print(f"[CAMERA] external capture download failed: {exc}")
+                        else:
+                            if err_info == EDS_ERR_OK:
+                                self._mark_external_item_seen(info, name)
+                            self._suppress_external_poll("queue_download")
+                            print(f"[CAMERA] external capture saved: {external_target}")
+                            self.remote_capture_success.emit(str(external_target))
+                        continue
                     if retained:
                         err_cancel = sdk.EdsDownloadCancel(dir_item)
                         print(
@@ -12133,6 +15120,9 @@ class LiveViewWorker(QObject):
                     self._capture_takepicture_fallback_deadline = 0.0
                     self.capture_failure.emit(str(exc))
                 else:
+                    if self.allow_external_capture and err_info == EDS_ERR_OK:
+                        self._mark_external_item_seen(info, name)
+                        self._suppress_external_poll("capture_download")
                     self._capture_pending_path = None
                     self._capture_deadline = 0.0
                     self._capture_takepicture_fallback_sent = False
@@ -12354,6 +15344,7 @@ class LiveViewWorker(QObject):
             )
             print(f"[CAMERA] SetObjectEventHandler result: {_hex_err(int(err_obj_handler))}")
             self._ensure_ok(err_obj_handler, "EdsSetObjectEventHandler")
+            self._prime_external_capture_reference(sdk, camera)
 
             self._set_liveview_output_to_pc(sdk, camera)
             self._ensure_ok(
@@ -12366,6 +15357,7 @@ class LiveViewWorker(QObject):
                 sdk.EdsGetEvent()
                 self._pump_win_messages()
                 self._process_diritem_queue(sdk)
+                self._poll_external_capture(sdk, camera)
                 self._start_next_capture_if_any(sdk, camera)
                 self._check_capture_timeout(sdk, camera)
 
@@ -12911,6 +15903,7 @@ class CameraScreen(ImageScreen):
         "4661": (300, 140, 620, 760),
         "4681": (430, 140, 1060, 800),
     }
+    FIRST_SHOT_WARMUP_MS = 1200
 
     def __init__(
         self,
@@ -12946,9 +15939,25 @@ class CameraScreen(ImageScreen):
         self._capture_target_path: Optional[Path] = None
         self._pending_dummy_fallback_reason: Optional[str] = None
         self._pending_restart_after_liveview_stop = False
+        self._terminate_sdk_after_stop = False
         self._capture_timeout_streak = 0
         self._shutter_locked = False
         self._auto_next_pending = False
+        self._first_shot_ready_deadline = 0.0
+        self._first_shot_warmup_ms = self.FIRST_SHOT_WARMUP_MS
+        try:
+            warmup_ms = int(
+                float(
+                    os.environ.get(
+                        "KIOSK_CAMERA_FIRST_SHOT_WARMUP_MS",
+                        str(self.FIRST_SHOT_WARMUP_MS),
+                    )
+                    or self.FIRST_SHOT_WARMUP_MS
+                )
+            )
+            self._first_shot_warmup_ms = max(0, min(5000, warmup_ms))
+        except Exception:
+            self._first_shot_warmup_ms = self.FIRST_SHOT_WARMUP_MS
         self.auto_mode = True
         self.auto_wait_frame = True
         self.countdown_running = False
@@ -12961,6 +15970,8 @@ class CameraScreen(ImageScreen):
         self._countdown_timer.timeout.connect(self._on_countdown_tick)
         self._countdown_value = 0
         self._countdown_active = False
+        self._countdown_mode = "idle"
+        self._remote_capture_armed = False
         self._retry_overlay_active = False
         self._retry_overlay_timer = QTimer(self)
         self._retry_overlay_timer.setSingleShot(True)
@@ -12973,6 +15984,14 @@ class CameraScreen(ImageScreen):
         self._countdown_label.setGeometry(self.rect())
         self._countdown_label.setAttribute(WA_TRANSPARENT, True)
         self._countdown_label.hide()
+        self._remote_counter_label = QLabel("", self)
+        self._remote_counter_label.setAlignment(ALIGN_CENTER)
+        self._remote_counter_label.setStyleSheet(
+            "color: white; background-color: rgba(0, 0, 0, 110); "
+            "font-size: 88px; font-weight: 700; border-radius: 18px; padding: 8px 28px;"
+        )
+        self._remote_counter_label.setAttribute(WA_TRANSPARENT, True)
+        self._remote_counter_label.hide()
         self._retry_overlay_label = QLabel("", self)
         self._retry_overlay_label.setAlignment(ALIGN_CENTER)
         self._retry_overlay_label.setStyleSheet(
@@ -13013,21 +16032,40 @@ class CameraScreen(ImageScreen):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._deferred_stop_timer.stop()
-        self.auto_mode = True
+        self._terminate_sdk_after_stop = False
+        self._first_shot_ready_deadline = 0.0
+        self._countdown_mode = "idle"
+        self._remote_capture_armed = False
+        remote_capture_mode = self._remote_capture_mode_enabled()
+        self.auto_mode = not remote_capture_mode
         self.auto_wait_frame = True
         self.countdown_running = False
         self.capture_inflight = False
-        print("[CAMERA] auto_mode enabled")
+        self._refresh_remote_capture_counter()
+        if remote_capture_mode:
+            print("[CAMERA] canon remote capture mode enabled")
+        else:
+            print("[CAMERA] auto_mode enabled")
+        if self._liveview_thread is not None and self._liveview_thread.isRunning():
+            print("[CAMERA] stale liveview thread detected on show -> restart after stop")
+            self._pending_restart_after_liveview_stop = True
+            self._stop_liveview_worker(wait=False)
+            self.setFocus()
+            return
         self._start_liveview_worker()
         self.setFocus()
 
     def hideEvent(self, event):  # noqa: N802
         immediate_stop = bool(self.capture_inflight)
+        self._terminate_sdk_after_stop = True
+        self._first_shot_ready_deadline = 0.0
+        self._remote_capture_armed = False
         self.auto_mode = False
         self.auto_wait_frame = False
         self.countdown_running = False
         self.capture_inflight = False
         self.cancel_countdown()
+        self._remote_counter_label.hide()
         self._clear_gif_burst_timers()
         self._retry_overlay_timer.stop()
         self._hide_retry_overlay()
@@ -13042,27 +16080,155 @@ class CameraScreen(ImageScreen):
         else:
             # Avoid immediate SDK teardown right after capture completion.
             self._deferred_stop_timer.start(900)
+        if self._liveview_worker is None and self._liveview_thread is None:
+            self._cleanup_edsdk_after_hide()
         super().hideEvent(event)
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._countdown_label.setGeometry(self.rect())
+        counter_w = min(420, max(260, int(self.width() * 0.24)))
+        counter_h = 132
+        counter_x = (self.width() - counter_w) // 2
+        self._remote_counter_label.setGeometry(counter_x, 34, counter_w, counter_h)
         self._retry_overlay_label.setGeometry(self.rect())
         self._camera_error_label.setGeometry(self.rect())
 
+    def _remote_capture_mode_enabled(self) -> bool:
+        if not hasattr(self.main_window, "allow_canon_remote_capture"):
+            return False
+        try:
+            return bool(self.main_window.allow_canon_remote_capture())
+        except Exception:
+            return False
+
+    def _refresh_remote_capture_counter(self) -> None:
+        if not self._remote_capture_mode_enabled():
+            self._remote_counter_label.hide()
+            return
+        if self._countdown_active:
+            self._remote_counter_label.hide()
+            return
+        if not self.isVisible():
+            self._remote_counter_label.hide()
+            return
+        if self.capture_slots <= 0:
+            self._remote_counter_label.hide()
+            return
+        current_index = min(len(self.shot_paths) + 1, self.capture_slots)
+        if len(self.shot_paths) >= self.capture_slots:
+            self._remote_counter_label.hide()
+            return
+        self._remote_counter_label.setText(f"{current_index} / {self.capture_slots}")
+        self._remote_counter_label.show()
+        self._remote_counter_label.raise_()
+        print(f"[CAMERA] remote counter ready shot_index={current_index}/{self.capture_slots}")
+
     def mousePressEvent(self, event: QMouseEvent):  # noqa: N802
         if event.button() == LEFT_BUTTON:
+            self.setFocus()
             pos = _event_pos(event)
             x, y = self.widget_to_design(pos.x(), pos.y())
             print(f"[CAMERA_CLICK] x={x} y={y}")
         super().mousePressEvent(event)
 
+    def keyPressEvent(self, event):  # noqa: N802
+        key = event.key()
+        if key == KEY_SPACE:
+            print("[CAMERA] shutter requested (camera-screen key)")
+            self.request_shutter()
+            event.accept()
+            return
+        if key == KEY_BACKSPACE:
+            print("[CAMERA] undo requested (camera-screen key)")
+            self.undo_last_shot()
+            event.accept()
+            return
+        if key in (KEY_ENTER, KEY_RETURN):
+            print("[CAMERA] select_photo requested (camera-screen key)")
+            self.main_window.enter_select_photo_from_camera()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def cancel_countdown(self) -> None:
+        if self._countdown_mode == "remote_window":
+            self._remote_capture_armed = False
         self._countdown_timer.stop()
         self._countdown_value = 0
         self._countdown_active = False
         self.countdown_running = False
+        self._countdown_mode = "idle"
         self._countdown_label.hide()
+        self._refresh_remote_capture_counter()
+
+    def _resolve_countdown_seconds(self) -> int:
+        countdown_seconds = 3
+        if hasattr(self.main_window, "get_countdown_seconds"):
+            countdown_seconds = int(self.main_window.get_countdown_seconds())
+        return max(0, min(10, countdown_seconds))
+
+    def _start_remote_ready_countdown(self) -> None:
+        if not self._remote_capture_mode_enabled():
+            return
+        if not self.isVisible():
+            return
+        if self.capture_slots > 0 and len(self.shot_paths) >= self.capture_slots:
+            self._remote_capture_armed = False
+            self._refresh_remote_capture_counter()
+            return
+        countdown_seconds = self._resolve_countdown_seconds()
+        self._remote_capture_armed = True
+        if countdown_seconds <= 0:
+            self._countdown_active = False
+            self.countdown_running = False
+            self._countdown_mode = "idle"
+            self._countdown_label.hide()
+            print(
+                "[CAMERA] remote countdown skipped: auto capture immediately "
+                f"shot_index={len(self.shot_paths) + 1}/{self.capture_slots}"
+            )
+            self._remote_capture_armed = False
+            self._trigger_remote_fallback_capture()
+            return
+        self._countdown_active = True
+        self.countdown_running = True
+        self._countdown_mode = "remote_window"
+        self._countdown_value = countdown_seconds
+        self._countdown_label.setText(str(self._countdown_value))
+        self._countdown_label.show()
+        self._countdown_label.raise_()
+        self._refresh_remote_capture_counter()
+        print(
+            "[CAMERA] remote countdown start: "
+            f"{countdown_seconds} shot_index={len(self.shot_paths) + 1}/{self.capture_slots}"
+        )
+        self._countdown_timer.start()
+
+    def _trigger_remote_fallback_capture(self) -> None:
+        if not self._remote_capture_mode_enabled():
+            return
+        if not self.isVisible():
+            return
+        if not self.layout_id:
+            print("[CAMERA] remote auto capture blocked: layout_id missing")
+            return
+        if self.capture_slots > 0 and len(self.shot_paths) >= self.capture_slots:
+            print(
+                f"[CAMERA] remote auto capture blocked: full ({len(self.shot_paths)}/{self.capture_slots})"
+            )
+            return
+        if self._shutter_locked:
+            print("[CAMERA] remote auto capture blocked: capture in progress")
+            return
+        next_shot_index = len(self.shot_paths) + 1
+        self._start_gif_burst_capture(next_shot_index)
+        self.capture_inflight = True
+        print(
+            "[CAMERA] remote countdown elapsed -> auto capture "
+            f"shot_index={next_shot_index}/{self.capture_slots}"
+        )
+        self.trigger_shutter()
 
     def _auto_shoot_step(self) -> None:
         if not self.auto_mode:
@@ -13075,6 +16241,13 @@ class CameraScreen(ImageScreen):
             return
         if self.capture_slots > 0 and len(self.shot_paths) >= self.capture_slots:
             return
+        if len(self.shot_paths) == 0:
+            now = time.perf_counter()
+            if now < self._first_shot_ready_deadline:
+                remaining_ms = int(max(100, round((self._first_shot_ready_deadline - now) * 1000)))
+                print(f"[CAMERA] first-shot warmup pending -> retry in {remaining_ms}ms")
+                QTimer.singleShot(remaining_ms, self._auto_shoot_step)
+                return
         shot_index = len(self.shot_paths) + 1
         print(f"[CAMERA] auto trigger shot_index={shot_index}")
         self.request_shutter()
@@ -13114,8 +16287,11 @@ class CameraScreen(ImageScreen):
             gif_settings = self.main_window.get_gif_settings()
         if not bool(gif_settings.get("enabled", True)):
             return
-        frames_per_shot = max(1, int(gif_settings.get("frames_per_shot", 3)))
-        interval_ms = max(50, int(gif_settings.get("interval_ms", 200)))
+        frames_per_shot = max(
+            1,
+            int(gif_settings.get("frames_per_shot", DEFAULT_GIF_SETTINGS["frames_per_shot"])),
+        )
+        interval_ms = max(50, int(gif_settings.get("interval_ms", DEFAULT_GIF_SETTINGS["interval_ms"])))
         for frame_idx in range(frames_per_shot):
             timer = QTimer(self)
             timer.setSingleShot(True)
@@ -13415,10 +16591,7 @@ class CameraScreen(ImageScreen):
         next_shot_index = len(self.shot_paths) + 1
         self._start_gif_burst_capture(next_shot_index)
 
-        countdown_seconds = 3
-        if hasattr(self.main_window, "get_countdown_seconds"):
-            countdown_seconds = int(self.main_window.get_countdown_seconds())
-        countdown_seconds = max(0, min(10, countdown_seconds))
+        countdown_seconds = self._resolve_countdown_seconds()
         print(f"[CAMERA] countdown_seconds={countdown_seconds}")
         if countdown_seconds <= 0:
             print("[CAMERA] countdown skipped: 0")
@@ -13429,6 +16602,7 @@ class CameraScreen(ImageScreen):
 
         self._countdown_active = True
         self.countdown_running = True
+        self._countdown_mode = "capture"
         self._countdown_value = countdown_seconds
         self._countdown_label.setText(str(self._countdown_value))
         self._countdown_label.show()
@@ -13440,6 +16614,7 @@ class CameraScreen(ImageScreen):
         if not self._countdown_active:
             self._countdown_timer.stop()
             self.countdown_running = False
+            self._countdown_mode = "idle"
             return
 
         self._countdown_value -= 1
@@ -13454,6 +16629,12 @@ class CameraScreen(ImageScreen):
         self._countdown_active = False
         self.countdown_running = False
         self._countdown_label.hide()
+        mode = str(self._countdown_mode or "idle").strip().lower()
+        self._countdown_mode = "idle"
+        if mode == "remote_window":
+            self._remote_capture_armed = False
+            self._trigger_remote_fallback_capture()
+            return
         self.capture_inflight = True
         self.trigger_shutter()
 
@@ -13464,6 +16645,8 @@ class CameraScreen(ImageScreen):
         worker.frame.connect(self._on_liveview_frame)
         worker.fps.connect(self._on_liveview_fps)
         worker.capture_success.connect(self._on_capture_success)
+        if hasattr(worker, "remote_capture_success"):
+            worker.remote_capture_success.connect(self._on_remote_capture_success)
         worker.capture_failure.connect(self._on_capture_failure)
         worker.error.connect(self._on_liveview_error)
         worker.stopped.connect(thread.quit)
@@ -13474,8 +16657,10 @@ class CameraScreen(ImageScreen):
         self._liveview_worker = worker
         self._liveview_thread = thread
         self._liveview_running = True
+        self._terminate_sdk_after_stop = False
         self._pending_restart_after_liveview_stop = False
         self._liveview_frame_received = False
+        self._first_shot_ready_deadline = 0.0
         self._clear_camera_connection_error()
         self._log_backend(backend, reason)
         print(f"[CAMERA] liveview worker start backend={backend}")
@@ -13523,6 +16708,10 @@ class CameraScreen(ImageScreen):
                 self.liveview_dll_path,
                 retries=200,
                 capture_timeout_ms=capture_timeout_ms,
+                allow_external_capture=bool(
+                    getattr(self.main_window, "allow_canon_remote_capture", lambda: False)()
+                ),
+                external_capture_dir=self._runtime_sessions_dir / "_remote_capture_buffer",
             ),
             "edsdk",
             f"requested_{requested}",
@@ -13550,6 +16739,8 @@ class CameraScreen(ImageScreen):
         else:
             # Some SDK streams report oversized buffers (~8MB). Keep a compact copy only.
             self._last_liveview_jpeg = None
+        if DEFAULT_DESIGN_FLIP_HORIZONTAL:
+            image = image.mirrored(True, False)
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
             return
@@ -13563,9 +16754,22 @@ class CameraScreen(ImageScreen):
         self._liveview_pixmap = pixmap
         self.update()
         if self.auto_mode and self.auto_wait_frame:
+            delay_ms = 300
+            if self._first_shot_warmup_ms > 0 and len(self.shot_paths) == 0:
+                self._first_shot_ready_deadline = (
+                    time.perf_counter() + (self._first_shot_warmup_ms / 1000.0)
+                )
+                delay_ms = max(delay_ms, self._first_shot_warmup_ms)
             self.auto_wait_frame = False
-            print("[CAMERA] auto first-frame received -> start loop")
-            QTimer.singleShot(300, self._auto_shoot_step)
+            print(f"[CAMERA] auto first-frame received -> start loop in {delay_ms}ms")
+            QTimer.singleShot(delay_ms, self._auto_shoot_step)
+        elif self._remote_capture_mode_enabled() and self.auto_wait_frame:
+            self.auto_wait_frame = False
+            print(
+                "[CAMERA] remote first-frame received -> preparing external trigger "
+                f"shot_index={len(self.shot_paths) + 1}/{self.capture_slots}"
+            )
+            self._start_remote_ready_countdown()
 
     def _on_liveview_fps(self, fps: float) -> None:
         if self._liveview_running:
@@ -13612,6 +16816,8 @@ class CameraScreen(ImageScreen):
             else:
                 self._pending_restart_after_liveview_stop = False
             return
+        if self._terminate_sdk_after_stop and not self.isVisible():
+            self._cleanup_edsdk_after_hide()
         if self._pending_dummy_fallback_reason and self.isVisible():
             reason = self._pending_dummy_fallback_reason
             self._pending_dummy_fallback_reason = None
@@ -13620,6 +16826,18 @@ class CameraScreen(ImageScreen):
                 "fallback_dummy",
                 reason,
             )
+
+    def _cleanup_edsdk_after_hide(self) -> None:
+        if not self._terminate_sdk_after_stop:
+            return
+        self._terminate_sdk_after_stop = False
+        if self._backend_active != "edsdk":
+            return
+        try:
+            print("[CAMERA] hidden cleanup -> terminate edsdk")
+            terminate_edsdk_once()
+        except Exception as exc:
+            print(f"[CAMERA] hidden cleanup terminate failed: {exc}")
 
     def _on_deferred_stop_timeout(self) -> None:
         if self.isVisible():
@@ -13691,8 +16909,11 @@ class CameraScreen(ImageScreen):
             setattr(self.session, "current_shot_index", int(max(1, next_index)))
         self.update()
         print(f"[CAMERA] capture saved: {saved}")
+        self._refresh_remote_capture_counter()
         self._finish_capture_cycle()
         self._schedule_auto_next_if_complete()
+        if self._remote_capture_mode_enabled() and len(self.shot_paths) < self.capture_slots:
+            QTimer.singleShot(250, self._start_remote_ready_countdown)
         self._schedule_auto_continue(600)
 
     def _on_capture_success(self, out_path: str) -> None:
@@ -13710,6 +16931,66 @@ class CameraScreen(ImageScreen):
         except Exception as exc:
             print(f"[CAMERA] capture save normalize failed: {exc}")
         self._finalize_saved_shot(saved, index)
+
+    def _on_remote_capture_success(self, out_path: str) -> None:
+        try:
+            remote_enabled = bool(
+                getattr(self.main_window, "allow_canon_remote_capture", lambda: False)()
+            )
+        except Exception:
+            remote_enabled = False
+        if not remote_enabled:
+            print(f"[CAMERA] external capture ignored (option disabled): {out_path}")
+            return
+        if not self.layout_id:
+            print(f"[CAMERA] external capture ignored (layout missing): {out_path}")
+            return
+        if self.capture_slots <= 0:
+            self.capture_slots = CAPTURE_SLOT_OVERRIDE_BY_LAYOUT.get(
+                self.layout_id,
+                EXPECTED_SLOT_COUNT_BY_LAYOUT.get(self.layout_id, 4),
+            )
+        if len(self.shot_paths) >= self.capture_slots:
+            print(
+                f"[CAMERA] external capture ignored (full {len(self.shot_paths)}/{self.capture_slots}): {out_path}"
+            )
+            return
+
+        source = Path(out_path)
+        if not self._remote_capture_armed:
+            print(
+                "[CAMERA] external capture ignored (remote countdown not ready): "
+                f"{source}"
+            )
+            try:
+                source.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+
+        self._remote_capture_armed = False
+        self.cancel_countdown()
+        self._capture_timeout_streak = 0
+        index = len(self.shot_paths) + 1
+        if self.session is None:
+            self.start_session(self.layout_id, self.design_path)
+        if self.session is None:
+            print(f"[CAMERA] external capture ignored (session missing): {out_path}")
+            return
+
+        self._finish_capture_cycle()
+        saved = source
+        try:
+            saved = self._save_capture_result(source, index)
+        except Exception as exc:
+            print(f"[CAMERA] external capture save normalize failed: {exc}")
+        print(f"[CAMERA] external capture accepted shot_index={index} path={source}")
+        self._finalize_saved_shot(saved, index)
+        if saved != source:
+            try:
+                source.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _on_capture_failure(self, error_message: str) -> None:
         index = self._capture_target_index
@@ -13820,8 +17101,11 @@ class CameraScreen(ImageScreen):
         if hasattr(self.main_window, "get_gif_settings"):
             gif_settings = self.main_window.get_gif_settings()
         if bool(gif_settings.get("enabled", True)):
-            frames_per_shot = max(1, int(gif_settings.get("frames_per_shot", 3)))
-            interval_ms = max(50, int(gif_settings.get("interval_ms", 200)))
+            frames_per_shot = max(
+                1,
+                int(gif_settings.get("frames_per_shot", DEFAULT_GIF_SETTINGS["frames_per_shot"])),
+            )
+            interval_ms = max(50, int(gif_settings.get("interval_ms", DEFAULT_GIF_SETTINGS["interval_ms"])))
             delay_ms = max(delay_ms, (frames_per_shot - 1) * interval_ms + 80)
         print(
             f"[CAMERA] shots complete {self.capture_slots}/{self.capture_slots} "
@@ -14156,6 +17440,8 @@ class CameraScreen(ImageScreen):
         setattr(self.session, "current_shot_index", 1)
         self._auto_next_pending = False
         self._capture_timeout_streak = 0
+        self._countdown_mode = "idle"
+        self._remote_capture_armed = False
         self.auto_wait_frame = True
         self.countdown_running = False
         self.capture_inflight = False
@@ -14166,6 +17452,7 @@ class CameraScreen(ImageScreen):
         self._last_liveview_image = None
         self._last_liveview_jpeg = None
         self.update()
+        self._refresh_remote_capture_counter()
         print(f"[SESSION] created dir={self.session.session_dir} shots_reset=0")
 
     def _load_font(self, size: int) -> ImageFont.ImageFont:
@@ -14707,7 +17994,7 @@ class KioskMainWindow(QMainWindow):
         self.current_design_index: Optional[int] = None
         self.current_design_path: Optional[str] = None
         self.current_design_is_gray: bool = False
-        self.current_design_flip_horizontal: bool = False
+        self.current_design_flip_horizontal: bool = DEFAULT_DESIGN_FLIP_HORIZONTAL
         self.current_design_qr_enabled: bool = True
         self.current_print_path: Optional[str] = None
         self.current_print_job_path: Optional[str] = None
@@ -14721,12 +18008,23 @@ class KioskMainWindow(QMainWindow):
         self.print_slots: int = 0
         self.print_count: int = 2
         self.current_print_count: int = 2
+        self.current_order_id: Optional[str] = None
+        self.current_order_state: str = OrderFlowState.CART.value
+        self._last_remote_action_id: str = ""
+        self._pending_remote_action_payload: dict[str, Any] = {}
+        self._pending_remote_action_ack_id: str = ""
         self.current_payment_method: Optional[str] = None
+        self.current_payment_request_ref: Optional[str] = None
+        self.current_payment_transaction_id: Optional[str] = None
+        self.current_payment_status: Optional[str] = None
         self.current_coupon_code: Optional[str] = None
         self.current_coupon_value: int = 0
         self.current_required_amount: int = 0
         self.current_inserted_amount: int = 0
         self.current_remaining_amount: int = 0
+        self._payment_failure_return_screen: str = "payment_method"
+        self._payment_started_screen_name: str = ""
+        self._payment_deadline_monotonic: float = 0.0
         self.compose_mode: str = "normal"
         self.celebrity_template_dir: Optional[str] = None
         self.celebrity_template_name: Optional[str] = None
@@ -14743,6 +18041,7 @@ class KioskMainWindow(QMainWindow):
         self._after_loading_token: int = 0
         self._after_loading_handled_token: int = -1
         self._after_loading_progress_percent: int = -1
+        self._design_asset_warm_signature: str = ""
         self.design_key_buffer = ""
         self.design_key_timer = QTimer(self)
         self.design_key_timer.setSingleShot(True)
@@ -14753,6 +18052,10 @@ class KioskMainWindow(QMainWindow):
         self._start_admin_tap_timer = QTimer(self)
         self._start_admin_tap_timer.setSingleShot(True)
         self._start_admin_tap_timer.timeout.connect(self._reset_start_admin_taps)
+        self._frame_select_admin_tap_count = 0
+        self._frame_select_admin_tap_timer = QTimer(self)
+        self._frame_select_admin_tap_timer.setSingleShot(True)
+        self._frame_select_admin_tap_timer.timeout.connect(self._reset_frame_select_admin_taps)
         self.session = None
         self.layout_id = None
         self.captured_paths = []
@@ -14768,10 +18071,35 @@ class KioskMainWindow(QMainWindow):
         self._last_ai_runtime_ready: Optional[bool] = None
         self.ui_sound = UiSoundManager(self)
         self._suppress_nav_sound_until: float = 0.0
+        self._printer_list_cache_lock = threading.Lock()
+        self._printer_list_cache_names: list[str] = []
+        self._printer_list_cache_ts = 0.0
+        self._printer_list_cache_error = ""
+        self._printer_list_cache_error_ts = 0.0
+        try:
+            printer_cache_ttl = float(str(os.environ.get("KIOSK_PRINTER_LIST_CACHE_SEC", "10")).strip())
+        except Exception:
+            printer_cache_ttl = 10.0
+        self._printer_list_cache_ttl_sec = max(1.0, min(300.0, printer_cache_ttl))
         self._runtime_out_dir = _resolve_runtime_out_dir()
         self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
         self._ensure_runtime_dirs()
         self._apply_startup_runtime_defaults()
+        self.payment_config_path = _resolve_runtime_payment_config_path()
+        self.payment_settings = self._resolve_payment_settings()
+        payment_log_dir = Path(self.get_runtime_log_file_path()).parent if self.get_runtime_log_file_path() else (_default_runtime_data_dir() / "logs")
+        self.payment_service = PaymentService(
+            self.payment_settings,
+            self._runtime_out_dir / "payments.sqlite3",
+            payment_log_dir,
+        )
+        self._payment_recovery_notice = self._build_payment_recovery_notice()
+        self._payment_event_bridge = PaymentEventBridge(self)
+        self._payment_event_bridge.payment_update.connect(self._on_payment_service_update)
+        self._payment_event_bridge.payment_complete.connect(self._on_payment_service_complete)
+        self._payment_ui_timer = QTimer(self)
+        self._payment_ui_timer.setInterval(250)
+        self._payment_ui_timer.timeout.connect(self._on_payment_ui_tick)
         try:
             print(
                 "[BOOT] runtime config "
@@ -14824,6 +18152,47 @@ class KioskMainWindow(QMainWindow):
         self._film_state_lock = threading.Lock()
         self._film_state_path = self._runtime_out_dir / "film_remaining_state.json"
         self._film_remaining_by_model: dict[str, int] = {}
+        self._dnp_media_probe_lock = threading.Lock()
+        self._dnp_media_probe_cache: dict[str, dict[str, Any]] = {}
+        self._dnp_media_probe_last_port_by_model: dict[str, int] = {}
+        self._dnp_media_probe_script_path = self._runtime_out_dir / "dnp_printerinfo_media_probe.ps1"
+        probe_enabled_raw = str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_ENABLED", "1")).strip().lower()
+        self._dnp_media_probe_enabled = probe_enabled_raw not in {"0", "false", "no", "off"}
+        try:
+            probe_ttl = float(str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_TTL_SEC", "300")).strip())
+        except Exception:
+            probe_ttl = 300.0
+        self._dnp_media_probe_ttl_sec = max(30.0, min(3600.0, probe_ttl))
+        try:
+            probe_timeout = float(str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_TIMEOUT_SEC", "1.5")).strip())
+        except Exception:
+            probe_timeout = 1.5
+        self._dnp_media_probe_timeout_sec = max(0.5, min(10.0, probe_timeout))
+        try:
+            probe_max_index = int(str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_MAX_INDEX", "4")).strip())
+        except Exception:
+            probe_max_index = 4
+        self._dnp_media_probe_max_index = max(0, min(16, probe_max_index))
+        try:
+            probe_max_port = int(str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_MAX_PORT", "8")).strip())
+        except Exception:
+            probe_max_port = 8
+        self._dnp_media_probe_max_port = max(0, min(64, probe_max_port))
+        probe_ports_raw = str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_PORT_HINT", "")).strip()
+        probe_ports: list[int] = []
+        for token in probe_ports_raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                parsed_port = int(token)
+            except Exception:
+                continue
+            if parsed_port < 0:
+                continue
+            if parsed_port not in probe_ports:
+                probe_ports.append(parsed_port)
+        self._dnp_media_probe_ports = probe_ports
         self._active_print_context: dict[str, Any] = {}
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(30000)
@@ -14880,9 +18249,12 @@ class KioskMainWindow(QMainWindow):
             "how_many_prints": AppHowManyPrintsScreen(self),
             "payment_method": AppPaymentMethodScreen(self),
             "pay_cash": PayCashScreen(self),
+            "pay_card": PayCardScreen(self),
             "coupon_input": CouponInputScreen(self),
             "coupon_remaining_method": CouponRemainingMethodScreen(self),
+            "coupon_low": CouponLowScreen(self),
             "pay_cash_remaining": PayCashRemainingScreen(self),
+            "pay_card_remaining": PayCardRemainingScreen(self),
             "payment_complete_success": AppPaymentCompleteSuccessScreen(self),
             "payment_complete_failed": PaymentCompleteScreen(
                 self, "payment_complete_failed", success=False
@@ -14917,6 +18289,7 @@ class KioskMainWindow(QMainWindow):
         for screen in self.screens.values():
             self.stack.addWidget(screen)
 
+        self._configure_navigation_timeouts()
         self.reload_hotspots()
         self._sync_pricing_layout_defaults(persist=True)
         self._apply_admin_settings(self.admin_settings, emit_log=False)
@@ -15108,9 +18481,19 @@ class KioskMainWindow(QMainWindow):
             and current_screen_name != screen_name
         ):
             self.stop_bill_acceptor_test(wait_ms=3000)
+        if (
+            isinstance(current_screen_name, str)
+            and current_screen_name in {"pay_card", "pay_card_remaining"}
+            and current_screen_name != screen_name
+        ):
+            self._payment_ui_timer.stop()
+        if screen_name != "frame_select":
+            self._reset_frame_select_admin_taps()
+            self._frame_select_admin_tap_timer.stop()
         if screen_name == "start":
             self.reset_state()
         elif screen_name == "how_many_prints":
+            self._set_order_state(OrderFlowState.CART, reason="how_many_prints")
             self.current_print_count = 2
             self.print_count = 2
             how_many_screen = self.screens.get("how_many_prints")
@@ -15118,6 +18501,11 @@ class KioskMainWindow(QMainWindow):
                 how_many_screen.set_print_count(2)
             print("[PRINT_COUNT] init=2")
         elif screen_name == "payment_method":
+            self._ensure_current_order_id()
+            self.current_payment_request_ref = None
+            self.current_payment_transaction_id = None
+            self.current_payment_status = None
+            self._set_order_state(OrderFlowState.CHECKOUT, reason="payment_method")
             payment_screen = self.screens.get("payment_method")
             if isinstance(payment_screen, AppPaymentMethodScreen):
                 enabled = self.get_payment_methods()
@@ -15147,10 +18535,16 @@ class KioskMainWindow(QMainWindow):
                 print("[PAYMENT] method=cash (default)")
         elif screen_name == "pay_cash":
             self._enter_pay_cash_screen()
+        elif screen_name == "pay_card":
+            self._enter_pay_card_screen()
         elif screen_name == "coupon_remaining_method":
             self._enter_coupon_remaining_method_screen()
+        elif screen_name == "coupon_low":
+            self._enter_coupon_low_screen()
         elif screen_name == "pay_cash_remaining":
             self._enter_pay_cash_remaining_screen()
+        elif screen_name == "pay_card_remaining":
+            self._enter_pay_card_remaining_screen()
         elif screen_name == "select_photo":
             self._prepare_select_photo_screen()
         elif screen_name == "select_design":
@@ -15168,17 +18562,36 @@ class KioskMainWindow(QMainWindow):
         self.stack.setCurrentWidget(target)
         if should_play_nav_sound:
             self.ui_sound.play("nav")
+        if screen_name in {
+            "payment_method",
+            "pay_cash",
+            "pay_card",
+            "coupon_input",
+            "coupon_remaining_method",
+            "coupon_low",
+            "pay_cash_remaining",
+            "pay_card_remaining",
+        }:
+            if self._try_apply_pending_remote_action(current_screen=screen_name):
+                return
+            QTimer.singleShot(300, self._heartbeat_tick)
         if screen_name == "frame_select":
+            self._set_order_state(OrderFlowState.CART, reason="frame_select")
             self._ensure_frame_select_mode_buttons()
             self._refresh_frame_select_mode_buttons()
             self._refresh_frame_select_price_labels()
         if screen_name == "camera":
+            self._set_order_state(OrderFlowState.PHOTO_SESSION, reason="camera")
             print(
                 f"[CAMERA] enter layout_id={self.current_layout_id} "
                 f"design_path={self.current_design_path}"
             )
         elif screen_name == "payment_complete_success":
             self._start_payment_complete_transition_watchdog()
+        elif screen_name == "payment_complete_failed":
+            self._set_order_state(OrderFlowState.PAYMENT_FAILED, reason="payment_complete_failed")
+        elif screen_name == "thank_you":
+            self._set_order_state(OrderFlowState.COMPLETED, reason="thank_you")
         print(f"[NAV] {screen_name}")
 
     def complete_boot_healthcheck(self, force: bool = False) -> None:
@@ -15193,17 +18606,29 @@ class KioskMainWindow(QMainWindow):
         self.boot_check_done = True
         self._boot_checked = True
         self.goto_screen("start")
+        if self._payment_recovery_notice:
+            QTimer.singleShot(
+                1200,
+                lambda message=self._payment_recovery_notice: self._show_runtime_notice(message, duration_ms=2500),
+            )
 
     def reset_state(self) -> None:
         self._stop_select_photo_preload_worker(wait=False)
         self._stop_bill_acceptor_for_payment()
+        self._payment_ui_timer.stop()
+        try:
+            self.payment_service.cancel_active_payment("reset_state")
+        except Exception:
+            pass
         self._reset_start_admin_taps()
         self._start_admin_tap_timer.stop()
+        self._reset_frame_select_admin_taps()
+        self._frame_select_admin_tap_timer.stop()
         self.current_layout_id = None
         self.current_design_index = None
         self.current_design_path = None
         self.current_design_is_gray = False
-        self.current_design_flip_horizontal = False
+        self.current_design_flip_horizontal = DEFAULT_DESIGN_FLIP_HORIZONTAL
         self.current_design_qr_enabled = True
         self.current_print_path = None
         self.current_print_job_path = None
@@ -15221,12 +18646,20 @@ class KioskMainWindow(QMainWindow):
         self.print_slots = 0
         self.print_count = 2
         self.current_print_count = 2
+        self.current_order_id = None
+        self.current_order_state = OrderFlowState.CART.value
         self.current_payment_method = None
+        self.current_payment_request_ref = None
+        self.current_payment_transaction_id = None
+        self.current_payment_status = None
         self.current_coupon_code = None
         self.current_coupon_value = 0
         self.current_required_amount = 0
         self.current_inserted_amount = 0
         self.current_remaining_amount = 0
+        self._payment_failure_return_screen = "payment_method"
+        self._payment_started_screen_name = ""
+        self._payment_deadline_monotonic = 0.0
         self.compose_mode = "normal"
         self.celebrity_template_dir = None
         self.celebrity_template_name = None
@@ -15299,6 +18732,75 @@ class KioskMainWindow(QMainWindow):
         self.pending_coupon_code = None
         print("[STATE] reset ok")
 
+    def _configure_navigation_timeouts(self) -> None:
+        timeout_sec = 60
+        cash_timeout_sec = 120
+        screen_specs = [
+            ("frame_select", timeout_sec, lambda: self._handle_simple_screen_timeout("frame_select")),
+            (
+                "celebrity_template_select",
+                timeout_sec,
+                lambda: self._handle_simple_screen_timeout("celebrity_template_select"),
+            ),
+            ("ai_style_select", timeout_sec, lambda: self._handle_simple_screen_timeout("ai_style_select")),
+            ("how_many_prints", timeout_sec, lambda: self._handle_simple_screen_timeout("how_many_prints")),
+            ("payment_method", timeout_sec, lambda: self._handle_simple_screen_timeout("payment_method")),
+            ("select_photo", timeout_sec, self._handle_select_photo_timeout),
+            ("select_design", timeout_sec, self._handle_select_design_timeout),
+            ("pay_cash", cash_timeout_sec, lambda: self._handle_simple_screen_timeout("pay_cash")),
+            (
+                "pay_cash_remaining",
+                cash_timeout_sec,
+                lambda: self._handle_simple_screen_timeout("pay_cash_remaining"),
+            ),
+        ]
+        for screen_name, total_sec, callback in screen_specs:
+            screen = self.screens.get(screen_name)
+            configure = getattr(screen, "configure_screen_timeout", None)
+            if callable(configure):
+                configure(total_sec, callback)
+
+    def _handle_simple_screen_timeout(self, screen_name: str) -> None:
+        current = self.stack.currentWidget()
+        if getattr(current, "screen_name", None) != screen_name:
+            return
+        print(f"[TIMEOUT] screen={screen_name} -> start")
+        self.goto_screen("start")
+
+    def _handle_select_photo_timeout(self) -> None:
+        current = self.stack.currentWidget()
+        if getattr(current, "screen_name", None) != "select_photo":
+            return
+        screen = self.screens.get("select_photo")
+        if not isinstance(screen, SelectPhotoScreen):
+            return
+        filled = screen.auto_fill_remaining_random()
+        total_slots = len(screen.get_selected_paths())
+        filled_total = screen.selected_filled_count()
+        print(
+            f"[TIMEOUT] screen=select_photo auto_fill={filled} "
+            f"filled={filled_total}/{total_slots}"
+        )
+        if not self._continue_from_select_photo():
+            print("[TIMEOUT] screen=select_photo fallback -> start")
+            self.goto_screen("start")
+
+    def _handle_select_design_timeout(self) -> None:
+        current = self.stack.currentWidget()
+        if getattr(current, "screen_name", None) != "select_design":
+            return
+        screen = self.screens.get("select_design")
+        if not isinstance(screen, SelectDesignScreen):
+            return
+        self._sync_design_state_from_screen(screen)
+        print(
+            f"[TIMEOUT] screen=select_design -> confirm "
+            f"frame={screen.frame_index} gray={1 if screen.is_gray else 0} "
+            f"flip={1 if screen.flip_horizontal else 0} qr={1 if screen.qr_enabled else 0}"
+        )
+        if not self._continue_from_select_design():
+            print("[TIMEOUT] screen=select_design auto-confirm failed")
+
     def get_active_session(self) -> Optional[Session]:
         camera_screen = self.screens.get("camera")
         if isinstance(camera_screen, CameraScreen):
@@ -15309,6 +18811,7 @@ class KioskMainWindow(QMainWindow):
         if not self.current_layout_id:
             print("[CAMERA] enter blocked: layout_id missing")
             return False
+        self._ensure_current_order_id()
         camera_screen = self.screens.get("camera")
         if not isinstance(camera_screen, CameraScreen):
             print("[CAMERA] enter blocked: camera screen missing")
@@ -15386,6 +18889,7 @@ class KioskMainWindow(QMainWindow):
                 f"coupon_value={self.current_coupon_value} "
                 f"required={self.current_required_amount} remaining={self.current_remaining_amount}"
             )
+            self._sync_payment_state_to_session()
         return True
 
     def _prepare_select_photo_screen(self) -> None:
@@ -15409,6 +18913,43 @@ class KioskMainWindow(QMainWindow):
                 self.current_print_slots,
                 prepared=self.prepared_select_photo,
             )
+            self._warm_select_design_assets_async(
+                self.current_layout_id,
+                self.current_design_index or 1,
+            )
+
+    def _warm_select_design_assets_async(
+        self,
+        layout_id: Optional[str],
+        frame_index: int = 1,
+    ) -> None:
+        layout_text = str(layout_id or "").strip()
+        if not layout_text:
+            return
+        frame_num = max(1, int(frame_index or 1))
+        signature = f"{layout_text}:{frame_num}"
+        if self._design_asset_warm_signature == signature:
+            return
+        self._design_asset_warm_signature = signature
+
+        def _worker() -> None:
+            try:
+                assets = resolve_design_asset_paths(layout_text, frame_num)
+                preview_frame_path = assets.get("preview_frame_path") or assets.get("frame2_path")
+                slot_ref_path = assets.get("slot_ref_path") or assets.get("frame2_path")
+                if preview_frame_path is not None and preview_frame_path.is_file():
+                    _detect_transparent_slots(preview_frame_path, min_area=240)
+                if slot_ref_path is not None and slot_ref_path.is_file():
+                    _detect_transparent_slots(slot_ref_path, min_area=520)
+                print(f"[DESIGN] warm cache ok layout={layout_text} frame={frame_num}")
+            except Exception as exc:
+                print(f"[DESIGN] warm cache failed layout={layout_text} frame={frame_num} err={exc}")
+
+        threading.Thread(
+            target=_worker,
+            name=f"design-warm-{layout_text}-{frame_num}",
+            daemon=True,
+        ).start()
 
     def _prepare_ai_selected_paths_from_captures(
         self,
@@ -15557,11 +19098,16 @@ class KioskMainWindow(QMainWindow):
         after_loading_screen = self.screens.get("after_camera_loading")
         if isinstance(after_loading_screen, LoadingScreen):
             if ai_mode_for_preload:
+                after_loading_screen.set_preview_animation(
+                    gif_frames_snapshot,
+                    interval_ms=int(gif_settings.get("interval_ms", DEFAULT_GIF_SETTINGS["interval_ms"])),
+                )
                 after_loading_screen.set_status_message(
                     "AI 생성중 0%\nGenerating AI Photos 0%\n잠시만 기다려주세요\nPlease wait",
                     animate=False,
                 )
             else:
+                after_loading_screen.clear_preview_animation()
                 after_loading_screen.clear_status_message()
         worker.start()
 
@@ -15612,6 +19158,7 @@ class KioskMainWindow(QMainWindow):
 
         after_loading_screen = self.screens.get("after_camera_loading")
         if isinstance(after_loading_screen, LoadingScreen):
+            after_loading_screen.clear_preview_animation()
             after_loading_screen.clear_status_message()
 
         elapsed_ms = int((time.perf_counter() - self._after_loading_started_at) * 1000)
@@ -15664,13 +19211,51 @@ class KioskMainWindow(QMainWindow):
     def _prepare_select_design_screen(self) -> None:
         screen = self.screens.get("select_design")
         if isinstance(screen, SelectDesignScreen):
+            layout_key = str(self.current_layout_id or "").strip()
+            expected_slots = max(
+                1,
+                int(
+                    self.current_print_slots
+                    or self.print_slots
+                    or EXPECTED_SLOT_COUNT_BY_LAYOUT.get(layout_key, 4)
+                    or 4
+                ),
+            )
+            selected_for_design = [
+                str(Path(raw))
+                for raw in list(self.selected_print_paths or [])
+                if isinstance(raw, str) and raw.strip() and Path(raw).is_file()
+            ]
+            select_photo_screen = self.screens.get("select_photo")
+            if isinstance(select_photo_screen, SelectPhotoScreen):
+                selected_from_photo = [
+                    str(path)
+                    for path in select_photo_screen.get_selected_paths()
+                    if isinstance(path, Path) and path.is_file()
+                ]
+                if len(selected_from_photo) >= expected_slots:
+                    if selected_from_photo[:expected_slots] != selected_for_design[:expected_slots]:
+                        print(
+                            f"[SELECT_DESIGN] selected override from select_photo "
+                            f"layout={layout_key} expected={expected_slots} "
+                            f"state={len(selected_for_design)} screen={len(selected_from_photo)}"
+                        )
+                    selected_for_design = selected_from_photo
+            if len(selected_for_design) > expected_slots:
+                print(
+                    f"[SELECT_DESIGN] trim selected paths "
+                    f"layout={layout_key} count={len(selected_for_design)} -> {expected_slots}"
+                )
+                selected_for_design = selected_for_design[:expected_slots]
+            self.selected_print_paths = list(selected_for_design)
             screen.set_context(
-                layout_id=self.current_layout_id,
-                selected_paths=self.selected_print_paths,
+                layout_id=layout_key,
+                selected_paths=selected_for_design,
                 frame_index=self.current_design_index or 1,
                 is_gray=self.current_design_is_gray,
                 flip_horizontal=self.current_design_flip_horizontal,
                 qr_enabled=self.current_design_qr_enabled,
+                prepared=self.prepared_select_photo,
             )
             self._sync_design_state_from_screen(screen)
 
@@ -15690,6 +19275,7 @@ class KioskMainWindow(QMainWindow):
             screen.load_settings(
                 self.admin_settings,
                 self.get_payment_methods(),
+                self.get_payment_settings(),
                 self.get_modes_settings(),
                 self.get_ai_style_settings(),
                 self.get_bill_acceptor_settings(),
@@ -15732,6 +19318,18 @@ class KioskMainWindow(QMainWindow):
             raw_settings.get("allow_dummy_when_camera_fail"),
             bool(DEFAULT_ADMIN_SETTINGS["allow_dummy_when_camera_fail"]),
         )
+        normalized["allow_canon_remote_capture"] = cls._as_bool(
+            raw_settings.get("allow_canon_remote_capture"),
+            bool(DEFAULT_ADMIN_SETTINGS["allow_canon_remote_capture"]),
+        )
+
+        try:
+            design_frame_count = int(
+                raw_settings.get("design_frame_count", DEFAULT_ADMIN_SETTINGS["design_frame_count"])
+            )
+        except Exception:
+            design_frame_count = int(DEFAULT_ADMIN_SETTINGS["design_frame_count"])
+        normalized["design_frame_count"] = max(1, min(14, design_frame_count))
 
         try:
             countdown = int(raw_settings.get("countdown_seconds", DEFAULT_ADMIN_SETTINGS["countdown_seconds"]))
@@ -15801,31 +19399,34 @@ class KioskMainWindow(QMainWindow):
             tmp_path.write_text(payload, encoding="utf-8")
             os.replace(tmp_path, path)
 
-        candidate_paths: list[Path] = [target_path]
+        sync_candidates: list[Path] = [target_path]
+        default_runtime_path = _default_runtime_data_dir() / "config" / "config.json"
+        sync_candidates.append(default_runtime_path)
         for root in _preferred_runtime_data_dirs():
-            candidate_paths.append(Path(root) / "config" / "config.json")
-        for root in _iter_runtime_data_dir_candidates():
-            candidate_paths.append(Path(root) / "config" / "config.json")
+            sync_candidates.append(Path(root) / "config" / "config.json")
 
-        dedup_candidates: list[Path] = []
+        dedup_sync_candidates: list[Path] = []
         seen: set[str] = set()
-        for path in candidate_paths:
+        for path in sync_candidates:
             key = self._normalize_path_token(path)
             if key in seen:
                 continue
             seen.add(key)
-            dedup_candidates.append(path)
+            dedup_sync_candidates.append(path)
 
-        for idx, candidate in enumerate(dedup_candidates):
+        first_success: Optional[Path] = None
+        primary_write_failed = False
+        for idx, candidate in enumerate(dedup_sync_candidates):
             try:
                 _write(candidate)
-                self.config_path = candidate
+                first_success = candidate
                 if idx > 0:
                     _safe_boot_write(
                         f"[CONFIG] write fallback selected: {candidate}\n"
                     )
-                return
+                break
             except Exception as exc:
+                primary_write_failed = True
                 if idx == 0:
                     _safe_boot_write(
                         f"[CONFIG] write denied at {candidate} ({exc})\n"
@@ -15835,12 +19436,177 @@ class KioskMainWindow(QMainWindow):
                         f"[CONFIG] write fallback failed at {candidate} ({exc})\n"
                     )
 
-        temp_fallback = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "config.json"
-        _safe_boot_write(
-            f"[CONFIG] all write candidates failed -> temp {temp_fallback}\n"
+        if first_success is None:
+            fallback_candidates: list[Path] = []
+            for root in _iter_runtime_data_dir_candidates():
+                fallback_candidates.append(Path(root) / "config" / "config.json")
+
+            dedup_fallback_candidates: list[Path] = []
+            for path in fallback_candidates:
+                key = self._normalize_path_token(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup_fallback_candidates.append(path)
+
+            for candidate in dedup_fallback_candidates:
+                try:
+                    _write(candidate)
+                    first_success = candidate
+                    _safe_boot_write(
+                        f"[CONFIG] write fallback selected: {candidate}\n"
+                    )
+                    break
+                except Exception as exc:
+                    _safe_boot_write(
+                        f"[CONFIG] write fallback failed at {candidate} ({exc})\n"
+                    )
+
+        if first_success is None:
+            temp_fallback = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "config.json"
+            _safe_boot_write(
+                f"[CONFIG] all write candidates failed -> temp {temp_fallback}\n"
+            )
+            _write(temp_fallback)
+            first_success = temp_fallback
+
+        self.config_path = first_success
+
+        synced_paths: list[str] = []
+        for candidate in dedup_sync_candidates:
+            if self._normalize_path_token(candidate) == self._normalize_path_token(first_success):
+                synced_paths.append(str(candidate))
+                continue
+            try:
+                _write(candidate)
+                synced_paths.append(str(candidate))
+            except Exception as exc:
+                _safe_boot_write(
+                    f"[CONFIG] sync skipped at {candidate} ({exc})\n"
+                )
+
+        if primary_write_failed and synced_paths:
+            _safe_boot_write(
+                "[CONFIG] synced config paths: "
+                + ", ".join(synced_paths)
+                + "\n"
+            )
+
+    def _read_payment_config_dict(self) -> dict:
+        path = Path(getattr(self, "payment_config_path", _resolve_runtime_payment_config_path()))
+        if not path.is_file():
+            return dict(DEFAULT_PAYMENT_SETTINGS)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            print(f"[PAYMENT_CONFIG] read failed: {exc}")
+            return dict(DEFAULT_PAYMENT_SETTINGS)
+        if not isinstance(data, dict):
+            return dict(DEFAULT_PAYMENT_SETTINGS)
+        return data
+
+    def _write_payment_config_dict_atomic(self, data: dict) -> None:
+        payload = PaymentSettings.from_dict(data).to_dict()
+        candidates: list[Path] = [Path(getattr(self, "payment_config_path", _resolve_runtime_payment_config_path()))]
+        candidates.append(_default_runtime_data_dir() / "config" / "payment_config.json")
+        for root in _preferred_runtime_data_dirs():
+            candidates.append(Path(root) / "config" / "payment_config.json")
+
+        dedup: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                dedup.append(candidate)
+
+        chosen: Optional[Path] = None
+        for candidate in dedup:
+            try:
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomic(candidate, payload)
+                chosen = candidate
+                break
+            except Exception as exc:
+                _safe_boot_write(f"[PAYMENT_CONFIG] write failed at {candidate} ({exc})\n")
+
+        if chosen is None:
+            temp_candidate = Path(os.environ.get("TEMP", os.getcwd())) / "ViorafilmKiosk" / "config" / "payment_config.json"
+            temp_candidate.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(temp_candidate, payload)
+            chosen = temp_candidate
+
+        self.payment_config_path = chosen
+
+        for candidate in dedup:
+            if str(candidate).strip().lower() == str(chosen).strip().lower():
+                continue
+            try:
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomic(candidate, payload)
+            except Exception:
+                continue
+
+    def _resolve_payment_settings(self) -> dict:
+        return PaymentSettings.from_dict(self._read_payment_config_dict()).to_dict()
+
+    def get_payment_settings(self) -> dict:
+        return PaymentSettings.from_dict(getattr(self, "payment_settings", DEFAULT_PAYMENT_SETTINGS)).to_dict()
+
+    def save_payment_settings(self, settings: dict) -> dict:
+        normalized = PaymentSettings.from_dict(settings).to_dict()
+        self._write_payment_config_dict_atomic(normalized)
+        self.payment_settings = normalized
+        self.payment_service.reconfigure(normalized)
+        self._payment_recovery_notice = self._build_payment_recovery_notice()
+        print(
+            "[PAYMENT_CONFIG] saved "
+            f"enabled={1 if normalized.get('payment_enabled') else 0} "
+            f"provider={normalized.get('payment_provider')} "
+            f"endpoint={normalized.get('terminal_ip', '')}:{normalized.get('terminal_port', 0)} "
+            f"currency={normalized.get('currency', '')}"
         )
-        _write(temp_fallback)
-        self.config_path = temp_fallback
+        return normalized
+
+    def reload_payment_settings(self) -> tuple[bool, str]:
+        try:
+            normalized = self._resolve_payment_settings()
+            self.payment_settings = normalized
+            self.payment_service.reconfigure(normalized)
+            self._payment_recovery_notice = self._build_payment_recovery_notice()
+            return True, "결제 설정을 다시 불러왔습니다"
+        except Exception as exc:
+            print(f"[PAYMENT_CONFIG] reload failed: {exc}")
+            return False, f"결제 설정 reload 실패: {exc}"
+
+    def _build_payment_recovery_notice(self) -> str:
+        if not hasattr(self, "payment_service"):
+            return ""
+        records = list(self.payment_service.get_recovery_records())
+        if not records:
+            return ""
+        order_ids = ", ".join(record.order_id for record in records[:5])
+        if len(records) > 5:
+            order_ids = f"{order_ids}, ..."
+        return f"미완료 결제 {len(records)}건 확인 필요: {order_ids}"
+
+    def get_payment_diagnostics_report(self) -> str:
+        return self.payment_service.get_diagnostics_report()
+
+    def pair_payment_terminal(self) -> tuple[bool, str]:
+        result = self.payment_service.pair_terminal()
+        return bool(result.success), result.message or result.error_message or "Pair test completed"
+
+    def ping_payment_terminal(self) -> tuple[bool, str]:
+        result = self.payment_service.ping()
+        message = result.message or result.error_message or "Ping test completed"
+        return bool(result.success), message
+
+    def run_mock_payment_diagnostic(self) -> tuple[bool, str]:
+        result = self.payment_service.run_mock_diagnostic_sale(amount_cents=100)
+        if result.status == PaymentStatus.APPROVED:
+            return True, "MOCK 승인 테스트 성공"
+        return False, result.error_message or result.message or "MOCK 승인 테스트 실패"
 
     @staticmethod
     def _parse_layout_id_from_action(action: object) -> Optional[str]:
@@ -15911,7 +19677,7 @@ class KioskMainWindow(QMainWindow):
                 ).strip()
         celeb_layout = celeb_layout or str(DEFAULT_CELEBRITY_SETTINGS["layout_id"]).strip() or "2461"
         _append_layout(celeb_layout)
-        _append_layout(str(AI_LAYOUT_ID).strip())
+        _append_layout(AI_MODE_PRICING_LAYOUT_ID)
         return list(merged_ordered)
 
     def get_pricing_layout_ids(self) -> list[str]:
@@ -16345,6 +20111,10 @@ class KioskMainWindow(QMainWindow):
             self.pending_coupon_code = None
             if self.current_required_amount <= 0:
                 self._refresh_required_amount()
+            if self._has_pending_payment_bypass_action():
+                print("[PAYMENT] single mode remote credit pending -> payment_method preflight")
+                self.goto_screen("payment_method")
+                return True
             print("[PAYMENT] single mode auto -> pay_cash")
             self.goto_screen("pay_cash")
             return True
@@ -16356,19 +20126,24 @@ class KioskMainWindow(QMainWindow):
                 return False
             self.current_payment_method = "coupon"
             self.payment_method = self.current_payment_method
+            if self._has_pending_payment_bypass_action():
+                print("[PAYMENT] single mode remote credit pending -> payment_method preflight")
+                self.goto_screen("payment_method")
+                return True
             print("[PAYMENT] single mode auto -> coupon_input")
             self.goto_screen("coupon_input")
             return True
 
         if target_method == "card":
-            if self.is_test_mode():
-                self.current_payment_method = "card"
-                self.payment_method = self.current_payment_method
-                print("[PAYMENT] single mode auto(test) -> payment_complete_success")
-                self.goto_screen("payment_complete_success")
+            self.current_payment_method = "card"
+            self.payment_method = self.current_payment_method
+            if self._has_pending_payment_bypass_action():
+                print("[PAYMENT] single mode remote credit pending -> payment_method preflight")
+                self.goto_screen("payment_method")
                 return True
-            print("[PAYMENT] single mode card unsupported -> keep payment_method")
-            return False
+            print("[PAYMENT] single mode auto -> pay_card")
+            self.goto_screen("pay_card")
+            return True
 
         return False
 
@@ -16522,8 +20297,8 @@ class KioskMainWindow(QMainWindow):
                 label = QLabel(screen)
                 label.setAlignment(ALIGN_CENTER)
                 label.setStyleSheet(
-                    "QLabel { color: white; background-color: rgba(0,0,0,150); "
-                    "font-size: 28px; font-weight: 700; border-radius: 4px; }"
+                    "QLabel { color: #111111; background-color: #FFFFFF; "
+                    "font-size: 28px; font-weight: 700; border: 2px solid #111111; border-radius: 6px; }"
                 )
                 label.setAttribute(WA_TRANSPARENT, True)
                 self._frame_select_price_labels[layout_id] = label
@@ -16651,8 +20426,8 @@ class KioskMainWindow(QMainWindow):
             price_label.setAlignment(ALIGN_CENTER)
             price_label.setAttribute(WA_TRANSPARENT, True)
             price_label.setStyleSheet(
-                "QLabel { color: white; background-color: rgba(0,0,0,150); "
-                "font-size: 28px; font-weight: 700; border-radius: 4px; }"
+                "QLabel { color: #111111; background-color: #FFFFFF; "
+                "font-size: 28px; font-weight: 700; border: 2px solid #111111; border-radius: 6px; }"
             )
             self._frame_select_mode_price_labels[key] = price_label
         self._layout_frame_select_mode_buttons()
@@ -16668,7 +20443,7 @@ class KioskMainWindow(QMainWindow):
             except Exception:
                 pass
             return celeb_layout
-        return str(AI_LAYOUT_ID).strip() or "4641"
+        return AI_MODE_PRICING_LAYOUT_ID
 
     def _layout_frame_select_mode_buttons(self) -> None:
         screen = self.screens.get("frame_select")
@@ -16783,7 +20558,10 @@ class KioskMainWindow(QMainWindow):
     def _is_card_runtime_supported(self) -> bool:
         if self.is_test_mode():
             return True
-        return self._env_bool(os.environ.get("KIOSK_CARD_RUNTIME_ENABLED", "0"), False)
+        raw = os.environ.get("KIOSK_CARD_RUNTIME_ENABLED")
+        if raw is None or not str(raw).strip():
+            return True
+        return self._env_bool(raw, True)
 
     def _apply_payment_methods(self, payment_methods: dict, emit_log: bool = True) -> bool:
         normalized, forced_cash = self._normalize_payment_methods(payment_methods)
@@ -16834,32 +20612,115 @@ class KioskMainWindow(QMainWindow):
             "device_auth_store",
         )
 
-    def _read_secure_device_credentials(self) -> dict[str, str]:
-        path = self._device_auth_store_path()
+    def _device_auth_store_candidate_paths(self) -> list[Path]:
+        primary = self._device_auth_store_path()
+        env_override = str(os.environ.get("VIORAFILM_DEVICE_AUTH_STORE", "")).strip()
+        if env_override:
+            return [primary]
+
+        roots: list[Path] = []
+        try:
+            config_path = Path(self.config_path)
+            if (
+                str(config_path.name).strip().lower() == "config.json"
+                and str(config_path.parent.name).strip().lower() == "config"
+            ):
+                roots.append(config_path.parent.parent)
+        except Exception:
+            pass
+        roots.append(_default_runtime_data_dir())
+        roots.extend(_preferred_runtime_data_dirs())
+
+        candidates: list[Path] = [primary]
+        seen: set[str] = {self._normalize_path_token(primary)}
+        fallback = _default_runtime_data_dir() / "secure" / "device_auth.json"
+        for root in roots:
+            try:
+                candidate = _sanitize_runtime_path(
+                    Path(root) / "secure" / "device_auth.json",
+                    fallback,
+                    "device_auth_store",
+                )
+            except Exception:
+                continue
+            key = self._normalize_path_token(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+        return candidates
+
+    def _device_auth_root_candidates(self) -> list[Path]:
+        roots: list[Path] = []
+        try:
+            config_path = Path(self.config_path)
+            if (
+                str(config_path.name).strip().lower() == "config.json"
+                and str(config_path.parent.name).strip().lower() == "config"
+            ):
+                roots.append(config_path.parent.parent)
+        except Exception:
+            pass
+        roots.extend(_preferred_runtime_data_dirs())
+        roots.append(_default_runtime_data_dir())
+
+        dedup: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = self._normalize_path_token(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(root)
+        return dedup
+
+    @staticmethod
+    def _read_json_dict_from_path(path: Path) -> dict:
         if not path.is_file():
             return {}
         try:
-            envelope = json.loads(path.read_text(encoding="utf-8-sig"))
-            if not isinstance(envelope, dict):
-                raise ValueError("invalid envelope")
-            ciphertext_b64 = str(envelope.get("ciphertext", "")).strip()
-            if not ciphertext_b64:
-                return {}
-            payload_raw = _dpapi_unprotect_bytes(
-                base64.b64decode(ciphertext_b64),
-                entropy=_DEVICE_AUTH_DPAPI_ENTROPY,
-            )
-            payload = json.loads(payload_raw.decode("utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("invalid payload")
-            return {
-                "device_code": str(payload.get("device_code", "")).strip(),
-                "device_token": str(payload.get("device_token", "")).strip(),
-                "device_install_key": str(payload.get("device_install_key", "")).strip(),
-            }
-        except Exception as exc:
-            print(f"[DEVICE_AUTH] secure store read failed path={path} reason={exc}")
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
             return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _read_secure_device_credentials_from_path(path: Path) -> dict[str, str]:
+        if not path.is_file():
+            return {}
+        envelope = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(envelope, dict):
+            raise ValueError("invalid envelope")
+        ciphertext_b64 = str(envelope.get("ciphertext", "")).strip()
+        if not ciphertext_b64:
+            return {}
+        payload_raw = _dpapi_unprotect_bytes(
+            base64.b64decode(ciphertext_b64),
+            entropy=_DEVICE_AUTH_DPAPI_ENTROPY,
+        )
+        payload = json.loads(payload_raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid payload")
+        return {
+            "device_code": str(payload.get("device_code", "")).strip(),
+            "device_token": str(payload.get("device_token", "")).strip(),
+            "device_install_key": str(payload.get("device_install_key", "")).strip(),
+        }
+
+    def _read_secure_device_credentials(self) -> dict[str, str]:
+        primary = self._device_auth_store_path()
+        for idx, path in enumerate(self._device_auth_store_candidate_paths()):
+            try:
+                payload = self._read_secure_device_credentials_from_path(path)
+            except Exception as exc:
+                if idx == 0:
+                    print(f"[DEVICE_AUTH] secure store read failed path={path} reason={exc}")
+                continue
+            if any(str(payload.get(key, "")).strip() for key in ("device_code", "device_token", "device_install_key")):
+                if idx > 0:
+                    print(f"[DEVICE_AUTH] secure store fallback loaded path={path}")
+                return payload
+        return {}
 
     def _write_secure_device_credentials(
         self,
@@ -16878,10 +20739,11 @@ class KioskMainWindow(QMainWindow):
             or secrets.token_urlsafe(32)
         )
         if not token and not code and not install_key:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            for candidate in self._device_auth_store_candidate_paths():
+                try:
+                    candidate.unlink(missing_ok=True)
+                except Exception:
+                    pass
             return ""
 
         payload = {
@@ -16900,14 +20762,32 @@ class KioskMainWindow(QMainWindow):
             "scheme": "dpapi_current_user",
             "ciphertext": base64.b64encode(encrypted).decode("ascii"),
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(envelope, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, path)
-        print(f"[DEVICE_AUTH] secure store saved path={path}")
+        payload_text = json.dumps(envelope, ensure_ascii=False, indent=2) + "\n"
+
+        def _write(path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(payload_text, encoding="utf-8")
+            os.replace(tmp_path, path)
+
+        saved_paths: list[str] = []
+        for candidate in self._device_auth_store_candidate_paths():
+            try:
+                _write(candidate)
+                saved_paths.append(str(candidate))
+            except Exception as exc:
+                _safe_boot_write(
+                    f"[DEVICE_AUTH] secure store sync skipped path={candidate} reason={exc}\n"
+                )
+        if saved_paths:
+            print(f"[DEVICE_AUTH] secure store saved path={saved_paths[0]}")
+            if len(saved_paths) > 1:
+                print(
+                    "[DEVICE_AUTH] secure store synced paths="
+                    + ", ".join(saved_paths)
+                )
+        else:
+            raise OSError(f"secure store write failed path={path}")
         return install_key
 
     def _scrub_plaintext_device_token_from_config(self, config: Optional[dict] = None) -> None:
@@ -16927,6 +20807,48 @@ class KioskMainWindow(QMainWindow):
         if plaintext:
             print(f"[DEVICE_AUTH] scrubbed plaintext token from config path={self.config_path}")
 
+    def _config_device_install_key(self, config: Optional[dict] = None) -> str:
+        current = dict(config) if isinstance(config, dict) else self._read_config_dict()
+        share = current.get("share") if isinstance(current, dict) else None
+        if not isinstance(share, dict):
+            return ""
+        return str(share.get("device_install_key", "")).strip()
+
+    def _persist_device_install_key_to_config(
+        self,
+        install_key: str,
+        *,
+        config: Optional[dict] = None,
+    ) -> None:
+        cleaned = str(install_key or "").strip()
+        if not cleaned:
+            return
+        current = dict(config) if isinstance(config, dict) else self._read_config_dict()
+        share = current.get("share") if isinstance(current, dict) else None
+        share_dict = dict(share) if isinstance(share, dict) else {}
+        if str(share_dict.get("device_install_key", "")).strip() == cleaned:
+            return
+        share_dict["device_install_key"] = cleaned
+        current["share"] = share_dict
+        self._write_config_dict_atomic(current)
+        print(f"[DEVICE_AUTH] install key synced to config path={self.config_path}")
+
+    def _trusted_device_install_key(
+        self,
+        *,
+        config: Optional[dict] = None,
+        secure: Optional[dict[str, str]] = None,
+    ) -> str:
+        config_install_key = self._config_device_install_key(config=config)
+        if config_install_key:
+            return config_install_key
+        secure_dict = secure if isinstance(secure, dict) else self._read_secure_device_credentials()
+        secure_token = str(secure_dict.get("device_token", "")).strip()
+        secure_install_key = str(secure_dict.get("device_install_key", "")).strip()
+        if secure_install_key and secure_token:
+            return secure_install_key
+        return ""
+
     def _resolve_share_settings(self) -> dict:
         config = self._read_config_dict()
         raw = config.get("share") if isinstance(config, dict) else None
@@ -16937,6 +20859,7 @@ class KioskMainWindow(QMainWindow):
             api_base_url = raw.get("api_base_url")
             device_code = raw.get("device_code")
             device_token = raw.get("device_token")
+            device_install_key = raw.get("device_install_key")
             timeout_sec = raw.get("timeout_sec")
             if isinstance(page_url, str) and page_url.strip():
                 result["base_page_url"] = page_url.strip().rstrip("/")
@@ -16948,6 +20871,8 @@ class KioskMainWindow(QMainWindow):
                 result["device_code"] = device_code.strip()
             if isinstance(device_token, str):
                 result["device_token"] = device_token.strip()
+            if isinstance(device_install_key, str):
+                result["device_install_key"] = device_install_key.strip()
             if timeout_sec is not None:
                 try:
                     timeout_value = float(timeout_sec)
@@ -16959,6 +20884,7 @@ class KioskMainWindow(QMainWindow):
         secure_code = str(secure.get("device_code", "")).strip()
         secure_token = str(secure.get("device_token", "")).strip()
         secure_install_key = str(secure.get("device_install_key", "")).strip()
+        config_install_key = str(result.get("device_install_key", "")).strip()
 
         if secure_token and result["device_code"] and secure_code and secure_code != result["device_code"]:
             print(
@@ -16970,17 +20896,26 @@ class KioskMainWindow(QMainWindow):
         if not result["device_code"] and secure_code:
             result["device_code"] = secure_code
 
-        if not secure_install_key:
+        if secure_install_key and not secure_token and not config_install_key:
+            print("[DEVICE_AUTH] bootstrap-only secure install key ignored (token missing)")
+            secure_install_key = ""
+
+        active_install_key = config_install_key or secure_install_key
+        if not active_install_key and (secure_token or plaintext_token):
             try:
-                secure_install_key = self._write_secure_device_credentials(
+                active_install_key = self._write_secure_device_credentials(
                     device_code=str(result.get("device_code", "")).strip() or secure_code,
                     device_token=secure_token or plaintext_token,
+                    device_install_key=config_install_key,
                 )
             except Exception as exc:
                 print(f"[DEVICE_AUTH] install key bootstrap failed: {exc}")
-                secure_install_key = ""
-        if secure_install_key:
-            result["device_install_key"] = secure_install_key
+                active_install_key = ""
+        if active_install_key:
+            result["device_install_key"] = active_install_key
+            if config_install_key != active_install_key:
+                self._persist_device_install_key_to_config(active_install_key, config=config)
+                config = self._read_config_dict()
 
         if secure_token:
             result["device_token"] = secure_token
@@ -16990,13 +20925,17 @@ class KioskMainWindow(QMainWindow):
 
         if plaintext_token:
             try:
-                secure_install_key = self._write_secure_device_credentials(
+                active_install_key = self._write_secure_device_credentials(
                     device_code=str(result.get("device_code", "")).strip(),
                     device_token=plaintext_token,
+                    device_install_key=active_install_key,
                 )
                 result["device_token"] = plaintext_token
-                if secure_install_key:
-                    result["device_install_key"] = secure_install_key
+                if active_install_key:
+                    result["device_install_key"] = active_install_key
+                    if config_install_key != active_install_key:
+                        self._persist_device_install_key_to_config(active_install_key, config=config)
+                        config = self._read_config_dict()
                 self._scrub_plaintext_device_token_from_config(config)
                 print(
                     "[DEVICE_AUTH] migrated plaintext token to secure store "
@@ -17012,6 +20951,7 @@ class KioskMainWindow(QMainWindow):
         api_base_url: str,
         device_code: str,
         device_token: str,
+        device_install_key: Optional[str] = None,
         timeout_sec: float = 8.0,
     ) -> tuple[bool, str]:
         if requests is None:
@@ -17028,7 +20968,9 @@ class KioskMainWindow(QMainWindow):
             "X-Device-Code": code,
             "X-Device-Token": token,
         }
-        install_key = str(self._resolve_share_settings().get("device_install_key", "")).strip()
+        install_key = str(device_install_key or "").strip()
+        if not install_key:
+            install_key = str(self._trusted_device_install_key().strip())
         if install_key:
             headers["X-Device-Install-Key"] = install_key
         try:
@@ -17040,10 +20982,38 @@ class KioskMainWindow(QMainWindow):
         if int(resp.status_code) == 401:
             return False, "인증 실패: 코드/토큰이 올바르지 않습니다."
         body = ""
+        payload: Optional[dict[str, Any]] = None
+        body = ""
         try:
             body = str(resp.text or "").strip()
         except Exception:
             body = ""
+        try:
+            parsed = resp.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = None
+        detail_parts = [
+            body,
+            str((payload or {}).get("reason", "")).strip(),
+            str((payload or {}).get("message", "")).strip(),
+            str((payload or {}).get("detail", "")).strip(),
+            str((payload or {}).get("error", "")).strip(),
+        ]
+        detail_text = " ".join(part for part in detail_parts if part).strip().lower()
+        if (
+            int(resp.status_code) == 409
+            or ("already bound" in detail_text and "installation" in detail_text)
+            or ("another installation" in detail_text)
+        ):
+            if install_key:
+                return (
+                    False,
+                    "인증 실패: 이 토큰은 다른 설치에 바인드되어 있습니다. "
+                    "업데이트 설치 후라면 기존 설치 식별값이 바뀐 상태일 수 있습니다.",
+                )
+            return False, "인증 실패: 서버에 다른 설치로 이미 바인드되어 있습니다. 관리자에서 바인드 초기화가 필요할 수 있습니다."
         if len(body) > 200:
             body = body[:200] + "..."
         return False, f"인증 실패: HTTP {resp.status_code} {body}".strip()
@@ -17125,20 +21095,150 @@ class KioskMainWindow(QMainWindow):
             return True
         return False
 
+    def _iter_existing_device_registration_candidates(
+        self,
+        *,
+        api_base_url: str,
+        device_code: str,
+        device_token: str,
+    ) -> list[dict[str, str]]:
+        candidates: list[dict[str, str]] = []
+
+        def _append_candidate(
+            *,
+            source: str,
+            api_value: str,
+            code: str,
+            token: str,
+            install_key: str,
+        ) -> None:
+            entry = {
+                "source": str(source or "").strip(),
+                "api_base_url": str(api_value or "").strip(),
+                "device_code": str(code or "").strip(),
+                "device_token": str(token or "").strip(),
+                "device_install_key": str(install_key or "").strip(),
+            }
+            if not entry["device_code"] or not entry["device_token"]:
+                return
+            candidates.append(entry)
+
+        _append_candidate(
+            source=f"active:{self.config_path}",
+            api_value=api_base_url,
+            code=device_code,
+            token=device_token,
+            install_key=self._trusted_device_install_key(),
+        )
+
+        for root in self._device_auth_root_candidates():
+            config_path = Path(root) / "config" / "config.json"
+            secure_path = Path(root) / "secure" / "device_auth.json"
+            config = self._read_json_dict_from_path(config_path)
+            share = config.get("share") if isinstance(config, dict) else None
+            share_dict = share if isinstance(share, dict) else {}
+            candidate_api = _normalize_kiosk_api_base_url(
+                share_dict.get("api_base_url") or api_base_url
+            )
+            config_code = str(share_dict.get("device_code", "")).strip()
+            config_token = str(share_dict.get("device_token", "")).strip()
+            config_install_key = str(share_dict.get("device_install_key", "")).strip()
+            secure = {}
+            try:
+                secure = self._read_secure_device_credentials_from_path(secure_path)
+            except Exception:
+                secure = {}
+            secure_code = str(secure.get("device_code", "")).strip()
+            secure_token = str(secure.get("device_token", "")).strip()
+            secure_install_key = str(secure.get("device_install_key", "")).strip()
+
+            _append_candidate(
+                source=f"config:{config_path}",
+                api_value=candidate_api,
+                code=config_code,
+                token=config_token,
+                install_key=config_install_key,
+            )
+            _append_candidate(
+                source=f"secure:{secure_path}",
+                api_value=candidate_api,
+                code=secure_code or config_code,
+                token=secure_token,
+                install_key=secure_install_key or config_install_key,
+            )
+
+        deduped: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = "|".join(
+                [
+                    candidate["api_base_url"],
+                    candidate["device_code"],
+                    candidate["device_token"],
+                    candidate["device_install_key"],
+                ]
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        return deduped
+
+    def _adopt_existing_device_registration_if_possible(
+        self,
+        *,
+        api_base_url: str,
+        device_code: str,
+        device_token: str,
+    ) -> tuple[bool, str]:
+        last_reason = "기존 인증정보가 부족합니다."
+        for candidate in self._iter_existing_device_registration_candidates(
+            api_base_url=api_base_url,
+            device_code=device_code,
+            device_token=device_token,
+        ):
+            ok, reason = self._probe_device_credentials(
+                api_base_url=candidate["api_base_url"],
+                device_code=candidate["device_code"],
+                device_token=candidate["device_token"],
+                device_install_key=candidate["device_install_key"],
+                timeout_sec=6.0,
+            )
+            if not ok:
+                last_reason = str(reason or last_reason)
+                continue
+            self._persist_device_credentials(
+                api_base_url=candidate["api_base_url"],
+                device_code=candidate["device_code"],
+                device_token=candidate["device_token"],
+                device_install_key=candidate["device_install_key"],
+            )
+            print(
+                "[DEVICE_AUTH] existing registration adopted "
+                f'source="{candidate["source"]}" config="{self.config_path}"'
+            )
+            return True, "OK"
+        return False, last_reason
+
     def _persist_device_credentials(
         self,
         *,
         api_base_url: str,
         device_code: str,
         device_token: str,
+        device_install_key: str = "",
     ) -> None:
+        config = self._read_config_dict()
         existing_secure = self._read_secure_device_credentials()
-        self._write_secure_device_credentials(
+        install_key = str(device_install_key or "").strip() or self._trusted_device_install_key(
+            config=config,
+            secure=existing_secure,
+        )
+        install_key = self._write_secure_device_credentials(
             device_code=device_code,
             device_token=device_token,
-            device_install_key=str(existing_secure.get("device_install_key", "")).strip(),
+            device_install_key=install_key,
         )
-        config = self._read_config_dict()
         share = config.get("share") if isinstance(config.get("share"), dict) else {}
         share = dict(share)
         normalized_api = _normalize_kiosk_api_base_url(api_base_url)
@@ -17155,6 +21255,7 @@ class KioskMainWindow(QMainWindow):
         share["device_code"] = str(device_code or "").strip()
         share["device_token"] = ""
         share["device_token_storage"] = "dpapi_current_user"
+        share["device_install_key"] = str(install_key or "").strip()
         share["runtime_trusted_config_path"] = str(self.config_path)
         share["runtime_machine_id"] = str(self._current_runtime_machine_id() or "").strip()
         share["runtime_trusted_at"] = datetime.now().isoformat(timespec="seconds")
@@ -17232,10 +21333,12 @@ class KioskMainWindow(QMainWindow):
             api_base = str(api_input.text() or "").strip()
             code = str(code_input.text() or "").strip()
             token = str(token_input.text() or "").strip()
+            install_key = self._trusted_device_install_key()
             ok, message = self._probe_device_credentials(
                 api_base_url=api_base,
                 device_code=code,
                 device_token=token,
+                device_install_key=install_key,
                 timeout_sec=8.0,
             )
             if not ok:
@@ -17272,20 +21375,46 @@ class KioskMainWindow(QMainWindow):
             reason = "새 설치 장비 등록이 필요합니다. 디바이스 코드/토큰을 입력하세요."
             print("[DEVICE_AUTH] bundled default credentials detected -> force registration")
         elif self._is_untrusted_runtime_credential_source(code, token):
-            ok = False
-            reason = "사용자 경로의 기존 인증정보가 감지되어 재등록이 필요합니다."
             print(
                 "[DEVICE_AUTH] untrusted runtime credential source detected "
-                f'config="{self.config_path}" -> force registration'
+                f'config="{self.config_path}" -> attempting adoption'
             )
+            ok, reason = self._adopt_existing_device_registration_if_possible(
+                api_base_url=api_base,
+                device_code=code,
+                device_token=token,
+            )
+            if not ok:
+                reason = (
+                    "기존 인증 승계 실패: "
+                    + str(reason or "사용자 경로의 기존 인증정보가 감지되어 재등록이 필요합니다.")
+                )
         else:
+            install_key = self._trusted_device_install_key()
             ok, reason = self._probe_device_credentials(
                 api_base_url=api_base,
                 device_code=code,
                 device_token=token,
+                device_install_key=install_key,
                 timeout_sec=6.0,
             )
+            if not ok:
+                print(
+                    "[DEVICE_AUTH] active credential probe failed "
+                    f'config="{self.config_path}" -> searching legacy sources'
+                )
+                adopted, adopt_reason = self._adopt_existing_device_registration_if_possible(
+                    api_base_url=api_base,
+                    device_code=code,
+                    device_token=token,
+                )
+                if adopted:
+                    ok = True
+                    reason = "OK"
+                elif str(adopt_reason or "").strip():
+                    reason = str(adopt_reason).strip()
         if ok:
+            code = str(self.share_settings.get("device_code", "")).strip() or code
             print(f"[DEVICE_AUTH] startup credentials verified code={code} config={self.config_path}")
             return
 
@@ -17302,10 +21431,12 @@ class KioskMainWindow(QMainWindow):
             api_base = str(entered.get("api_base_url", "")).strip()
             code = str(entered.get("device_code", "")).strip()
             token = str(entered.get("device_token", "")).strip()
+            install_key = self._trusted_device_install_key()
             ok, reason = self._probe_device_credentials(
                 api_base_url=api_base,
                 device_code=code,
                 device_token=token,
+                device_install_key=install_key,
                 timeout_sec=8.0,
             )
             if ok:
@@ -17326,16 +21457,21 @@ class KioskMainWindow(QMainWindow):
                     "win_name": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"]),
                     "form_4x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["form_4x6"]),
                     "form_2x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["form_2x6"]),
+                    "margin_profiles": deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS),
+                    "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
                 },
                 "DS620_STRIP": {
                     "win_name": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620_STRIP"]["win_name"]),
                     "form_4x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620_STRIP"]["form_4x6"]),
                     "form_2x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620_STRIP"]["form_2x6"]),
+                    "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
                 },
                 "RX1HS": {
                     "win_name": str(DEFAULT_PRINTING_SETTINGS["printers"]["RX1HS"]["win_name"]),
                     "form_4x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["RX1HS"]["form_4x6"]),
                     "form_2x6": str(DEFAULT_PRINTING_SETTINGS["printers"]["RX1HS"]["form_2x6"]),
+                    "margin_profiles": deepcopy(DEFAULT_SIMPLE_MARGIN_PROFILE_SETTINGS),
+                    "margins": dict(DEFAULT_PRINTER_MARGIN_SETTINGS),
                 },
             },
             "default_model": str(DEFAULT_PRINTING_SETTINGS["default_model"]),
@@ -17354,12 +21490,17 @@ class KioskMainWindow(QMainWindow):
                     win_name = str(item.get("win_name", result["printers"][model]["win_name"])).strip()
                     form_4x6 = str(item.get("form_4x6", result["printers"][model]["form_4x6"])).strip()
                     form_2x6 = str(item.get("form_2x6", result["printers"][model]["form_2x6"])).strip()
+                    margins = _normalize_printer_margin_settings(item.get("margins", item))
+                    margin_profiles = _normalize_simple_margin_profiles(item.get("margin_profiles"))
                     if win_name:
                         result["printers"][model]["win_name"] = win_name
                     if form_4x6:
                         result["printers"][model]["form_4x6"] = form_4x6
                     if form_2x6:
                         result["printers"][model]["form_2x6"] = form_2x6
+                    if model in {"DS620", "RX1HS"}:
+                        result["printers"][model]["margin_profiles"] = margin_profiles
+                    result["printers"][model]["margins"] = margins
 
         default_model = str(raw_settings.get("default_model", result["default_model"])).strip().upper()
         result["default_model"] = default_model if default_model in {"DS620", "RX1HS"} else "DS620"
@@ -17468,7 +21609,7 @@ class KioskMainWindow(QMainWindow):
         self.current_design_index = None
         self.current_design_path = None
         self.current_design_is_gray = False
-        self.current_design_flip_horizontal = False
+        self.current_design_flip_horizontal = DEFAULT_DESIGN_FLIP_HORIZONTAL
         self.current_design_qr_enabled = True
         self.current_print_path = None
         self.current_print_job_path = None
@@ -17560,8 +21701,20 @@ class KioskMainWindow(QMainWindow):
                     f"from=\"{current_name}\" to=\"{detected_name}\""
                 )
 
-        ds620_ready = bool(str(printers.get("DS620", {}).get("win_name", "")).strip()) if isinstance(printers.get("DS620"), dict) else False
-        rx1hs_ready = bool(str(printers.get("RX1HS", {}).get("win_name", "")).strip()) if isinstance(printers.get("RX1HS"), dict) else False
+        ds620_ready = bool(
+            self._filter_virtual_printer_candidates(
+                self._resolve_printer_candidates_for_model("DS620", settings=printing),
+                model="DS620",
+                context="startup_default",
+            )
+        )
+        rx1hs_ready = bool(
+            self._filter_virtual_printer_candidates(
+                self._resolve_printer_candidates_for_model("RX1HS", settings=printing),
+                model="RX1HS",
+                context="startup_default",
+            )
+        )
         current_default = str(printing.get("default_model", "DS620")).strip().upper()
         desired_default = current_default if current_default in {"DS620", "RX1HS"} else "DS620"
         if ds620_ready and not rx1hs_ready:
@@ -17633,6 +21786,10 @@ class KioskMainWindow(QMainWindow):
         layouts = _read_layout_map(source.get("layouts"))
         if not layouts and isinstance(legacy, dict):
             layouts = _read_layout_map(legacy.get("pricing_by_layout"))
+        if AI_MODE_PRICING_LAYOUT_ID not in layouts:
+            legacy_ai_price = layouts.get(str(AI_LAYOUT_ID).strip())
+            if legacy_ai_price is not None:
+                layouts[AI_MODE_PRICING_LAYOUT_ID] = int(legacy_ai_price)
 
         detected = list(layout_ids or [])
         if not detected:
@@ -17731,7 +21888,7 @@ class KioskMainWindow(QMainWindow):
                 max_width = int(raw.get("max_width", DEFAULT_GIF_SETTINGS["max_width"]))
             except Exception:
                 max_width = int(DEFAULT_GIF_SETTINGS["max_width"])
-            result["frames_per_shot"] = max(1, min(8, frames_per_shot))
+            result["frames_per_shot"] = max(1, min(10, frames_per_shot))
             result["interval_ms"] = max(50, min(1000, interval_ms))
             result["max_width"] = max(64, min(1920, max_width))
         return result
@@ -17772,16 +21929,21 @@ class KioskMainWindow(QMainWindow):
                     "win_name": str(ds620.get("win_name", "")),
                     "form_4x6": str(ds620.get("form_4x6", "4x6")),
                     "form_2x6": str(ds620.get("form_2x6", "2x6")),
+                    "margin_profiles": _normalize_simple_margin_profiles(ds620.get("margin_profiles")),
+                    "margins": _normalize_printer_margin_settings(ds620.get("margins", ds620)),
                 },
                 "DS620_STRIP": {
                     "win_name": str(ds620_strip.get("win_name", "")),
                     "form_4x6": str(ds620_strip.get("form_4x6", "4x6")),
                     "form_2x6": str(ds620_strip.get("form_2x6", "2x6")),
+                    "margins": _normalize_printer_margin_settings(ds620_strip.get("margins", ds620_strip)),
                 },
                 "RX1HS": {
                     "win_name": str(rx1hs.get("win_name", "")),
                     "form_4x6": str(rx1hs.get("form_4x6", "4x6")),
                     "form_2x6": str(rx1hs.get("form_2x6", "2x6")),
+                    "margin_profiles": _normalize_simple_margin_profiles(rx1hs.get("margin_profiles")),
+                    "margins": _normalize_printer_margin_settings(rx1hs.get("margins", rx1hs)),
                 },
             },
             "default_model": str(self.printing_settings.get("default_model", "DS620")),
@@ -17811,6 +21973,37 @@ class KioskMainWindow(QMainWindow):
             if marker in token:
                 return True
         return False
+
+    def _virtual_printer_fallback_allowed(self) -> bool:
+        if self.is_test_mode():
+            return True
+        return self._env_bool(os.environ.get("KIOSK_ALLOW_VIRTUAL_PRINTERS", "0"), False)
+
+    def _filter_virtual_printer_candidates(
+        self,
+        names: list[str],
+        model: str = "",
+        context: str = "",
+    ) -> list[str]:
+        items = [str(name).strip() for name in (names or []) if str(name).strip()]
+        if not items or self._virtual_printer_fallback_allowed():
+            return items
+
+        physical = [name for name in items if not self._is_virtual_printer_name(name)]
+        if physical:
+            if len(physical) != len(items):
+                blocked = ", ".join(name for name in items if self._is_virtual_printer_name(name))
+                print(
+                    f"[PRINT] virtual queues blocked model={str(model or '-').strip().upper()} "
+                    f"context={context or '-'} queues={blocked}"
+                )
+            return physical
+
+        print(
+            f"[PRINT] virtual-only queues blocked model={str(model or '-').strip().upper()} "
+            f"context={context or '-'} queues={', '.join(items)}"
+        )
+        return []
 
     def _match_installed_printer_name(self, requested: str, model_hint: str = "") -> str:
         wanted = str(requested or "").strip()
@@ -17876,6 +22069,17 @@ class KioskMainWindow(QMainWindow):
         return wanted
 
     def list_windows_printers(self) -> list[str]:
+        if not hasattr(self, "_printer_list_cache_lock"):
+            self._printer_list_cache_lock = threading.Lock()
+            self._printer_list_cache_names = []
+            self._printer_list_cache_ts = 0.0
+            self._printer_list_cache_error = ""
+            self._printer_list_cache_error_ts = 0.0
+            self._printer_list_cache_ttl_sec = 10.0
+        now_ts = time.monotonic()
+        with self._printer_list_cache_lock:
+            if (now_ts - float(self._printer_list_cache_ts)) < float(self._printer_list_cache_ttl_sec):
+                return list(self._printer_list_cache_names)
         try:
             import win32print
 
@@ -17888,11 +22092,28 @@ class KioskMainWindow(QMainWindow):
                     if isinstance(item, (tuple, list)) and len(item) >= 3 and str(item[2]).strip()
                 )
             )
-            print(f"[ADMIN] printers found: {', '.join(names) if names else '(none)'}")
+            with self._printer_list_cache_lock:
+                if names != self._printer_list_cache_names:
+                    print(f"[ADMIN] printers found: {', '.join(names) if names else '(none)'}")
+                self._printer_list_cache_names = list(names)
+                self._printer_list_cache_ts = now_ts
+                self._printer_list_cache_error = ""
+                self._printer_list_cache_error_ts = 0.0
             return names
         except Exception as exc:
-            print(f"[ADMIN] printers found: error {exc}")
-            return []
+            err_text = str(exc)
+            with self._printer_list_cache_lock:
+                should_log = (
+                    err_text != self._printer_list_cache_error
+                    or (now_ts - float(self._printer_list_cache_error_ts)) >= 60.0
+                )
+                if should_log:
+                    print(f"[ADMIN] printers found: error {exc}")
+                    self._printer_list_cache_error = err_text
+                    self._printer_list_cache_error_ts = now_ts
+                self._printer_list_cache_ts = now_ts
+                cached = list(self._printer_list_cache_names)
+            return cached
 
     def list_printer_forms(self, printer_name: str) -> list[str]:
         name = str(printer_name or "").strip()
@@ -17903,19 +22124,7 @@ class KioskMainWindow(QMainWindow):
             import win32print
 
             handle = win32print.OpenPrinter(name)
-            try:
-                entries = win32print.EnumForms(handle, 1)
-            except TypeError:
-                entries = win32print.EnumForms(handle)
-            except Exception:
-                entries = []
-            forms = sorted(
-                {
-                    str(item.get("Name", "")).strip()
-                    for item in (entries or [])
-                    if isinstance(item, dict) and str(item.get("Name", "")).strip()
-                }
-            )
+            forms = _enumerate_printer_form_names(handle)
             print(
                 f"[ADMIN] forms printer=\"{name}\" found: "
                 f"{', '.join(forms) if forms else '(none)'}"
@@ -18928,6 +23137,35 @@ class KioskMainWindow(QMainWindow):
         print(f"[HEALTH] {log_key}={'OK' if ok else 'FAIL'} msg={msg}")
         return ok, msg
 
+    def _printer_health_snapshot(
+        self,
+        config_keys: tuple[str, ...],
+        printing_settings: Optional[dict] = None,
+    ) -> tuple[bool, str]:
+        cfg = printing_settings if isinstance(printing_settings, dict) else self.get_printing_settings()
+        first_msg = ""
+        saw_candidates = False
+        for config_key in config_keys:
+            candidates = self._resolve_printer_candidates_for_model(
+                model=str(config_key or "").strip().upper(),
+                settings=cfg,
+            )
+            candidates = self._filter_virtual_printer_candidates(
+                candidates,
+                model=str(config_key or "").strip().upper(),
+                context="health_snapshot",
+            )
+            if not candidates:
+                continue
+            saw_candidates = True
+            for name in candidates:
+                ok, msg = get_printer_health(name)
+                if bool(ok):
+                    return True, str(msg)
+                if not first_msg:
+                    first_msg = str(msg)
+        return False, (first_msg or ("프린터 이름 미설정" if not saw_candidates else "health_check_failed"))
+
     @staticmethod
     def _resolve_print_model(settings: dict) -> str:
         model = str(settings.get("default_model", "DS620")).strip().upper()
@@ -18979,6 +23217,45 @@ class KioskMainWindow(QMainWindow):
         if isinstance(value, str) and value.strip():
             return _finalize(value.strip())
         return _finalize(str(DEFAULT_PRINTING_SETTINGS["printers"]["DS620"]["win_name"]))
+
+    def _resolve_printer_margins_for_model(
+        self,
+        model: str,
+        settings: Optional[dict] = None,
+        image_size: Optional[tuple[int, int]] = None,
+    ) -> dict[str, int]:
+        cfg = self._normalize_printing_settings(
+            settings if isinstance(settings, dict) else self.get_printing_settings()
+        )
+        printers = cfg.get("printers", {}) if isinstance(cfg, dict) else {}
+        model_key = str(model or "DS620").strip().upper()
+        probe_keys = [model_key]
+        if model_key == "DS620_STRIP":
+            probe_keys.append("DS620")
+        for key in probe_keys:
+            item = printers.get(key) if isinstance(printers, dict) else None
+            if isinstance(item, dict):
+                advanced_margins = _normalize_printer_margin_settings(item.get("margins", item))
+                if key in {"DS620", "RX1HS"} and image_size:
+                    simple_profile = _resolve_simple_margin_profile(
+                        item.get("margin_profiles"),
+                        image_size,
+                    )
+                    simple_margins = _convert_simple_margins_to_print_margins(
+                        simple_profile,
+                        image_size,
+                    )
+                    resolved = _combine_margin_settings(simple_margins, advanced_margins)
+                    profile_key = _resolve_simple_margin_profile_key(image_size)
+                    print(
+                        f"[PRINT] margin profile model={key} profile={profile_key} "
+                        f"horizontal={simple_profile['horizontal']} vertical={simple_profile['vertical']} "
+                        f"advanced=L{advanced_margins['left']}/R{advanced_margins['right']}/"
+                        f"T{advanced_margins['top']}/B{advanced_margins['bottom']}"
+                    )
+                    return resolved
+                return advanced_margins
+        return dict(DEFAULT_PRINTER_MARGIN_SETTINGS)
 
     def _resolve_dedicated_strip_queue_name(self, settings: Optional[dict] = None) -> str:
         cfg = settings if isinstance(settings, dict) else self.get_printing_settings()
@@ -19136,6 +23413,7 @@ class KioskMainWindow(QMainWindow):
         model: str,
         job_size: str,
         settings: Optional[dict] = None,
+        printer_name: str = "",
     ) -> str:
         cfg = settings if isinstance(settings, dict) else self.get_printing_settings()
         model_key = str(model or "DS620").strip().upper()
@@ -19146,9 +23424,15 @@ class KioskMainWindow(QMainWindow):
         form_4x6 = str(item.get("form_4x6", "4x6")).strip() or "4x6"
         form_2x6 = str(item.get("form_2x6", "2x6")).strip() or "2x6"
         size_text = str(job_size or "4x6").strip().lower()
-        if size_text.startswith("2x6"):
-            return form_2x6
-        return form_4x6
+        resolved = form_2x6 if size_text.startswith("2x6") else form_4x6
+        normalized = _normalize_printer_form_name_for_job(size_text, resolved)
+        if normalized != resolved:
+            printer_suffix = f' printer="{printer_name}"' if str(printer_name or "").strip() else ""
+            print(
+                f"[PRINT_FORM] coerced{printer_suffix} model={model_key} "
+                f"size={job_size} form=\"{resolved}\" -> \"{normalized}\""
+            )
+        return normalized
 
     def get_payment_pricing_settings(self) -> dict:
         return {
@@ -19207,6 +23491,26 @@ class KioskMainWindow(QMainWindow):
         # Dummy fallback is allowed only in test mode.
         return bool(self.is_test_mode() and enabled)
 
+    def allow_canon_remote_capture(self) -> bool:
+        return bool(
+            self.admin_settings.get(
+                "allow_canon_remote_capture",
+                bool(DEFAULT_ADMIN_SETTINGS["allow_canon_remote_capture"]),
+            )
+        )
+
+    def get_design_frame_count(self) -> int:
+        try:
+            value = int(
+                self.admin_settings.get(
+                    "design_frame_count",
+                    int(DEFAULT_ADMIN_SETTINGS["design_frame_count"]),
+                )
+            )
+        except Exception:
+            value = int(DEFAULT_ADMIN_SETTINGS["design_frame_count"])
+        return max(1, min(14, value))
+
     def is_test_mode(self) -> bool:
         return bool(self.admin_settings.get("test_mode", False))
 
@@ -19262,6 +23566,7 @@ class KioskMainWindow(QMainWindow):
                 f"camera_backend={self._resolve_requested_camera_backend(self.admin_settings)} "
                 f"test_mode={self.is_test_mode()} "
                 f"allow_dummy={self.allow_dummy_when_camera_fail()} "
+                f"allow_remote={self.allow_canon_remote_capture()} "
                 f"countdown={self.get_countdown_seconds()} "
                 f"capture_override={self.admin_settings.get('capture_slots_override')}"
             )
@@ -19290,6 +23595,9 @@ class KioskMainWindow(QMainWindow):
         source_ai_styles = ai_styles if ai_styles is not None else config.get("ai_styles")
         normalized_ai_styles = self._normalize_ai_styles_settings(source_ai_styles)
         config["ai_styles"] = normalized_ai_styles
+        source_celebrity = celebrity if celebrity is not None else config.get("celebrity")
+        normalized_celebrity = self._normalize_celebrity_settings(source_celebrity)
+        config["celebrity"] = normalized_celebrity
         source_bill = bill_acceptor if bill_acceptor is not None else config.get("bill_acceptor")
         source_pricing = pricing if pricing is not None else config.get("pricing")
         normalized_pricing = self._normalize_pricing_settings(
@@ -19308,9 +23616,6 @@ class KioskMainWindow(QMainWindow):
             pricing_prefix=normalized_pricing.get("currency_prefix", ""),
         )
         config["bill_acceptor"] = normalized_bill
-        source_celebrity = celebrity if celebrity is not None else config.get("celebrity")
-        normalized_celebrity = self._normalize_celebrity_settings(source_celebrity)
-        config["celebrity"] = normalized_celebrity
         # Backward-compatible mirror.
         config["payment_pricing"] = {
             "default_price": int(normalized_pricing.get("default_price", DEFAULT_PRICING_SETTINGS["default_price"])),
@@ -19400,6 +23705,10 @@ class KioskMainWindow(QMainWindow):
         return forced_cash
 
     def open_admin(self) -> None:
+        self._reset_start_admin_taps()
+        self._start_admin_tap_timer.stop()
+        self._reset_frame_select_admin_taps()
+        self._frame_select_admin_tap_timer.stop()
         current = self.stack.currentWidget()
         current_name = getattr(current, "screen_name", None)
         if isinstance(current_name, str) and current_name and current_name != "admin":
@@ -19411,6 +23720,9 @@ class KioskMainWindow(QMainWindow):
 
     def _reset_start_admin_taps(self) -> None:
         self._start_admin_tap_count = 0
+
+    def _reset_frame_select_admin_taps(self) -> None:
+        self._frame_select_admin_tap_count = 0
 
     def _ensure_admin_camera_base(self) -> tuple[Optional[CameraScreen], list[str]]:
         prepared: list[str] = []
@@ -19595,11 +23907,19 @@ class KioskMainWindow(QMainWindow):
         rx, ry, rw, rh = rect
         return rx <= int(x) < rx + rw and ry <= int(y) < ry + rh
 
+    def _resolve_pricing_layout_id(self, layout_id: Optional[str]) -> str:
+        layout_key = str(layout_id or "").strip()
+        mode_key = str(self.compose_mode or "").strip().lower()
+        if mode_key == "ai" and layout_key == AI_LAYOUT_ID:
+            return AI_MODE_PRICING_LAYOUT_ID
+        return layout_key
+
     def _price_per_set_for_layout(self, layout_id: Optional[str]) -> int:
         pricing = self.get_payment_pricing_settings()
         by_layout = pricing.get("layouts", {})
-        if isinstance(by_layout, dict) and layout_id:
-            value = by_layout.get(str(layout_id))
+        pricing_layout_id = self._resolve_pricing_layout_id(layout_id)
+        if isinstance(by_layout, dict) and pricing_layout_id:
+            value = by_layout.get(str(pricing_layout_id))
             if value is not None:
                 try:
                     return max(0, int(value))
@@ -19623,6 +23943,30 @@ class KioskMainWindow(QMainWindow):
             f"layout={layout_id} base={base} sets={sets} prints={prints}"
         )
         return self.current_required_amount
+
+    def _ensure_current_order_id(self) -> str:
+        if self.current_order_id:
+            return str(self.current_order_id)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        self.current_order_id = f"ORD-{timestamp}-{uuid.uuid4().hex[:6].upper()}"
+        print(f"[ORDER] created order_id={self.current_order_id}")
+        return str(self.current_order_id)
+
+    def _set_order_state(self, state: OrderFlowState | str, reason: str = "") -> None:
+        value = state.value if isinstance(state, OrderFlowState) else str(state or "").strip()
+        if not value:
+            return
+        self.current_order_state = value
+        self._sync_payment_state_to_session()
+        if self.current_order_id:
+            try:
+                self.payment_service.mark_order_state(self.current_order_id, value)
+            except Exception as exc:
+                print(f"[PAYMENT] order_state sync failed: {exc}")
+        if reason:
+            print(f"[ORDER] state={value} reason={reason}")
+        else:
+            print(f"[ORDER] state={value}")
 
     def _resolve_coupon_value(self, code_digits: str) -> int:
         code = "".join(ch for ch in str(code_digits) if ch.isdigit())[:6]
@@ -19651,6 +23995,24 @@ class KioskMainWindow(QMainWindow):
         setattr(session, "payment_required", int(self.current_required_amount))
         setattr(session, "payment_inserted", int(self.current_inserted_amount))
         setattr(session, "payment_remaining", int(self.current_remaining_amount))
+        setattr(session, "order_id", self.current_order_id)
+        setattr(session, "order_state", self.current_order_state)
+        setattr(session, "payment_request_ref", self.current_payment_request_ref)
+        setattr(session, "payment_transaction_id", self.current_payment_transaction_id)
+        setattr(session, "payment_status", self.current_payment_status)
+        payment_provider = ""
+        if isinstance(getattr(self, "payment_settings", None), dict):
+            payment_provider = str(self.payment_settings.get("payment_provider", "")).strip()
+        setattr(session, "payment_provider", payment_provider)
+        if hasattr(session, "set_payment_context"):
+            session.set_payment_context(
+                order_id=self.current_order_id,
+                order_state=self.current_order_state,
+                payment_status=self.current_payment_status,
+                payment_provider=payment_provider,
+                payment_request_ref=self.current_payment_request_ref,
+                payment_transaction_id=self.current_payment_transaction_id,
+            )
 
     def _start_bill_acceptor_for_payment(self) -> bool:
         settings = self.get_bill_acceptor_settings()
@@ -19669,11 +24031,244 @@ class KioskMainWindow(QMainWindow):
             self.stop_bill_acceptor_test(wait_ms=3000)
             print("[BILL] payment listener stopped")
 
+    def _card_payment_screen_widget(self, screen_name: Optional[str] = None):
+        target = str(screen_name or getattr(self.stack.currentWidget(), "screen_name", "") or "").strip()
+        if target == "pay_card":
+            screen = self.screens.get("pay_card")
+            return screen if isinstance(screen, PayCardScreen) else None
+        if target == "pay_card_remaining":
+            screen = self.screens.get("pay_card_remaining")
+            return screen if isinstance(screen, PayCardRemainingScreen) else None
+        return None
+
+    @staticmethod
+    def _payment_status_label(status: PaymentStatus | str) -> str:
+        value = status.value if isinstance(status, PaymentStatus) else str(status or "").strip().upper()
+        mapping = {
+            "IDLE": "카드 결제 대기",
+            "PENDING": "단말기 응답 대기",
+            "APPROVED": "결제 승인 완료",
+            "DECLINED": "결제 승인 거절",
+            "CANCELLED": "결제 취소",
+            "TIMEOUT": "결제 시간 초과",
+            "ERROR": "결제 오류",
+        }
+        return mapping.get(value, value or "카드 결제 대기")
+
+    def _update_card_payment_ui(
+        self,
+        *,
+        status: PaymentStatus | str,
+        detail: str = "",
+        screen_name: Optional[str] = None,
+        cancellable: bool = False,
+    ) -> None:
+        screen = self._card_payment_screen_widget(screen_name)
+        if screen is None:
+            return
+        countdown_value: Optional[int] = None
+        if self._payment_deadline_monotonic > 0:
+            countdown_value = max(0, int(round(self._payment_deadline_monotonic - time.monotonic())))
+        screen.set_payment_progress(
+            self._payment_status_label(status),
+            detail_text=detail,
+            countdown_sec=countdown_value,
+            cancellable=cancellable,
+        )
+
+    def _begin_card_payment(self, *, screen_name: str, amount_cents: int, description: str, failure_return_screen: str) -> None:
+        amount_value = max(0, int(amount_cents))
+        if amount_value <= 0:
+            self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason="zero_amount_card_skip")
+            self.goto_screen("payment_complete_success")
+            return
+        order_id = self._ensure_current_order_id()
+        self.current_payment_request_ref = None
+        self.current_payment_transaction_id = None
+        self.current_payment_status = PaymentStatus.PENDING.value
+        self._payment_failure_return_screen = str(failure_return_screen or "payment_method")
+        self._payment_started_screen_name = str(screen_name or "")
+        self._payment_deadline_monotonic = time.monotonic() + int(
+            self.get_payment_settings().get("payment_timeout_sec", 60)
+        )
+        self._set_order_state(OrderFlowState.PAYMENT_PENDING, reason=f"card_begin:{screen_name}")
+        self._sync_payment_state_to_session()
+        self._update_card_payment_ui(
+            status=PaymentStatus.PENDING,
+            detail=f"{format_amount_for_display(amount_value, self.get_payment_settings().get('currency', 'CAD'))} 결제를 요청했습니다",
+            screen_name=screen_name,
+            cancellable=True,
+        )
+        self._payment_ui_timer.start()
+        started, message = self.payment_service.start_sale(
+            order_id=order_id,
+            amount_cents=amount_value,
+            currency=str(self.get_payment_settings().get("currency", "CAD")),
+            description=str(description or "Photo kiosk payment"),
+            order_state=OrderFlowState.PAYMENT_PENDING.value,
+            on_update=lambda flow: self._payment_event_bridge.payment_update.emit(flow),
+            on_complete=lambda result: self._payment_event_bridge.payment_complete.emit(result),
+        )
+        if started:
+            self.current_payment_request_ref = str(message)
+            self.current_payment_status = PaymentStatus.PENDING.value
+            self._sync_payment_state_to_session()
+            return
+        self._payment_ui_timer.stop()
+        self.current_payment_status = PaymentStatus.ERROR.value
+        self._set_order_state(OrderFlowState.PAYMENT_FAILED, reason=f"card_start_failed:{message}")
+        self._update_card_payment_ui(
+            status=PaymentStatus.ERROR,
+            detail=f"결제 시작 실패: {message}",
+            screen_name=screen_name,
+            cancellable=False,
+        )
+        screen = self._card_payment_screen_widget(screen_name)
+        if screen is not None:
+            screen.show_notice(f"결제 시작 실패: {message}", duration_ms=1600)
+
+    def _on_payment_ui_tick(self) -> None:
+        if not self._payment_ui_timer.isActive():
+            return
+        screen_name = str(getattr(self.stack.currentWidget(), "screen_name", "") or "").strip()
+        if screen_name not in {"pay_card", "pay_card_remaining"}:
+            return
+        flow = self.payment_service.get_flow_state()
+        self._update_card_payment_ui(
+            status=flow.status,
+            detail=str(flow.message or ""),
+            screen_name=screen_name,
+            cancellable=bool(flow.cancellable),
+        )
+
+    def _on_payment_service_update(self, payload: object) -> None:
+        if not isinstance(payload, FlowStateResult):
+            return
+        if self.current_order_id and payload.current_order_id and payload.current_order_id != self.current_order_id:
+            return
+        self.current_payment_status = payload.status.value
+        if payload.status == PaymentStatus.PENDING:
+            self._set_order_state(OrderFlowState.PAYMENT_PROCESSING, reason="card_pending")
+        self._sync_payment_state_to_session()
+        self._update_card_payment_ui(
+            status=payload.status,
+            detail=str(payload.message or ""),
+            screen_name=self._payment_started_screen_name,
+            cancellable=bool(payload.cancellable),
+        )
+
+    def _handle_card_payment_failure(self, result: PaymentResult) -> None:
+        failure_target = self._payment_failure_return_screen or "payment_method"
+        if result.status in {PaymentStatus.CANCELLED, PaymentStatus.TIMEOUT}:
+            self._set_order_state(OrderFlowState.ABORTED, reason=result.status.value)
+        else:
+            self._set_order_state(OrderFlowState.PAYMENT_FAILED, reason=result.status.value)
+        detail = result.error_message or result.message or self._payment_status_label(result.status)
+        self._update_card_payment_ui(
+            status=result.status,
+            detail=detail,
+            screen_name=self._payment_started_screen_name,
+            cancellable=False,
+        )
+        screen = self._card_payment_screen_widget(self._payment_started_screen_name)
+        if screen is not None:
+            screen.show_notice(detail, duration_ms=1500)
+        QTimer.singleShot(900, lambda target=failure_target: self.goto_screen(target))
+
+    def _on_payment_service_complete(self, payload: object) -> None:
+        if not isinstance(payload, PaymentResult):
+            return
+        if self.current_order_id and payload.order_id and payload.order_id != self.current_order_id:
+            return
+        self._payment_ui_timer.stop()
+        self.current_payment_status = payload.status.value
+        self.current_payment_request_ref = str(payload.request_ref or self.current_payment_request_ref or "")
+        self.current_payment_transaction_id = str(payload.transaction_id or self.current_payment_transaction_id or "")
+        self._sync_payment_state_to_session()
+        if payload.status == PaymentStatus.APPROVED:
+            self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason="card_approved")
+            self._update_card_payment_ui(
+                status=payload.status,
+                detail=payload.message or "결제가 승인되었습니다",
+                screen_name=self._payment_started_screen_name,
+                cancellable=False,
+            )
+            self.goto_screen("payment_complete_success")
+            return
+        self._handle_card_payment_failure(payload)
+
+    def _cancel_card_payment_if_active(self, screen_name: str) -> bool:
+        current_flow = self.payment_service.get_flow_state()
+        if self._payment_ui_timer.isActive() and self._payment_started_screen_name == screen_name and current_flow.is_busy:
+            cancelled = self.payment_service.cancel_active_payment("user_cancelled")
+            if cancelled:
+                self._update_card_payment_ui(
+                    status=PaymentStatus.CANCELLED,
+                    detail="취소 요청을 전송했습니다",
+                    screen_name=screen_name,
+                    cancellable=False,
+                )
+                screen = self._card_payment_screen_widget(screen_name)
+                if screen is not None:
+                    screen.show_notice("결제 취소 요청", duration_ms=1200)
+                if screen_name == "pay_card_remaining":
+                    self._payment_failure_return_screen = "coupon_remaining_method"
+                elif self._single_enabled_payment_method() == "card":
+                    self._payment_failure_return_screen = "how_many_prints"
+                else:
+                    self._payment_failure_return_screen = "payment_method"
+                return True
+        return False
+
+    def _trigger_payment_super_bypass(self, reason: str = "manual") -> bool:
+        current = self.stack.currentWidget()
+        screen_name = str(getattr(current, "screen_name", "") or "").strip()
+        allowed = {
+            "payment_method",
+            "pay_cash",
+            "pay_card",
+            "coupon_input",
+            "coupon_remaining_method",
+            "coupon_low",
+            "pay_cash_remaining",
+            "pay_card_remaining",
+        }
+        if screen_name not in allowed:
+            return False
+        if screen_name in {"pay_cash", "pay_cash_remaining"}:
+            self._stop_bill_acceptor_for_payment()
+        if self.current_required_amount <= 0:
+            self._refresh_required_amount()
+        self._ensure_current_order_id()
+        self.current_payment_method = "test"
+        self.payment_method = "test"
+        self.current_payment_status = PaymentStatus.APPROVED.value
+        self.current_coupon_code = None
+        self.coupon_code = None
+        self.pending_coupon_code = None
+        self.current_coupon_value = 0
+        self.coupon_value = 0
+        self.current_inserted_amount = 0
+        self.current_remaining_amount = 0
+        self._sync_payment_state_to_session()
+        session = self.get_active_session()
+        if session is not None:
+            setattr(session, "payment_method", "test")
+            setattr(session, "coupon_code", "")
+            setattr(session, "coupon_value", 0)
+        self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason=f"super_bypass:{reason}")
+        print(f"[PAYMENT] super bypass reason={reason} screen={screen_name} -> payment_complete_success")
+        self.goto_screen("payment_complete_success")
+        return True
+
     def _enter_pay_cash_screen(self) -> None:
+        self._ensure_current_order_id()
         required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
         self.current_coupon_value = 0
         self.current_inserted_amount = 0
         self.current_remaining_amount = max(0, required)
+        self.current_payment_status = PaymentStatus.PENDING.value
+        self._set_order_state(OrderFlowState.PAYMENT_PENDING, reason="pay_cash_enter")
         self._sync_payment_state_to_session()
         screen = self.screens.get("pay_cash")
         if isinstance(screen, PayCashScreen):
@@ -19686,21 +24281,80 @@ class KioskMainWindow(QMainWindow):
             if isinstance(screen, PayCashScreen):
                 screen.show_notice("지폐기 연결 실패", duration_ms=1200)
 
+    def _enter_pay_card_screen(self) -> None:
+        self._ensure_current_order_id()
+        required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
+        self.current_inserted_amount = 0
+        self.current_remaining_amount = max(0, required - self.current_coupon_value)
+        self.current_payment_status = PaymentStatus.PENDING.value
+        self._set_order_state(OrderFlowState.PAYMENT_PENDING, reason="pay_card_enter")
+        self._sync_payment_state_to_session()
+        screen = self.screens.get("pay_card")
+        if isinstance(screen, PayCardScreen):
+            screen.set_amounts(required)
+            screen.clear_payment_progress()
+        print(
+            f"[PAYMENT_CARD] enter required={required} "
+            f"coupon={self.current_coupon_value} remaining={self.current_remaining_amount}"
+        )
+        self._begin_card_payment(
+            screen_name="pay_card",
+            amount_cents=self.current_remaining_amount,
+            description=f"Photo kiosk order {self.current_order_id or ''}",
+            failure_return_screen="payment_method",
+        )
+
     def _enter_coupon_remaining_method_screen(self) -> None:
+        self._ensure_current_order_id()
         required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
         remaining = max(0, required - self.current_coupon_value)
         self.current_inserted_amount = 0
         self.current_remaining_amount = remaining
+        self._set_order_state(OrderFlowState.CHECKOUT, reason="coupon_remaining_select")
         self._sync_payment_state_to_session()
         print(
             f"[PAYMENT] coupon remaining select enter required={required} "
             f"coupon={self.current_coupon_value} remaining={remaining}"
         )
 
+    def _enter_coupon_low_screen(self) -> None:
+        self._ensure_current_order_id()
+        required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
+        remaining = max(0, required - self.current_coupon_value)
+        self.current_inserted_amount = 0
+        self.current_remaining_amount = remaining
+        self._set_order_state(OrderFlowState.CHECKOUT, reason="coupon_low")
+        self._sync_payment_state_to_session()
+        print(
+            f"[COUPON_LOW] enter required={required} "
+            f"coupon={self.current_coupon_value} remaining={remaining}"
+        )
+
+    def handle_coupon_low_timeout(self) -> None:
+        required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
+        print(
+            f"[COUPON_LOW] auto return -> payment_method "
+            f"required={required} coupon={self.current_coupon_value}"
+        )
+        self.current_payment_method = "cash"
+        self.payment_method = "cash"
+        self.current_coupon_code = None
+        self.coupon_code = None
+        self.pending_coupon_code = None
+        self.current_coupon_value = 0
+        self.coupon_value = 0
+        self.current_inserted_amount = 0
+        self.current_remaining_amount = max(0, required)
+        self._sync_payment_state_to_session()
+        self.goto_screen("payment_method")
+
     def _enter_pay_cash_remaining_screen(self) -> None:
+        self._ensure_current_order_id()
         required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
         self.current_inserted_amount = 0
         self.current_remaining_amount = max(0, required - self.current_coupon_value)
+        self.current_payment_status = PaymentStatus.PENDING.value
+        self._set_order_state(OrderFlowState.PAYMENT_PENDING, reason="pay_cash_remaining_enter")
         self._sync_payment_state_to_session()
         screen = self.screens.get("pay_cash_remaining")
         if isinstance(screen, PayCashRemainingScreen):
@@ -19713,6 +24367,29 @@ class KioskMainWindow(QMainWindow):
         if not self._start_bill_acceptor_for_payment():
             if isinstance(screen, PayCashRemainingScreen):
                 screen.show_notice("지폐기 연결 실패", duration_ms=1200)
+
+    def _enter_pay_card_remaining_screen(self) -> None:
+        self._ensure_current_order_id()
+        required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
+        self.current_inserted_amount = 0
+        self.current_remaining_amount = max(0, required - self.current_coupon_value)
+        self.current_payment_status = PaymentStatus.PENDING.value
+        self._set_order_state(OrderFlowState.PAYMENT_PENDING, reason="pay_card_remaining_enter")
+        self._sync_payment_state_to_session()
+        screen = self.screens.get("pay_card_remaining")
+        if isinstance(screen, PayCardRemainingScreen):
+            screen.set_amounts(required, self.current_coupon_value)
+            screen.clear_payment_progress()
+        print(
+            f"[PAYMENT_CARD] enter remaining required={required} "
+            f"coupon={self.current_coupon_value} remaining={self.current_remaining_amount}"
+        )
+        self._begin_card_payment(
+            screen_name="pay_card_remaining",
+            amount_cents=self.current_remaining_amount,
+            description=f"Photo kiosk remaining payment {self.current_order_id or ''}",
+            failure_return_screen="coupon_remaining_method",
+        )
 
     def _on_bill_event_for_payment(self, amount: int) -> None:
         current = self.stack.currentWidget()
@@ -19730,6 +24407,8 @@ class KioskMainWindow(QMainWindow):
             )
             if self.current_inserted_amount >= self.current_required_amount:
                 self._stop_bill_acceptor_for_payment()
+                self.current_payment_status = PaymentStatus.APPROVED.value
+                self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason="cash_insert_complete")
                 self.goto_screen("payment_complete_success")
             return
         if screen_name == "pay_cash_remaining":
@@ -19752,6 +24431,8 @@ class KioskMainWindow(QMainWindow):
             )
             if self.current_remaining_amount <= 0:
                 self._stop_bill_acceptor_for_payment()
+                self.current_payment_status = PaymentStatus.APPROVED.value
+                self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason="cash_remaining_complete")
                 self.goto_screen("payment_complete_success")
 
     def _handle_coupon_success(self, code: str, coupon_value: Optional[int] = None) -> None:
@@ -19769,15 +24450,19 @@ class KioskMainWindow(QMainWindow):
         required = self.current_required_amount if self.current_required_amount > 0 else self._refresh_required_amount()
         self.current_inserted_amount = 0
         self.current_remaining_amount = max(0, required - self.current_coupon_value)
+        self.current_payment_status = PaymentStatus.APPROVED.value if self.current_remaining_amount <= 0 else PaymentStatus.PENDING.value
         self._sync_payment_state_to_session()
         print(
             f"[COUPON] ok code={code} value={self.current_coupon_value} "
             f"required={required} remaining={self.current_remaining_amount}"
         )
         if self.current_remaining_amount <= 0:
+            self._set_order_state(OrderFlowState.PAYMENT_APPROVED, reason="coupon_full_cover")
             self.goto_screen("payment_complete_success")
         else:
-            self.goto_screen("coupon_remaining_method")
+            print("[COUPON] insufficient amount -> coupon_low")
+            self._set_order_state(OrderFlowState.CHECKOUT, reason="coupon_partial_cover")
+            self.goto_screen("coupon_low")
 
     def _continue_from_select_photo(self) -> bool:
         select_photo_screen = self.screens.get("select_photo")
@@ -19820,7 +24505,11 @@ class KioskMainWindow(QMainWindow):
         self.selected_print_paths = resolved_selected
         self.print_slots = total_slots
         self.current_print_slots = total_slots
-        print(f"[SELECT_PHOTO] next ok selected={total_slots} -> select_design")
+        selected_names = ", ".join(Path(path).name for path in resolved_selected)
+        print(
+            f"[SELECT_PHOTO] next ok selected={total_slots} "
+            f"paths=[{selected_names}] -> select_design"
+        )
         self.goto_screen("select_design")
         return True
 
@@ -19870,11 +24559,18 @@ class KioskMainWindow(QMainWindow):
         out_frame = share_dir / "frame.png"
         out_video = share_dir / "video.gif"
         out_meta = share_dir / "share.json"
+        layout_key = str(getattr(session, "layout_id", "") or self.current_layout_id or "").strip()
+        strip_layouts = self.get_strip_2x6_layouts()
 
         try:
             if print_path.is_file():
-                shutil.copy2(print_path, out_print)
-                print(f"[SHARE] copy print -> {out_print}")
+                if layout_key in strip_layouts:
+                    first_half, _second_half = _split_image_for_2x6(print_path, layout_id=layout_key)
+                    first_half.convert("RGB").save(out_print, format="JPEG", quality=95)
+                    print(f"[SHARE] strip print first half -> {out_print}")
+                else:
+                    shutil.copy2(print_path, out_print)
+                    print(f"[SHARE] copy print -> {out_print}")
             else:
                 print(f"[SHARE] print missing: {print_path}")
         except Exception as exc:
@@ -19885,8 +24581,13 @@ class KioskMainWindow(QMainWindow):
             chosen_frame = self._resolve_default_frame_path(self.current_layout_id)
         try:
             if chosen_frame is not None and chosen_frame.is_file():
-                shutil.copy2(chosen_frame, out_frame)
-                print(f"[SHARE] copy frame -> {out_frame}")
+                if layout_key in strip_layouts:
+                    frame_half, _frame_half_2 = _split_image_for_2x6(chosen_frame, layout_id=layout_key)
+                    frame_half.save(out_frame, format="PNG")
+                    print(f"[SHARE] strip frame first half -> {out_frame}")
+                else:
+                    shutil.copy2(chosen_frame, out_frame)
+                    print(f"[SHARE] copy frame -> {out_frame}")
             else:
                 print("[SHARE] frame missing")
         except Exception as exc:
@@ -20091,6 +24792,7 @@ class KioskMainWindow(QMainWindow):
 
     def handle_payment_complete_success(self) -> None:
         if self._prepare_camera_entry(skip_health_check=True):
+            self._set_order_state(OrderFlowState.PHOTO_SESSION, reason="payment_complete_success")
             self.goto_screen("camera")
             return
         print("[PAYMENT_COMPLETE] camera transition failed -> fallback frame_select")
@@ -20134,6 +24836,7 @@ class KioskMainWindow(QMainWindow):
             print("[PREVIEW] missing print_job_path -> back to select_design")
             self.goto_screen("select_design")
             return False
+        self._set_order_state(OrderFlowState.PRINTING, reason="start_print_pipeline")
 
         image_path: Optional[Path] = None
         session_path = getattr(session, "print_job_path", None)
@@ -20162,6 +24865,7 @@ class KioskMainWindow(QMainWindow):
         self.current_print_job_mode = job_mode
         printing_settings = self.get_printing_settings()
         model = self._resolve_print_model(printing_settings)
+        layout_key = str(getattr(session, "layout_id", "") or self.current_layout_id or "").strip()
 
         def _has_model_candidates(check_model: str) -> bool:
             primary = self._resolve_printer_name_for_model(check_model, printing_settings)
@@ -20169,6 +24873,11 @@ class KioskMainWindow(QMainWindow):
                 model=check_model,
                 primary_name=primary,
                 settings=printing_settings,
+            )
+            items = self._filter_virtual_printer_candidates(
+                items,
+                model=check_model,
+                context="print_has_candidates",
             )
             if strip_split and items:
                 physical_only = [name for name in items if not self._is_virtual_printer_name(name)]
@@ -20215,7 +24924,12 @@ class KioskMainWindow(QMainWindow):
             f"copies={max(1, int(copies))}"
         )
         form_job_size = "2x6" if strip_split else job_size
-        form_name = self._resolve_printer_form_name_for_job(model, form_job_size, printing_settings)
+        form_name = self._resolve_printer_form_name_for_job(
+            model,
+            form_job_size,
+            printing_settings,
+            printer_name=printer_name,
+        )
         if use_driver_default_form:
             form_name = ""
             print("[PRINT_FORM] dedicated strip queue -> use driver default form/cut")
@@ -20254,6 +24968,11 @@ class KioskMainWindow(QMainWindow):
                     primary_name=self._resolve_printer_name_for_model(alt_model, printing_settings),
                     settings=printing_settings,
                 )
+                alt_candidates = self._filter_virtual_printer_candidates(
+                    alt_candidates,
+                    model=alt_model,
+                    context="print_alt_candidates",
+                )
                 if not alt_candidates:
                     return []
 
@@ -20261,7 +24980,12 @@ class KioskMainWindow(QMainWindow):
                 model = alt_model
                 printer_name = str(alt_candidates[0]).strip() or printer_name
                 fallback_form_size = "2x6" if strip_split else job_size
-                form_name = self._resolve_printer_form_name_for_job(model, fallback_form_size, printing_settings)
+                form_name = self._resolve_printer_form_name_for_job(
+                    model,
+                    fallback_form_size,
+                    printing_settings,
+                    printer_name=printer_name,
+                )
                 if use_driver_default_form:
                     form_name = ""
                     print("[PRINT_FORM] dedicated strip queue -> use driver default form/cut")
@@ -20282,6 +25006,11 @@ class KioskMainWindow(QMainWindow):
                 model=model,
                 primary_name=printer_name,
                 settings=printing_settings,
+            )
+            candidates = self._filter_virtual_printer_candidates(
+                candidates,
+                model=model,
+                context="print_candidates",
             )
             if strip_split and candidates:
                 physical_only = [name for name in candidates if not self._is_virtual_printer_name(name)]
@@ -20321,10 +25050,23 @@ class KioskMainWindow(QMainWindow):
 
             if not selected_ok:
                 hard_block = str(os.environ.get("KIOSK_PRINT_BLOCK_ON_HEALTH_FAIL", "0")).strip().lower()
-                should_block = hard_block in {"1", "true", "yes", "on"}
+                fail_msg_upper = str(first_fail_msg or "").upper()
+                should_block = hard_block in {"1", "true", "yes", "on"} or any(
+                    token in fail_msg_upper
+                    for token in ("PAPER_OUT", "PAPER_JAM", "DOOR_OPEN", "USER_INTERVENTION")
+                )
                 if should_block:
+                    notice = "프린터가 오프라인입니다. 프린터를 연결해주세요."
+                    if "PAPER_OUT" in fail_msg_upper:
+                        notice = "프린터 용지가 없습니다. 필름/용지를 교체해주세요."
+                    elif "PAPER_JAM" in fail_msg_upper:
+                        notice = "프린터 용지 걸림 상태입니다. 프린터를 확인해주세요."
+                    elif "DOOR_OPEN" in fail_msg_upper:
+                        notice = "프린터 도어가 열려 있습니다. 프린터를 확인해주세요."
+                    elif "USER_INTERVENTION" in fail_msg_upper:
+                        notice = "프린터 확인이 필요합니다. 장치 상태를 점검해주세요."
                     self._show_runtime_notice(
-                        "프린터가 오프라인입니다. 프린터를 연결해주세요.",
+                        notice,
                         duration_ms=1500,
                     )
                     print(
@@ -20337,6 +25079,36 @@ class KioskMainWindow(QMainWindow):
                     f"[PRINT] health warning ignored model={model} printer=\"{printer_name}\" "
                     f"msg=\"{first_fail_msg or 'health_check_failed'}\" policy=soft"
                 )
+        normalized_model = self._normalize_film_model(model)
+        health_ok, health_msg = self._printer_health_snapshot((normalized_model,), printing_settings)
+        if not health_ok and "용지 없음" in str(health_msg or ""):
+            self._show_runtime_notice("프린터 필름/용지가 없습니다. 교체 후 다시 시도해주세요.", duration_ms=1800)
+            print(
+                f"[PRINT] blocked paper_out model={model} printer=\"{printer_name}\" "
+                f"msg=\"{health_msg}\""
+            )
+            return False
+        if normalized_model in {"DS620", "RX1HS"}:
+            try:
+                probed_remaining = self._probe_dnp_media_remaining(normalized_model, force=True)
+            except Exception as exc:
+                probed_remaining = None
+                print(f"[FILM] dnp probe pre-print failed err={exc}")
+            required_units = max(1, int(copies)) * 2 if strip_split else max(1, int(copies))
+            if probed_remaining is not None and probed_remaining <= 0:
+                self._show_runtime_notice("프린터 필름/용지가 없습니다. 교체 후 다시 시도해주세요.", duration_ms=1800)
+                print(
+                    f"[PRINT] blocked no media model={model} printer=\"{printer_name}\" "
+                    f"remaining={probed_remaining}"
+                )
+                return False
+            if probed_remaining is not None and probed_remaining < required_units:
+                self._show_runtime_notice("프린터 필름/용지가 부족합니다. 교체 후 다시 시도해주세요.", duration_ms=1800)
+                print(
+                    f"[PRINT] blocked insufficient media model={model} printer=\"{printer_name}\" "
+                    f"remaining={probed_remaining} required={required_units}"
+                )
+                return False
         loading_screen = self.screens.get("loading")
         if isinstance(loading_screen, LoadingScreen):
             loading_screen.set_status_message("PRINTING\n인쇄중", animate=True)
@@ -20373,6 +25145,11 @@ class KioskMainWindow(QMainWindow):
         preview_screen = self.screens.get("preview")
         safe_copies = max(1, int(copies))
         printing_settings = self.get_printing_settings()
+        print_margins = self._resolve_printer_margins_for_model(
+            model,
+            printing_settings,
+            image_size=_read_image_size(image_path),
+        )
         worker = MainPrintWorker(
             image_path=image_path,
             printer_name=printer_name,
@@ -20385,6 +25162,7 @@ class KioskMainWindow(QMainWindow):
             enabled=bool(printing_settings.get("enabled", True)),
             dry_run=bool(printing_settings.get("dry_run", False)),
             test_mode=bool(self.is_test_mode()),
+            margins=print_margins,
         )
         self._active_print_context = {
             "model": str(model or "DS620"),
@@ -20394,6 +25172,7 @@ class KioskMainWindow(QMainWindow):
             "strip_split": bool(strip_split),
             "strip_sets": max(1, int(strip_sets)),
             "copies": int(safe_copies),
+            "margins": dict(print_margins),
         }
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -20416,8 +25195,7 @@ class KioskMainWindow(QMainWindow):
             for index in range(1, total_parts + 1):
                 print(f"[PRINT_JOB] start i={index}/{total_parts} path={image_path}")
         else:
-            for index in range(1, safe_copies + 1):
-                print(f"[PRINT_JOB] start i={index}/{safe_copies} path={image_path}")
+            print(f"[PRINT_JOB] grouped fullsheet path={image_path} copies={safe_copies}")
         print(
             f"[PRINT] start printer={printer_name} image={image_path} "
             f"copies={safe_copies} size={job_size} form=\"{form_name}\" "
@@ -20482,13 +25260,23 @@ class KioskMainWindow(QMainWindow):
         if model_key not in {"DS620", "DS620_STRIP", "RX1HS"}:
             model_key = "DS620"
         printer_name = self._resolve_printer_name_for_model(model_key, cfg)
-        form_name = self._resolve_printer_form_name_for_job(model_key, "4x6", cfg)
+        form_name = self._resolve_printer_form_name_for_job(
+            model_key,
+            "4x6",
+            cfg,
+            printer_name=printer_name,
+        )
         image_path = self._create_admin_test_print_image(model_key)
         exists = image_path.is_file()
         size = image_path.stat().st_size if exists else 0
         enabled = bool(cfg.get("enabled", True))
         dry_run = bool(cfg.get("dry_run", False))
         test_mode = bool(self.is_test_mode())
+        margins = self._resolve_printer_margins_for_model(
+            model_key,
+            cfg,
+            image_size=_read_image_size(image_path),
+        )
 
         print(f"[PRINT_TEST] start model={model_key} printer=\"{printer_name}\"")
         print(f"[PRINT] request image={image_path} exists={1 if exists else 0} size={size}")
@@ -20499,6 +25287,11 @@ class KioskMainWindow(QMainWindow):
         print(
             f"[PRINT] target model={model_key} win_name=\"{printer_name}\" "
             f"copies=1 form=\"{form_name}\""
+        )
+        print(
+            "[PRINT] margins "
+            f"L={margins['left']} R={margins['right']} "
+            f"T={margins['top']} B={margins['bottom']}"
         )
 
         try:
@@ -20513,7 +25306,13 @@ class KioskMainWindow(QMainWindow):
                 print(f"[PRINT] DRY_RUN reason={reason}")
                 print("[PRINT_TEST] ok")
                 return True
-            win_print_image(printer_name, str(image_path), copies=1, form_name=form_name)
+            win_print_image(
+                printer_name,
+                str(image_path),
+                copies=1,
+                form_name=form_name,
+                margins=margins,
+            )
             print(f"[PRINT] sent to spooler ok printer=\"{printer_name}\" copies=1")
             print("[PRINT_TEST] ok")
             return True
@@ -20567,6 +25366,247 @@ class KioskMainWindow(QMainWindow):
         if parsed < 0:
             return None
         return parsed
+
+    def _resolve_dnp_printerinfo_exe(self) -> Optional[Path]:
+        candidates: list[Path] = []
+        raw = str(os.environ.get("KIOSK_DNP_PRINTERINFO_EXE", "")).strip()
+        if raw:
+            candidates.append(Path(raw))
+        candidates.append(_DNP_PRINTERINFO_DEFAULT_EXE)
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                resolved = Path(candidate)
+            if resolved.is_file():
+                return resolved
+        return None
+
+    def _resolve_dnp_media_probe_dll(self) -> Optional[Path]:
+        candidates: list[Path] = []
+        raw = str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_DLL", "")).strip()
+        if raw:
+            candidates.append(Path(raw))
+        raw_exe = str(os.environ.get("KIOSK_DNP_PRINTERINFO_EXE", "")).strip()
+        if raw_exe:
+            candidates.append(Path(raw_exe).parent / "cspstat.dll")
+        candidates.append(_DNP_PRINTERINFO_DEFAULT_DLL)
+        printerinfo_exe = self._resolve_dnp_printerinfo_exe()
+        if printerinfo_exe is not None:
+            candidates.append(printerinfo_exe.parent / "cspstat.dll")
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                resolved = Path(candidate)
+            token = str(resolved).strip().lower()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            if resolved.is_file():
+                return resolved
+        return None
+
+    def _resolve_dnp_media_probe_powershell(self) -> Optional[Path]:
+        candidates: list[Path] = []
+        raw = str(os.environ.get("KIOSK_DNP_MEDIA_PROBE_POWERSHELL", "")).strip()
+        if raw:
+            candidates.append(Path(raw))
+        candidates.extend(
+            [
+                _DNP_PRINTERINFO_DEFAULT_X86_POWERSHELL,
+                Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            ]
+        )
+        for candidate in candidates:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                resolved = Path(candidate)
+            if resolved.is_file():
+                return resolved
+        return None
+
+    def _ensure_dnp_media_probe_script(self) -> Optional[Path]:
+        path = Path(self._dnp_media_probe_script_path)
+        expected = _DNP_PRINTERINFO_MEDIA_PROBE_SCRIPT
+        try:
+            current = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except Exception:
+            current = ""
+        if current == expected:
+            return path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(expected, encoding="utf-8")
+            return path
+        except Exception as exc:
+            print(f"[FILM] dnp probe script write failed path={path} err={exc}")
+            return None
+
+    def _store_film_remaining_probe_value(self, model: str, remaining: int, source: str) -> None:
+        key = self._normalize_film_model(model)
+        value = max(0, int(remaining))
+        with self._film_state_lock:
+            before = self._film_remaining_by_model.get(key)
+            self._film_remaining_by_model[key] = value
+            self._save_film_remaining_state_unlocked()
+        if before != value:
+            print(f"[FILM] sync model={key} remaining={value} source={source}")
+
+    def _resolve_dnp_media_probe_port_hints(self, model: str) -> list[int]:
+        key = self._normalize_film_model(model)
+        hints: list[int] = []
+
+        def _push(raw_value: object) -> None:
+            text = str(raw_value or "").strip()
+            if not text:
+                return
+            for token in text.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    parsed = int(token)
+                except Exception:
+                    continue
+                if parsed < 0 or parsed in hints:
+                    continue
+                hints.append(parsed)
+
+        last_port = self._dnp_media_probe_last_port_by_model.get(key)
+        if last_port is not None:
+            _push(str(int(last_port)))
+        for parsed in list(getattr(self, "_dnp_media_probe_ports", []) or []):
+            _push(str(parsed))
+        _push(os.environ.get(f"KIOSK_DNP_MEDIA_PROBE_PORT_HINT_{key}", ""))
+        return hints
+
+    def _probe_dnp_media_remaining(self, model: str, force: bool = False) -> Optional[int]:
+        key = self._normalize_film_model(model)
+        if key not in {"DS620", "RX1HS"} or not bool(getattr(self, "_dnp_media_probe_enabled", False)):
+            return None
+        probe_ok, probe_msg = self._printer_health_snapshot((key,))
+        if not probe_ok:
+            if probe_msg:
+                print(f"[FILM] dnp probe skip model={key} reason={probe_msg}")
+            return None
+        ttl = max(30.0, float(getattr(self, "_dnp_media_probe_ttl_sec", 300.0)))
+        now_ts = time.time()
+        with self._dnp_media_probe_lock:
+            cached = self._dnp_media_probe_cache.get(key)
+            if (
+                not force
+                and isinstance(cached, dict)
+                and (now_ts - float(cached.get("ts", 0.0))) < ttl
+            ):
+                cached_remaining = cached.get("remaining")
+                if cached_remaining is None:
+                    return None
+                try:
+                    return max(0, int(cached_remaining))
+                except Exception:
+                    return None
+
+        dll_path = self._resolve_dnp_media_probe_dll()
+        powershell_path = self._resolve_dnp_media_probe_powershell()
+        script_path = self._ensure_dnp_media_probe_script()
+        if not dll_path or not powershell_path or not script_path:
+            with self._dnp_media_probe_lock:
+                self._dnp_media_probe_cache[key] = {
+                    "ts": now_ts,
+                    "remaining": None,
+                    "error": "missing_runtime",
+                }
+            return None
+
+        creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        remaining: Optional[int] = None
+        last_error = ""
+        port_hints = self._resolve_dnp_media_probe_port_hints(key)
+        cmd = [
+            str(powershell_path),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-DllPath",
+            str(dll_path),
+            "-Model",
+            key,
+            "-PortHints",
+            ",".join(str(int(port)) for port in port_hints),
+            "-MaxIndex",
+            str(int(getattr(self, "_dnp_media_probe_max_index", 4))),
+            "-MaxPort",
+            str(int(getattr(self, "_dnp_media_probe_max_port", 8))),
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=float(getattr(self, "_dnp_media_probe_timeout_sec", 1.5)),
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired:
+            last_error = "timeout"
+            print(f"[FILM] dnp probe timeout model={key}")
+            completed = None
+        except Exception as exc:
+            last_error = f"spawn_failed:{exc}"
+            print(f"[FILM] dnp probe spawn failed model={key} err={exc}")
+            completed = None
+
+        if completed is not None:
+            body = ""
+            for line in reversed(str(completed.stdout or "").splitlines()):
+                if line.strip():
+                    body = line.strip()
+                    break
+            if not body:
+                last_error = str((completed.stderr or "").strip() or "empty_stdout")
+            else:
+                try:
+                    parsed = json.loads(body)
+                except Exception as exc:
+                    parsed = None
+                    last_error = f"invalid_json:{exc}"
+                if isinstance(parsed, dict):
+                    media = self._safe_int(parsed.get("media"), -1)
+                    port = self._safe_int(parsed.get("port"), -1)
+                    serial_value = str(parsed.get("serial", "") or "").strip()
+                    if bool(parsed.get("ok")) and media >= 0:
+                        remaining = media
+                        if port >= 0:
+                            self._dnp_media_probe_last_port_by_model[key] = int(port)
+                        self._store_film_remaining_probe_value(
+                            key,
+                            remaining,
+                            source=(
+                                f"dnp_cspstat port={port}"
+                                + (f" serial={serial_value}" if serial_value else "")
+                            ),
+                        )
+                        print(
+                            f"[FILM] dnp probe ok model={key} port={port} "
+                            f"remaining={remaining}"
+                            + (f" serial={serial_value}" if serial_value else "")
+                        )
+                    else:
+                        last_error = str(parsed.get("error", "") or "probe_failed")
+
+        with self._dnp_media_probe_lock:
+            self._dnp_media_probe_cache[key] = {
+                "ts": now_ts,
+                "remaining": remaining,
+                "error": last_error,
+            }
+        if remaining is None and last_error:
+            print(f"[FILM] dnp probe fallback model={key} err={last_error}")
+        return remaining
 
     def _save_film_remaining_state_unlocked(self) -> None:
         payload = {
@@ -20643,8 +25683,13 @@ class KioskMainWindow(QMainWindow):
             f"RX1HS={self._film_remaining_by_model.get('RX1HS')}"
         )
 
-    def _get_film_remaining(self, model: str) -> Optional[int]:
+    def _get_film_remaining(self, model: str, allow_fallback: bool = True) -> Optional[int]:
         key = self._normalize_film_model(model)
+        probed = self._probe_dnp_media_remaining(key)
+        if probed is not None:
+            return max(0, int(probed))
+        if not allow_fallback:
+            return None
         with self._film_state_lock:
             value = self._film_remaining_by_model.get(key)
         if value is None:
@@ -20661,6 +25706,10 @@ class KioskMainWindow(QMainWindow):
             after = max(0, before - consume)
             self._film_remaining_by_model[key] = after
             self._save_film_remaining_state_unlocked()
+        with self._dnp_media_probe_lock:
+            if key in self._dnp_media_probe_cache:
+                self._dnp_media_probe_cache.pop(key, None)
+                print(f"[FILM] dnp probe cache invalidated model={key} reason=consume")
         print(f"[FILM] consume model={key} used={consume} remaining={after}")
 
     def _resolve_sale_payment_method(self, required: int, coupon_value: int) -> str:
@@ -20668,6 +25717,8 @@ class KioskMainWindow(QMainWindow):
             return "TEST"
 
         method = str(self.current_payment_method or "").strip().lower()
+        if method == "test":
+            return "TEST"
         if method == "card":
             if required > 0 and coupon_value >= required:
                 return "COUPON"
@@ -21342,6 +26393,77 @@ class KioskMainWindow(QMainWindow):
             raise RuntimeError("share.api_base_url missing")
         return f"{api_base}/kiosk/heartbeat"
 
+    def _current_screen_name_for_heartbeat(self) -> str:
+        try:
+            current = self.stack.currentWidget()
+            return str(getattr(current, "screen_name", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _has_pending_payment_bypass_action(self) -> bool:
+        payload = (
+            self._pending_remote_action_payload
+            if isinstance(self._pending_remote_action_payload, dict)
+            else {}
+        )
+        command_id = str(payload.get("id", "") or "").strip()
+        kind = str(payload.get("kind", "") or "").strip().lower()
+        if not command_id or kind != "payment_bypass":
+            return False
+        if command_id == str(self._last_remote_action_id or "").strip():
+            return False
+        return True
+
+    def _try_apply_pending_remote_action(self, current_screen: str = "") -> bool:
+        payload = (
+            self._pending_remote_action_payload
+            if isinstance(self._pending_remote_action_payload, dict)
+            else {}
+        )
+        command_id = str(payload.get("id", "") or "").strip()
+        kind = str(payload.get("kind", "") or "").strip().lower()
+        if not command_id or kind != "payment_bypass":
+            return False
+        if command_id == str(self._last_remote_action_id or "").strip():
+            self._pending_remote_action_payload = {}
+            self._pending_remote_action_ack_id = command_id
+            return False
+        screen = str(current_screen or "").strip() or self._current_screen_name_for_heartbeat()
+        if not self._trigger_payment_super_bypass(reason=f"remote_credit:{command_id}"):
+            return False
+        self._last_remote_action_id = command_id
+        self._pending_remote_action_payload = {}
+        self._pending_remote_action_ack_id = command_id
+        print(
+            "[REMOTE_ACTION] applied id="
+            f"{command_id} kind={kind} screen={screen or '-'}"
+        )
+        QTimer.singleShot(250, self._heartbeat_tick)
+        return True
+
+    def _consume_remote_action_payload(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        command_id = str(payload.get("id", "") or "").strip()
+        kind = str(payload.get("kind", "") or "").strip().lower()
+        if not command_id or kind != "payment_bypass":
+            return
+        next_payload = dict(payload)
+        next_payload["id"] = command_id
+        next_payload["kind"] = kind
+        self._pending_remote_action_payload = next_payload
+        if command_id == str(self._last_remote_action_id or "").strip():
+            self._pending_remote_action_payload = {}
+            self._pending_remote_action_ack_id = command_id
+            return
+        current_screen = self._current_screen_name_for_heartbeat()
+        if not self._try_apply_pending_remote_action(current_screen=current_screen):
+            print(
+                "[REMOTE_ACTION] waiting id="
+                f"{command_id} kind={kind} screen={current_screen or '-'}"
+            )
+            return
+
     def _build_heartbeat_payload(self) -> dict[str, Any]:
         share_cfg = self.get_share_settings()
         api_base = _normalize_kiosk_api_base_url(share_cfg.get("api_base_url", "")) if isinstance(share_cfg, dict) else ""
@@ -21349,34 +26471,35 @@ class KioskMainWindow(QMainWindow):
         printing_settings = self.get_printing_settings()
         printers = printing_settings.get("printers", {}) if isinstance(printing_settings, dict) else {}
 
-        def _printer_any_ok(config_keys: tuple[str, ...]) -> bool:
-            configured = False
-            for config_key in config_keys:
-                item = printers.get(config_key, {}) if isinstance(printers, dict) else {}
-                name = str(item.get("win_name", "")).strip() if isinstance(item, dict) else ""
-                if not name:
-                    continue
-                configured = True
-                ok, _msg = get_printer_health(name)
-                if bool(ok):
-                    return True
-            # Preserve existing behavior: when not configured, don't hard-fail heartbeat.
-            return not configured
-
-        ds620_ok = _printer_any_ok(("DS620", "DS620_STRIP"))
-        rx1hs_ok = _printer_any_ok(("RX1HS",))
+        ds620_ok, ds620_msg = self._printer_health_snapshot(("DS620", "DS620_STRIP"), printing_settings)
+        rx1hs_ok, rx1hs_msg = self._printer_health_snapshot(("RX1HS",), printing_settings)
         printer_ok = bool(ds620_ok or rx1hs_ok)
 
         payload: dict[str, Any] = {
             "app_version": self._current_kiosk_app_version(),
+            "current_screen": (
+                self._current_screen_name_for_heartbeat()
+                if hasattr(self, "_current_screen_name_for_heartbeat")
+                else ""
+            ),
+            "order_state": str(getattr(self, "current_order_state", "") or "").strip(),
             "internet_ok": bool(internet_ok),
             "camera_ok": True,
             "printer_ok": bool(printer_ok),
             "last_error": None,
         }
+        ack_id = str(getattr(self, "_pending_remote_action_ack_id", "") or "").strip()
+        if ack_id:
+            payload["remote_action_ack"] = ack_id
         # Keep the last known per-model count when the live probe is flaky.
         ds620_remaining = self._get_film_remaining("DS620", allow_fallback=True)
         rx1hs_remaining = self._get_film_remaining("RX1HS", allow_fallback=True)
+        if "PAPER_OUT" in str(ds620_msg or "").upper():
+            ds620_remaining = 0
+            print(f"[FILM] heartbeat override model=DS620 remaining=0 reason={ds620_msg}")
+        if "PAPER_OUT" in str(rx1hs_msg or "").upper():
+            rx1hs_remaining = 0
+            print(f"[FILM] heartbeat override model=RX1HS remaining=0 reason={rx1hs_msg}")
 
         env_all = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING")
         env_ds620 = self._env_optional_nonnegative_int("KIOSK_FILM_REMAINING_DS620")
@@ -21419,6 +26542,7 @@ class KioskMainWindow(QMainWindow):
         headers = self._build_kiosk_api_auth_headers()
         body = payload if isinstance(payload, dict) else self._build_heartbeat_payload()
         timeout = self._sales_request_timeout()
+        ack_id = str(body.get("remote_action_ack", "")).strip() if isinstance(body, dict) else ""
 
         try:
             response = requests.post(url, json=body, headers=headers, timeout=timeout)
@@ -21431,6 +26555,13 @@ class KioskMainWindow(QMainWindow):
             data = parsed_payload if isinstance(parsed_payload, dict) else (response.json() if response.content else {})
             if not isinstance(data, dict):
                 data = {}
+            remote_action_payload = data.get("remote_action")
+            if isinstance(remote_action_payload, dict):
+                self._consume_remote_action_payload(remote_action_payload)
+            else:
+                self._pending_remote_action_payload = {}
+            if ack_id and ack_id == str(self._pending_remote_action_ack_id or "").strip():
+                self._pending_remote_action_ack_id = ""
             heartbeat_id = data.get("heartbeat_id")
             return True, f"id={heartbeat_id}"
         except Exception as exc:
@@ -21456,6 +26587,11 @@ class KioskMainWindow(QMainWindow):
             if not isinstance(data, dict):
                 return False, "invalid json payload"
             self._apply_server_lock_payload(data.get("device_lock"), trigger="config_probe")
+            remote_action_payload = data.get("remote_action")
+            if isinstance(remote_action_payload, dict):
+                self._consume_remote_action_payload(remote_action_payload)
+            else:
+                self._pending_remote_action_payload = {}
             config_payload = data.get("config") if isinstance(data.get("config"), dict) else {}
             if isinstance(config_payload, dict):
                 self._apply_server_gemini_api_key(config_payload, trigger="config_probe")
@@ -21756,6 +26892,10 @@ class KioskMainWindow(QMainWindow):
             else:
                 used_units = max(1, self._safe_int(ctx.get("copies"), 1))
             self._consume_film_remaining(model, used_units)
+            try:
+                self._probe_dnp_media_remaining(model, force=True)
+            except Exception as exc:
+                print(f"[FILM] dnp probe post-print failed model={model} err={exc}")
         print("[PRINT] success")
         self._report_sale_complete_async()
         loading_screen = self.screens.get("loading")
@@ -21996,6 +27136,15 @@ class KioskMainWindow(QMainWindow):
                 self.open_admin()
             return
 
+        if screen.screen_name == "frame_select" and 0 <= x < 120 and 0 <= y < 120:
+            self._frame_select_admin_tap_count += 1
+            self._frame_select_admin_tap_timer.start(2500)
+            print(f"[ADMIN] frame_select taps={self._frame_select_admin_tap_count}/10")
+            if self._frame_select_admin_tap_count >= 10:
+                self._reset_frame_select_admin_taps()
+                self.open_admin()
+            return
+
         if screen.screen_name == "pay_cash":
             if self._rect_contains(x, y, PayCashScreen.BACK_RECT):
                 back_target = "payment_method"
@@ -22006,6 +27155,18 @@ class KioskMainWindow(QMainWindow):
                 self.goto_screen(back_target)
                 return
 
+        if screen.screen_name == "pay_card":
+            if self._rect_contains(x, y, PayCardScreen.BACK_RECT):
+                if self._cancel_card_payment_if_active("pay_card"):
+                    return
+                back_target = "payment_method"
+                if self._single_enabled_payment_method() == "card":
+                    back_target = "how_many_prints"
+                print(f"[PAYMENT_CARD] back -> {back_target}")
+                self._set_order_state(OrderFlowState.ABORTED, reason="pay_card_back")
+                self.goto_screen(back_target)
+                return
+
         if screen.screen_name == "coupon_remaining_method":
             if self._rect_contains(x, y, CouponRemainingMethodScreen.CASH_RECT):
                 print("[PAYMENT] remaining_select cash")
@@ -22013,9 +27174,9 @@ class KioskMainWindow(QMainWindow):
                 return
             if self._rect_contains(x, y, CouponRemainingMethodScreen.CARD_RECT):
                 print("[PAYMENT] remaining_select card")
-                remaining_screen = self.screens.get("coupon_remaining_method")
-                if isinstance(remaining_screen, CouponRemainingMethodScreen):
-                    remaining_screen.show_notice("카드결제는 추후 지원됩니다", duration_ms=1000)
+                self.current_payment_method = "card"
+                self.payment_method = self.current_payment_method
+                self.goto_screen("pay_card_remaining")
                 return
             if self._rect_contains(x, y, CouponRemainingMethodScreen.BACK_RECT):
                 print("[PAYMENT] remaining_select back -> payment_method")
@@ -22026,6 +27187,15 @@ class KioskMainWindow(QMainWindow):
             if self._rect_contains(x, y, PayCashRemainingScreen.BACK_RECT):
                 print("[PAYMENT_CASH] back -> coupon_remaining_method")
                 self._stop_bill_acceptor_for_payment()
+                self.goto_screen("coupon_remaining_method")
+                return
+
+        if screen.screen_name == "pay_card_remaining":
+            if self._rect_contains(x, y, PayCardRemainingScreen.BACK_RECT):
+                if self._cancel_card_payment_if_active("pay_card_remaining"):
+                    return
+                print("[PAYMENT_CARD] back -> coupon_remaining_method")
+                self._set_order_state(OrderFlowState.ABORTED, reason="pay_card_remaining_back")
                 self.goto_screen("coupon_remaining_method")
                 return
 
@@ -22172,14 +27342,10 @@ class KioskMainWindow(QMainWindow):
                             print("[PAYMENT] blocked disabled method=card")
                             payment_screen.show_notice("해당 결제수단이 비활성화되었습니다", duration_ms=1000)
                             return
-                        if self.is_test_mode():
-                            self.current_payment_method = "card"
-                            self.payment_method = self.current_payment_method
-                            print("[PAYMENT] next test bypass card -> payment_complete_success")
-                            self.goto_screen("payment_complete_success")
-                            return
-                        print("[PAYMENT] next blocked: card not supported")
-                        payment_screen.show_notice("카드결제는 추후 지원됩니다", duration_ms=1000)
+                        self.current_payment_method = "card"
+                        self.payment_method = self.current_payment_method
+                        print("[PAYMENT] next ok -> pay_card")
+                        self.goto_screen("pay_card")
                     else:
                         print("[PAYMENT] next blocked: payment method not selected")
                         payment_screen.show_notice("결제 수단을 선택해주세요", duration_ms=1000)
@@ -22303,6 +27469,8 @@ class KioskMainWindow(QMainWindow):
             if current_name not in {"offline_locked", "admin"}:
                 self.goto_screen("offline_locked")
                 return
+        if key == KEY_F5 and self._trigger_payment_super_bypass("key_f5"):
+            return
         if getattr(current, "screen_name", None) == "camera":
             camera_screen = self.screens.get("camera")
             if isinstance(camera_screen, CameraScreen):
