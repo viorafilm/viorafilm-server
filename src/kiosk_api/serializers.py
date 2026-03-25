@@ -9,6 +9,7 @@ class HeartbeatSerializer(serializers.Serializer):
     current_screen = serializers.CharField(required=False, allow_blank=True)
     order_state = serializers.CharField(required=False, allow_blank=True)
     remote_action_ack = serializers.CharField(required=False, allow_blank=True)
+    remote_action_result = serializers.DictField(required=False)
     internet_ok = serializers.BooleanField(required=False)
     camera_ok = serializers.BooleanField(required=False)
     printer_ok = serializers.BooleanField(required=False)

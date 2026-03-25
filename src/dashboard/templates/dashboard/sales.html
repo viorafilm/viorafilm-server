@@ -174,6 +174,8 @@
             <th>{{ sales_text.table_cash }}</th>
             <th>{{ sales_text.table_coupon }}</th>
             <th>{{ sales_text.table_coupon_code }}</th>
+            <th>{{ sales_text.table_cancel_status }}</th>
+            <th>{{ sales_text.table_actions }}</th>
           </tr>
         </thead>
         <tbody>
@@ -193,9 +195,41 @@
             <td>{{ s.amount_cash }}</td>
             <td>{{ s.amount_coupon }}</td>
             <td>{% if s.coupon %}{{ s.coupon.formatted_code }}{% else %}-{% endif %}</td>
+            <td>
+              {% if s.dashboard_cancel_status == "SUCCESS" %}
+              <span class="badge text-bg-success">{{ sales_text.cancel_success_badge }}</span>
+              {% elif s.dashboard_cancel_status == "QUEUED" %}
+              <span class="badge text-bg-warning">{{ sales_text.cancel_queued_badge }}</span>
+              {% elif s.dashboard_cancel_status %}
+              <span class="badge text-bg-danger">{{ sales_text.cancel_error_badge }}</span>
+              {% else %}
+              <span class="text-muted">-</span>
+              {% endif %}
+              {% if s.dashboard_cancel_message %}
+              <div class="small text-muted">{{ s.dashboard_cancel_message }}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if can_edit_sales and s.dashboard_cancel_available %}
+              <form method="post" class="d-flex gap-1">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="sale_remote_cancel">
+                <input type="hidden" name="sale_id" value="{{ s.id }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger">{{ sales_text.cancel_button }}</button>
+              </form>
+              {% elif s.dashboard_cancel_pending %}
+              <span class="text-muted small">{{ sales_text.cancel_pending_note }}</span>
+              {% elif s.dashboard_cancel_done %}
+              <span class="text-muted small">{{ sales_text.cancel_done_note }}</span>
+              {% elif s.dashboard_cancel_supported and s.dashboard_device_action_pending %}
+              <span class="text-muted small">{{ sales_text.cancel_device_busy_note }}</span>
+              {% else %}
+              <span class="text-muted small">-</span>
+              {% endif %}
+            </td>
           </tr>
           {% empty %}
-          <tr><td colspan="10" class="text-center text-muted py-4">{{ sales_text.empty }}</td></tr>
+          <tr><td colspan="12" class="text-center text-muted py-4">{{ sales_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>

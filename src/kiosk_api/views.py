@@ -130,6 +130,58 @@ def _merge_health_payload(existing: dict, incoming: dict) -> dict:
     return merged
 
 
+def _apply_remote_action_result(device: Device, payload: dict) -> None:
+    if not isinstance(payload, dict):
+        return
+    action_id = str(payload.get("id", "")).strip()
+    kind = str(payload.get("kind", "")).strip().lower()
+    if not action_id or kind != "payment_cancel":
+        return
+    try:
+        sale_id = int(payload.get("sale_id") or 0)
+    except Exception:
+        sale_id = 0
+    if sale_id <= 0:
+        return
+    sale = SaleTransaction.objects.filter(id=sale_id, device=device).first()
+    if sale is None:
+        return
+    meta = dict(sale.meta or {})
+    cancel_meta = meta.get("payment_cancel")
+    cancel_meta = dict(cancel_meta) if isinstance(cancel_meta, dict) else {}
+    cancel_meta.update(
+        {
+            "action_id": action_id,
+            "status": str(payload.get("status") or "").strip().upper() or "ERROR",
+            "payment_status": str(payload.get("payment_status") or "").strip().upper(),
+            "message": str(payload.get("message") or "").strip(),
+            "error_code": str(payload.get("error_code") or "").strip(),
+            "error_message": str(payload.get("error_message") or "").strip(),
+            "approval_code": str(payload.get("approval_code") or "").strip(),
+            "provider_reference": str(payload.get("provider_reference") or "").strip(),
+            "completed_at": payload.get("completed_at") or timezone.now().isoformat(),
+        }
+    )
+    meta["payment_cancel"] = cancel_meta
+    sale.meta = meta
+    sale.save(update_fields=["meta"])
+    log_event(
+        actor_user=None,
+        actor_device=device,
+        action="sale.remote_cancel_result",
+        target_type="SaleTransaction",
+        target_id=str(sale.id),
+        before=None,
+        after={
+            "session_id": sale.session_id,
+            "status": cancel_meta.get("status", ""),
+            "payment_status": cancel_meta.get("payment_status", ""),
+        },
+        meta={"action_id": action_id},
+        ip=None,
+    )
+
+
 class AuthTokenView(TokenObtainPairView):
     permission_classes = [AllowAny]
 
@@ -150,6 +202,9 @@ class HeartbeatView(APIView):
         serializer = HeartbeatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        remote_action_result = payload.get("remote_action_result")
+        if isinstance(remote_action_result, dict):
+            _apply_remote_action_result(device, remote_action_result)
         ack_id = str(payload.get("remote_action_ack", "")).strip()
         if ack_id:
             _clear_pending_remote_action(device, expected_id=ack_id)

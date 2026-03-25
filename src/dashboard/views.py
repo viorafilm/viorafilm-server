@@ -643,6 +643,33 @@ def _build_sales_chart_payload(sales_qs, tzinfo):
     }
 
 
+def _extract_sale_payment_meta(sale: SaleTransaction) -> dict:
+    meta = sale.meta if isinstance(sale.meta, dict) else {}
+    payload = meta.get("payment")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _extract_sale_cancel_meta(sale: SaleTransaction) -> dict:
+    meta = sale.meta if isinstance(sale.meta, dict) else {}
+    payload = meta.get("payment_cancel")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _extract_sale_cancel_context(sale: SaleTransaction) -> dict:
+    payment_meta = _extract_sale_payment_meta(sale)
+    payload = payment_meta.get("cancel_context")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _sale_remote_cancel_supported(sale: SaleTransaction) -> bool:
+    payment_meta = _extract_sale_payment_meta(sale)
+    provider = str(payment_meta.get("provider", "")).strip().lower()
+    cancel_context = _extract_sale_cancel_context(sale)
+    if sale.payment_method != SaleTransaction.METHOD_CARD:
+        return False
+    return provider == "evcat_tcp" and bool(cancel_context)
+
+
 def _resolve_billing_month(request, tzinfo):
     return _parse_billing_month(request.GET.get("billing_month"), tzinfo)
 
@@ -1578,13 +1605,119 @@ def ops_view(request):
 def sales_view(request):
     ui_text = resolve_dashboard_text(request)
     sales_text = ui_text["sales"]
+    common_text = ui_text["common"]
     currency_unit = resolve_dashboard_currency_unit(request)
     filters = _resolve_scope_filters(request.user, request)
     context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     period_info = _resolve_sales_period(request, tzinfo)
     sales_base_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
+    can_edit = not _is_viewer(request.user)
+
+    if request.method == "POST":
+        if not can_edit:
+            return HttpResponseForbidden(common_text["viewer_read_only"])
+        action = str(request.POST.get("action") or "").strip()
+        if action == "sale_remote_cancel":
+            try:
+                sale_id = int(request.POST.get("sale_id") or 0)
+            except Exception:
+                sale_id = 0
+            sale = sales_base_qs.select_related("device", "org", "branch").filter(id=sale_id).first()
+            if sale is None:
+                messages.error(request, sales_text["cancel_sale_missing"])
+            elif not _sale_remote_cancel_supported(sale):
+                messages.error(request, sales_text["cancel_not_supported"])
+            else:
+                device = sale.device
+                pending_payload = device.pending_remote_action if isinstance(device.pending_remote_action, dict) else {}
+                pending_id = str(pending_payload.get("id", "")).strip()
+                if pending_id:
+                    messages.error(
+                        request,
+                        sales_text["cancel_pending_other"].format(device=device.device_code),
+                    )
+                else:
+                    cancel_context = _extract_sale_cancel_context(sale)
+                    command_id = secrets.token_hex(8)
+                    now = timezone.now()
+                    expires_at = now + timedelta(minutes=10)
+                    device.pending_remote_action = {
+                        "id": command_id,
+                        "kind": "payment_cancel",
+                        "created_at": now.isoformat(),
+                        "expires_at": expires_at.isoformat(),
+                        "meta": {
+                            "sale_id": sale.id,
+                            "session_id": sale.session_id,
+                            "cancel_context": cancel_context,
+                            "actor": str(request.user.username or ""),
+                        },
+                    }
+                    device.pending_remote_action_updated_at = now
+                    device.save(update_fields=["pending_remote_action", "pending_remote_action_updated_at", "updated_at"])
+
+                    meta = dict(sale.meta or {})
+                    cancel_meta = _extract_sale_cancel_meta(sale)
+                    cancel_meta.update(
+                        {
+                            "action_id": command_id,
+                            "status": "QUEUED",
+                            "requested_at": now.isoformat(),
+                            "requested_by": str(request.user.username or ""),
+                            "message": sales_text["cancel_queued_badge"],
+                            "error_code": "",
+                            "error_message": "",
+                        }
+                    )
+                    meta["payment_cancel"] = cancel_meta
+                    sale.meta = meta
+                    sale.save(update_fields=["meta"])
+                    log_event(
+                        actor_user=request.user,
+                        actor_device=None,
+                        action="sale.remote_cancel_request",
+                        target_type="SaleTransaction",
+                        target_id=str(sale.id),
+                        before=None,
+                        after={"session_id": sale.session_id, "device_code": device.device_code},
+                        meta={"action_id": command_id},
+                        ip=request.META.get("REMOTE_ADDR"),
+                    )
+                    messages.success(
+                        request,
+                        sales_text["cancel_queued"].format(session=sale.session_id, device=device.device_code),
+                    )
+
+        params = _query_params_from_filters(
+            filters,
+            extra={
+                "period": period_info["period"],
+                "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else None,
+                "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else None,
+                "billing_month": _resolve_billing_month(request, tzinfo).strftime("%Y-%m"),
+            },
+        )
+        if params:
+            return redirect(f"/dashboard/sales?{urlencode(params)}")
+        return redirect("dashboard_sales")
+
     sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
     sales = list(sales_qs[:300])
+    for sale in sales:
+        cancel_meta = _extract_sale_cancel_meta(sale)
+        setattr(sale, "dashboard_cancel_status", str(cancel_meta.get("status", "")).strip().upper())
+        setattr(sale, "dashboard_cancel_message", str(cancel_meta.get("message", "") or cancel_meta.get("error_message", "")).strip())
+        setattr(sale, "dashboard_cancel_supported", _sale_remote_cancel_supported(sale))
+        setattr(sale, "dashboard_cancel_pending", str(cancel_meta.get("status", "")).strip().upper() == "QUEUED")
+        setattr(sale, "dashboard_cancel_done", str(cancel_meta.get("status", "")).strip().upper() == "SUCCESS")
+        pending_payload = sale.device.pending_remote_action if isinstance(sale.device.pending_remote_action, dict) else {}
+        pending_id = str(pending_payload.get("id", "")).strip()
+        setattr(sale, "dashboard_device_action_pending", bool(pending_id))
+        setattr(
+            sale,
+            "dashboard_cancel_available",
+            bool(can_edit and getattr(sale, "dashboard_cancel_supported", False) and not getattr(sale, "dashboard_cancel_done", False) and not bool(pending_id)),
+        )
     total_amount = int(sales_qs.aggregate(v=Sum("price_total")).get("v") or 0)
     total_count = int(sales_qs.count())
 
@@ -1645,6 +1778,7 @@ def sales_view(request):
             "ai_branch_billing_total": ai_branch_billing_total,
             "sales_chart_revenue_label": sales_text["chart_dataset_revenue"].format(currency=currency_unit),
             "sales_chart_revenue_axis_title": sales_text["chart_axis_revenue"].format(currency=currency_unit),
+            "can_edit_sales": can_edit,
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],
