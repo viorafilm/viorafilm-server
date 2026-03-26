@@ -384,8 +384,13 @@ def auto_lock_offline_devices():
 
     targets = (
         Device.objects.select_related("org", "branch")
-        .filter(is_active=True, is_locked=False, last_seen_at__lt=cutoff)
-        .only("id", "device_code", "is_locked", "last_seen_at", "org", "branch")
+        .filter(
+            is_active=True,
+            is_locked=False,
+            last_seen_at__lt=cutoff,
+        )
+        .filter(Q(offline_unlock_grace_until__isnull=True) | Q(offline_unlock_grace_until__lt=now))
+        .only("id", "device_code", "is_locked", "last_seen_at", "offline_unlock_grace_until", "org", "branch")
     )
 
     locked_count = 0
@@ -394,7 +399,10 @@ def auto_lock_offline_devices():
         device.is_locked = True
         device.lock_reason = reason
         device.locked_at = now
-        device.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+        device.offline_unlock_grace_until = None
+        device.save(
+            update_fields=["is_locked", "lock_reason", "locked_at", "offline_unlock_grace_until", "updated_at"]
+        )
         locked_count += 1
         log_event(
             actor_user=None,

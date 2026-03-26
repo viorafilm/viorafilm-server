@@ -67,6 +67,9 @@ REMOTE_CREDIT_ALLOWED_SCREENS = {
     "pay_cash_remaining",
     "pay_card_remaining",
 }
+REMOTE_ACTION_KIND_PAYMENT_BYPASS = "payment_bypass"
+REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET = "offline_guard_reset"
+OFFLINE_GUARD_RESET_ACTION_TTL_MINUTES = 30
 PREFERRED_DASHBOARD_TIMEZONES = (
     "Asia/Seoul",
     "Asia/Tokyo",
@@ -292,6 +295,13 @@ def _pick_valid_int(value):
         return parsed if parsed > 0 else None
     except Exception:
         return None
+
+
+def _pending_remote_action_info(device):
+    payload = device.pending_remote_action if isinstance(device.pending_remote_action, dict) else {}
+    command_id = str(payload.get("id", "")).strip()
+    kind = str(payload.get("kind", "")).strip().lower()
+    return payload, command_id, kind
 
 
 def _latest_config_profile(scope, org=None, branch=None, device=None):
@@ -974,9 +984,9 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
     for d in devices:
         health = d.last_health_json if isinstance(d.last_health_json, dict) else {}
         online = bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < threshold)
+        offline_unlock_grace_remaining_seconds = d.offline_unlock_grace_remaining_seconds(now=now)
         current_screen = str(health.get("current_screen", "") or "").strip()
-        pending_remote_action = d.pending_remote_action if isinstance(d.pending_remote_action, dict) else {}
-        pending_remote_action_id = str(pending_remote_action.get("id", "")).strip()
+        _pending_remote_action, pending_remote_action_id, pending_remote_action_kind = _pending_remote_action_info(d)
         film_remaining = _extract_film_remaining(health)
         film_estimated = False
         if film_remaining is None:
@@ -994,7 +1004,11 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
                 "film_remaining_estimated": film_estimated,
                 "offline_guard_enabled": bool(health.get("offline_guard_enabled", False)),
                 "offline_lock_active": bool(health.get("offline_lock_active", False)),
-                "offline_grace_remaining_seconds": _as_optional_int(health.get("offline_grace_remaining_seconds")),
+                "offline_grace_remaining_seconds": (
+                    offline_unlock_grace_remaining_seconds
+                    if offline_unlock_grace_remaining_seconds is not None
+                    else _as_optional_int(health.get("offline_grace_remaining_seconds"))
+                ),
                 "offline_last_online_at": health.get("offline_last_online_at"),
                 "server_lock_active": bool(d.is_locked),
                 "server_lock_reason": d.lock_reason or "",
@@ -1003,7 +1017,10 @@ def _build_device_rows(user, only_locked=False, devices_qs=None):
                 "allow_ai_mode": bool(getattr(d, "allow_ai_mode", True)),
                 "current_screen": current_screen,
                 "order_state": str(health.get("order_state", "") or "").strip(),
-                "remote_credit_pending": bool(pending_remote_action_id),
+                "pending_remote_action_id": pending_remote_action_id,
+                "pending_remote_action_kind": pending_remote_action_kind,
+                "remote_credit_pending": pending_remote_action_kind == REMOTE_ACTION_KIND_PAYMENT_BYPASS,
+                "offline_unlock_pending": pending_remote_action_kind == REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET,
                 "remote_credit_available": bool(
                     online and current_screen in REMOTE_CREDIT_ALLOWED_SCREENS and not pending_remote_action_id
                 ),
@@ -1317,10 +1334,39 @@ def devices_view(request):
                 messages.success(request, device_text["device_locked"].format(device=target.device_code))
             elif action == "unlock_device":
                 old_reason = target.lock_reason
+                unlock_now = timezone.now()
+                update_fields = ["is_locked", "lock_reason", "locked_at", "updated_at"]
                 target.is_locked = False
                 target.lock_reason = ""
                 target.locked_at = None
-                target.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+                applied_grace_until = None
+                queued_offline_reset = False
+                offline_reset_blocked = False
+                if Device.offline_auto_lock_enabled():
+                    auto_lock_days = Device.offline_auto_lock_days()
+                    cutoff = unlock_now - timedelta(days=auto_lock_days)
+                    if target.last_seen_at and target.last_seen_at < cutoff:
+                        applied_grace_until = target.grant_offline_unlock_grace(now=unlock_now, days=auto_lock_days)
+                        update_fields.append("offline_unlock_grace_until")
+                _pending_payload, pending_id, pending_kind = _pending_remote_action_info(target)
+                if not pending_id:
+                    reset_command_id = secrets.token_hex(8)
+                    expires_at = unlock_now + timedelta(minutes=OFFLINE_GUARD_RESET_ACTION_TTL_MINUTES)
+                    target.pending_remote_action = {
+                        "id": reset_command_id,
+                        "kind": REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET,
+                        "created_at": unlock_now.isoformat(),
+                        "expires_at": expires_at.isoformat(),
+                        "meta": {
+                            "actor": str(user.username or ""),
+                        },
+                    }
+                    target.pending_remote_action_updated_at = unlock_now
+                    update_fields.extend(["pending_remote_action", "pending_remote_action_updated_at"])
+                    queued_offline_reset = True
+                elif pending_kind != REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET:
+                    offline_reset_blocked = True
+                target.save(update_fields=update_fields)
                 log_event(
                     actor_user=user,
                     actor_device=None,
@@ -1328,29 +1374,44 @@ def devices_view(request):
                     target_type="Device",
                     target_id=str(target.id),
                     before={"lock_reason": old_reason},
-                    after={"device_code": target.device_code},
-                    meta={},
+                    after={
+                        "device_code": target.device_code,
+                        "offline_unlock_grace_until": (
+                            applied_grace_until.isoformat() if applied_grace_until else None
+                        ),
+                        "queued_offline_guard_reset": queued_offline_reset,
+                    },
+                    meta={
+                        "offline_unlock_grace_applied": bool(applied_grace_until),
+                        "offline_guard_reset_blocked": offline_reset_blocked,
+                    },
                     ip=request.META.get("REMOTE_ADDR"),
                 )
                 messages.success(request, device_text["device_unlocked"].format(device=target.device_code))
+                if queued_offline_reset:
+                    messages.success(request, device_text["offline_unlock_sent"].format(device=target.device_code))
+                elif offline_reset_blocked:
+                    messages.warning(
+                        request,
+                        device_text["offline_unlock_pending_conflict"].format(device=target.device_code),
+                    )
             elif action == "remote_credit":
-                if target.pending_remote_action and isinstance(target.pending_remote_action, dict):
-                    pending_id = str(target.pending_remote_action.get("id", "")).strip()
-                    if pending_id:
-                        messages.warning(
-                            request,
-                            device_text["remote_credit_already_pending"].format(device=target.device_code),
-                        )
-                        params = _query_params_from_filters(filters, extra={"locked": "1" if only_locked else None})
-                        if params:
-                            return redirect(f"/dashboard/devices?{urlencode(params)}")
-                        return redirect("dashboard_devices")
+                _pending_payload, pending_id, _pending_kind = _pending_remote_action_info(target)
+                if pending_id:
+                    messages.warning(
+                        request,
+                        device_text["remote_credit_already_pending"].format(device=target.device_code),
+                    )
+                    params = _query_params_from_filters(filters, extra={"locked": "1" if only_locked else None})
+                    if params:
+                        return redirect(f"/dashboard/devices?{urlencode(params)}")
+                    return redirect("dashboard_devices")
                 command_id = secrets.token_hex(8)
                 now = timezone.now()
                 expires_at = now + timedelta(minutes=3)
                 target.pending_remote_action = {
                     "id": command_id,
-                    "kind": "payment_bypass",
+                    "kind": REMOTE_ACTION_KIND_PAYMENT_BYPASS,
                     "created_at": now.isoformat(),
                     "expires_at": expires_at.isoformat(),
                     "meta": {

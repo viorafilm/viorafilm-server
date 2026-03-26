@@ -26679,6 +26679,23 @@ class KioskMainWindow(QMainWindow):
             return False
         return True
 
+    def _apply_remote_offline_guard_reset_action(self, payload: dict[str, Any], current_screen: str = "") -> None:
+        command_id = str(payload.get("id", "") or "").strip()
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        actor = str(meta.get("actor", "") or "").strip()
+        self._record_online_heartbeat()
+        self._enforce_offline_runtime_guard("remote_action:offline_guard_reset")
+        self._last_remote_action_id = command_id
+        self._pending_remote_action_payload = {}
+        self._pending_remote_action_ack_id = command_id
+        notice = "관리자 재인증이 적용되었습니다. / Authorization refreshed by admin."
+        self._show_runtime_notice(notice, duration_ms=1500)
+        print(
+            "[REMOTE_ACTION] applied id="
+            f"{command_id} kind=offline_guard_reset screen={current_screen or '-'} actor={actor or '-'}"
+        )
+        QTimer.singleShot(250, self._heartbeat_tick)
+
     def _try_apply_pending_remote_action(self, current_screen: str = "") -> bool:
         payload = (
             self._pending_remote_action_payload
@@ -26687,13 +26704,16 @@ class KioskMainWindow(QMainWindow):
         )
         command_id = str(payload.get("id", "") or "").strip()
         kind = str(payload.get("kind", "") or "").strip().lower()
-        if not command_id or kind != "payment_bypass":
+        if not command_id or kind not in {"payment_bypass", "offline_guard_reset"}:
             return False
         if command_id == str(self._last_remote_action_id or "").strip():
             self._pending_remote_action_payload = {}
             self._pending_remote_action_ack_id = command_id
             return False
         screen = str(current_screen or "").strip() or self._current_screen_name_for_heartbeat()
+        if kind == "offline_guard_reset":
+            self._apply_remote_offline_guard_reset_action(dict(payload), current_screen=screen)
+            return True
         if not self._trigger_payment_super_bypass(reason=f"remote_credit:{command_id}"):
             return False
         self._last_remote_action_id = command_id
@@ -26711,7 +26731,7 @@ class KioskMainWindow(QMainWindow):
             return
         command_id = str(payload.get("id", "") or "").strip()
         kind = str(payload.get("kind", "") or "").strip().lower()
-        if not command_id or kind != "payment_bypass":
+        if not command_id or kind not in {"payment_bypass", "offline_guard_reset"}:
             return
         next_payload = dict(payload)
         next_payload["id"] = command_id

@@ -1,7 +1,9 @@
 import hashlib
 import hmac
 import secrets
+from datetime import timedelta
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -39,6 +41,7 @@ class Device(models.Model):
     is_locked = models.BooleanField(default=False)
     lock_reason = models.CharField(max_length=255, blank=True, default="")
     locked_at = models.DateTimeField(null=True, blank=True)
+    offline_unlock_grace_until = models.DateTimeField(null=True, blank=True)
     token_hash = models.CharField(max_length=64, blank=True, default="")
     token_hint = models.CharField(max_length=16, blank=True, default="")
     install_key_hash = models.CharField(max_length=64, blank=True, default="")
@@ -59,6 +62,30 @@ class Device(models.Model):
 
     def __str__(self):
         return f"{self.device_code}"
+
+    @staticmethod
+    def offline_auto_lock_enabled() -> bool:
+        return bool(getattr(settings, "DEVICE_AUTO_LOCK_ENABLED", True))
+
+    @staticmethod
+    def offline_auto_lock_days() -> int:
+        try:
+            return max(1, int(getattr(settings, "DEVICE_AUTO_LOCK_OFFLINE_DAYS", 3)))
+        except Exception:
+            return 3
+
+    def grant_offline_unlock_grace(self, now=None, days=None):
+        base_time = now or timezone.now()
+        grace_days = max(1, int(days or self.offline_auto_lock_days()))
+        self.offline_unlock_grace_until = base_time + timedelta(days=grace_days)
+        return self.offline_unlock_grace_until
+
+    def offline_unlock_grace_remaining_seconds(self, now=None):
+        current = now or timezone.now()
+        grace_until = getattr(self, "offline_unlock_grace_until", None)
+        if not grace_until or grace_until <= current:
+            return None
+        return max(0, int((grace_until - current).total_seconds()))
 
     def rotate_token(self) -> str:
         raw = secrets.token_urlsafe(32)

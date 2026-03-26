@@ -84,6 +84,7 @@
       {{ device_text.device_status_title }}
       {% if only_locked %}<span class="badge text-bg-danger ms-1">{{ device_text.locked_only_badge }}</span>{% endif %}
     </h6>
+    <div class="alert alert-info small py-2 mb-3">{{ device_text.offline_state_notice }}</div>
     <div class="table-responsive">
       <table class="table table-hover align-middle">
         <thead>

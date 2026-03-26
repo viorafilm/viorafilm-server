@@ -68,6 +68,8 @@
   <td>
     {% if row.server_lock_active %}
     <span class="badge text-bg-danger">{{ device_text.lock_server }}</span>
+    {% elif row.offline_unlock_pending %}
+    <span class="badge text-bg-info">{{ device_text.lock_pending_delivery }}</span>
     {% elif row.offline_lock_active %}
     <span class="badge text-bg-warning">{{ device_text.lock_offline }}</span>
     {% else %}
@@ -77,6 +79,8 @@
   <td>
     {% if row.server_lock_reason %}
     <span class="small">{{ row.server_lock_reason }}</span>
+    {% elif row.offline_unlock_pending %}
+    <span class="small text-info">{{ device_text.lock_pending_delivery_help }}</span>
     {% else %}
     <span class="text-muted">-</span>
     {% endif %}
@@ -110,6 +114,11 @@
         <button type="submit" class="btn btn-sm btn-outline-warning">{{ device_text.remote_credit_disable }}</button>
         <span class="badge text-bg-warning align-self-center">{{ device_text.remote_credit_pending }}</span>
       </form>
+      {% elif row.offline_unlock_pending %}
+      <div class="d-flex gap-1">
+        <span class="badge text-bg-info align-self-center">{{ device_text.offline_unlock_pending }}</span>
+        <span class="text-muted small align-self-center">{{ device_text.offline_unlock_pending_help }}</span>
+      </div>
       {% else %}
       <form method="post" class="d-flex gap-1">
         {% csrf_token %}

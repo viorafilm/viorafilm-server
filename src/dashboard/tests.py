@@ -1,0 +1,97 @@
+from datetime import timedelta
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+from django.urls import reverse
+from django.utils import timezone
+
+from accounts.models import UserRole
+from core.models import Branch, Device, Organization
+
+from .views import REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET, _build_device_rows
+
+
+class DeviceUnlockGraceTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org", code="org")
+        self.branch = Branch.objects.create(org=self.org, name="Branch", code="branch")
+        self.user = get_user_model().objects.create_user(
+            username="admin",
+            password="pw",
+            is_staff=True,
+            is_superuser=True,
+            role=UserRole.SUPERADMIN,
+        )
+
+    def _create_device(self, code: str, **overrides) -> Device:
+        payload = {
+            "org": self.org,
+            "branch": self.branch,
+            "device_code": code,
+            "is_active": True,
+        }
+        payload.update(overrides)
+        return Device.objects.create(**payload)
+
+    @override_settings(
+        DEVICE_AUTO_LOCK_ENABLED=True,
+        DEVICE_AUTO_LOCK_OFFLINE_DAYS=3,
+        SECURE_SSL_REDIRECT=False,
+    )
+    def test_unlock_device_resets_manual_offline_grace(self):
+        device = self._create_device(
+            "dev-unlock",
+            is_locked=True,
+            lock_reason="AUTO_LOCK_OFFLINE_3D",
+            locked_at=timezone.now() - timedelta(minutes=10),
+            last_seen_at=timezone.now() - timedelta(days=4),
+        )
+
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("dashboard_devices"),
+            {
+                "action": "unlock_device",
+                "device_id": str(device.id),
+            },
+        )
+
+        self.assertIn(response.status_code, (301, 302))
+        device.refresh_from_db()
+        self.assertFalse(device.is_locked)
+        self.assertEqual(device.lock_reason, "")
+        self.assertIsNone(device.locked_at)
+        self.assertIsNotNone(device.offline_unlock_grace_until)
+        self.assertEqual(device.pending_remote_action.get("kind"), REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET)
+        remaining_seconds = int((device.offline_unlock_grace_until - timezone.now()).total_seconds())
+        self.assertGreater(remaining_seconds, 2 * 86400 + 23 * 3600)
+        self.assertLessEqual(remaining_seconds, 3 * 86400)
+
+    @override_settings(
+        DEVICE_AUTO_LOCK_ENABLED=True,
+        DEVICE_AUTO_LOCK_OFFLINE_DAYS=3,
+        SECURE_SSL_REDIRECT=False,
+    )
+    def test_build_device_rows_prefers_unlock_grace_remaining(self):
+        device = self._create_device(
+            "dev-rows",
+            last_seen_at=timezone.now() - timedelta(days=4),
+            last_health_json={
+                "offline_guard_enabled": True,
+                "offline_grace_remaining_seconds": -300,
+            },
+        )
+        device.offline_unlock_grace_until = timezone.now() + timedelta(days=3)
+        device.pending_remote_action = {
+            "id": "pending-1",
+            "kind": REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET,
+        }
+        device.save(update_fields=["offline_unlock_grace_until", "pending_remote_action", "updated_at"])
+
+        rows = _build_device_rows(self.user, devices_qs=Device.objects.filter(id=device.id))
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertGreater(int(row["offline_grace_remaining_seconds"]), 2 * 86400 + 23 * 3600)
+        self.assertFalse(bool(row["offline_grace_overdue"]))
+        self.assertTrue(bool(row["offline_unlock_pending"]))

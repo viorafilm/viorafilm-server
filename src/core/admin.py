@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib import admin, messages
 from django.utils import timezone
 
@@ -84,13 +86,21 @@ class DeviceAdmin(admin.ModelAdmin):
     @admin.action(description="Unlock selected devices")
     def unlock_selected_devices(self, request, queryset):
         count = 0
+        now = timezone.now()
+        auto_lock_enabled = Device.offline_auto_lock_enabled()
+        auto_lock_days = Device.offline_auto_lock_days()
+        cutoff = now - timedelta(days=auto_lock_days) if auto_lock_enabled else None
         for device in queryset:
             if not device.is_locked:
                 continue
             device.is_locked = False
             device.lock_reason = ""
             device.locked_at = None
-            device.save(update_fields=["is_locked", "lock_reason", "locked_at", "updated_at"])
+            update_fields = ["is_locked", "lock_reason", "locked_at", "updated_at"]
+            if cutoff is not None and device.last_seen_at and device.last_seen_at < cutoff:
+                device.grant_offline_unlock_grace(now=now, days=auto_lock_days)
+                update_fields.append("offline_unlock_grace_until")
+            device.save(update_fields=update_fields)
             count += 1
         self.message_user(request, f"Unlocked devices: {count}", level=messages.INFO)
 
