@@ -71,6 +71,14 @@ REMOTE_CREDIT_ALLOWED_SCREENS = {
 REMOTE_ACTION_KIND_PAYMENT_BYPASS = "payment_bypass"
 REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET = "offline_guard_reset"
 OFFLINE_GUARD_RESET_ACTION_TTL_MINUTES = 30
+SALES_PAYMENT_FILTER_OPTIONS = (
+    "all",
+    "cash",
+    "card",
+    "coupon",
+    "coupon_cash",
+    "coupon_card",
+)
 PREFERRED_DASHBOARD_TIMEZONES = (
     "Asia/Seoul",
     "Asia/Tokyo",
@@ -696,6 +704,30 @@ def _resolve_sale_payment_method_label(sale: SaleTransaction) -> str:
             return "COUPON + CARD"
         return "COUPON + CASH"
     return method
+
+
+def _normalize_sales_payment_filter(value) -> str:
+    selected = str(value or "").strip().lower()
+    if selected not in SALES_PAYMENT_FILTER_OPTIONS:
+        return "all"
+    return selected
+
+
+def _apply_sales_payment_filter(qs, payment_filter: str):
+    selected = _normalize_sales_payment_filter(payment_filter)
+    if selected == "all":
+        return qs
+    if selected == "cash":
+        return qs.filter(payment_method=SaleTransaction.METHOD_CASH)
+    if selected == "card":
+        return qs.filter(payment_method=SaleTransaction.METHOD_CARD)
+    if selected == "coupon":
+        return qs.filter(payment_method=SaleTransaction.METHOD_COUPON)
+    if selected == "coupon_cash":
+        return qs.filter(payment_method=SaleTransaction.METHOD_COUPON_CASH).exclude(meta__kiosk_payment_selection="card")
+    if selected == "coupon_card":
+        return qs.filter(payment_method=SaleTransaction.METHOD_COUPON_CASH, meta__kiosk_payment_selection="card")
+    return qs
 
 
 def _extract_sale_cancel_meta(sale: SaleTransaction) -> dict:
@@ -1710,6 +1742,7 @@ def sales_view(request):
     filters = _resolve_scope_filters(request.user, request)
     context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     period_info = _resolve_sales_period(request, tzinfo)
+    payment_filter = _normalize_sales_payment_filter(request.GET.get("payment_filter") or request.POST.get("payment_filter"))
     per_page_raw = request.GET.get("per_page") or request.POST.get("per_page") or 10
     try:
         per_page = int(per_page_raw)
@@ -1807,6 +1840,7 @@ def sales_view(request):
                 "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else None,
                 "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else None,
                 "billing_month": _resolve_billing_month(request, tzinfo).strftime("%Y-%m"),
+                "payment_filter": payment_filter if payment_filter != "all" else None,
                 "per_page": per_page,
                 "page": current_page,
             },
@@ -1816,6 +1850,7 @@ def sales_view(request):
         return redirect("dashboard_sales")
 
     sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
+    sales_qs = _apply_sales_payment_filter(sales_qs, payment_filter)
     paginator = Paginator(sales_qs, per_page)
     page_obj = paginator.get_page(current_page)
     page_numbers = [
@@ -1887,6 +1922,7 @@ def sales_view(request):
             "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else None,
             "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else None,
             "billing_month": billing_month.strftime("%Y-%m"),
+            "payment_filter": payment_filter if payment_filter != "all" else None,
             "per_page": per_page,
         },
     )
@@ -1903,6 +1939,7 @@ def sales_view(request):
             "period": period_info["period"],
             "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else "",
             "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else "",
+            "payment_filter": payment_filter,
             "chart_labels": chart_payload["labels"],
             "chart_totals": chart_payload["totals"],
             "chart_counts": chart_payload["counts"],
@@ -1936,8 +1973,10 @@ def sales_export_view(request):
     tz_context = _resolve_dashboard_timezone_context(request.user, filters)
     tzinfo = tz_context["dashboard_tzinfo"]
     period_info = _resolve_sales_period(request, tzinfo)
+    payment_filter = _normalize_sales_payment_filter(request.GET.get("payment_filter"))
     sales_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
     sales_qs = _apply_sales_period_filter(sales_qs, period_info, tzinfo)
+    sales_qs = _apply_sales_payment_filter(sales_qs, payment_filter)
 
     rows = []
     for s in sales_qs.order_by("-created_at").iterator():

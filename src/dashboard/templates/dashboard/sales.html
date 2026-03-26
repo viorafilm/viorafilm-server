@@ -7,7 +7,7 @@
       <h5 class="mb-0">{{ sales_text.title }}</h5>
       <a
         class="btn btn-success btn-sm"
-        href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}&billing_month={{ billing_month_value|default:'' }}"
+        href="{% url 'dashboard_sales_export' %}?org_id={{ filter_org_id|default:'' }}&branch_id={{ filter_branch_id|default:'' }}&period={{ period|default:'month' }}&start_date={{ start_date|default:'' }}&end_date={{ end_date|default:'' }}&billing_month={{ billing_month_value|default:'' }}&payment_filter={{ payment_filter|default:'all' }}"
       >
         {{ sales_text.export_csv }}
       </a>
@@ -46,6 +46,17 @@
         <input class="form-control form-control-sm" type="month" name="billing_month" value="{{ billing_month_value|default:'' }}">
       </div>
       <div class="col-12 col-md-4 col-lg-2">
+        <label class="form-label mb-1">{{ sales_text.payment_filter }}</label>
+        <select class="form-select form-select-sm" name="payment_filter">
+          <option value="all" {% if payment_filter == 'all' %}selected{% endif %}>{{ sales_text.payment_filter_all }}</option>
+          <option value="cash" {% if payment_filter == 'cash' %}selected{% endif %}>{{ sales_text.payment_filter_cash }}</option>
+          <option value="card" {% if payment_filter == 'card' %}selected{% endif %}>{{ sales_text.payment_filter_card }}</option>
+          <option value="coupon" {% if payment_filter == 'coupon' %}selected{% endif %}>{{ sales_text.payment_filter_coupon }}</option>
+          <option value="coupon_cash" {% if payment_filter == 'coupon_cash' %}selected{% endif %}>{{ sales_text.payment_filter_coupon_cash }}</option>
+          <option value="coupon_card" {% if payment_filter == 'coupon_card' %}selected{% endif %}>{{ sales_text.payment_filter_coupon_card }}</option>
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-2">
         <label class="form-label mb-1">{{ sales_text.start_date }}</label>
         <input class="form-control form-control-sm" type="date" name="start_date" id="startDateInput" value="{{ start_date|default:'' }}">
       </div>
@@ -53,7 +64,7 @@
         <label class="form-label mb-1">{{ sales_text.end_date }}</label>
         <input class="form-control form-control-sm" type="date" name="end_date" id="endDateInput" value="{{ end_date|default:'' }}">
       </div>
-      <div class="col-12 col-md-4 col-lg-2">
+      <div class="col-12 col-md-4 col-lg-1">
         <label class="form-label mb-1">{{ sales_text.per_page }}</label>
         <select class="form-select form-select-sm" name="per_page" onchange="this.form.submit()">
           {% for option in per_page_options %}

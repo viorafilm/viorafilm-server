@@ -165,3 +165,41 @@ class SalesPaginationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["per_page"], 20)
         self.assertEqual(len(response.context["sales"]), 12)
+
+    @override_settings(SECURE_SSL_REDIRECT=False)
+    def test_sales_view_filters_by_payment_method(self):
+        SaleTransaction.objects.create(
+            org=self.org,
+            branch=self.branch,
+            device=self.device,
+            session_id="cash-1",
+            layout_id="test",
+            prints=2,
+            currency="KRW",
+            price_total=4000,
+            payment_method=SaleTransaction.METHOD_CASH,
+            amount_cash=4000,
+            amount_coupon=0,
+        )
+        SaleTransaction.objects.create(
+            org=self.org,
+            branch=self.branch,
+            device=self.device,
+            session_id="card-1",
+            layout_id="test",
+            prints=2,
+            currency="KRW",
+            price_total=4000,
+            payment_method=SaleTransaction.METHOD_CARD,
+            amount_cash=4000,
+            amount_coupon=0,
+            meta={"kiosk_payment_selection": "card"},
+        )
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("dashboard_sales"), {"payment_filter": "card"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["payment_filter"], "card")
+        self.assertEqual(len(response.context["sales"]), 1)
+        self.assertEqual(response.context["sales"][0].session_id, "card-1")
