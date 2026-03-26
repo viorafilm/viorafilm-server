@@ -817,7 +817,7 @@ def setup_logging() -> Path:
     return log_file
 
 try:
-    from PySide6.QtCore import QObject, Qt, QRect, QThread, QTimer, Signal, QBuffer, QByteArray, QIODevice, QUrl
+    from PySide6.QtCore import QObject, Qt, QRect, QSize, QThread, QTimer, Signal, QBuffer, QByteArray, QIODevice, QUrl
     from PySide6.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -842,7 +842,7 @@ try:
     )
 except ImportError:
     try:
-        from PyQt6.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
+        from PyQt6.QtCore import QObject, Qt, QRect, QSize, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
         from PyQt6.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
         from PyQt6.QtWidgets import (
             QApplication,
@@ -867,7 +867,7 @@ except ImportError:
         )
     except ImportError:
         try:
-            from PyQt5.QtCore import QObject, Qt, QRect, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
+            from PyQt5.QtCore import QObject, Qt, QRect, QSize, QThread, QTimer, pyqtSignal as Signal, QBuffer, QByteArray, QIODevice, QUrl
             from PyQt5.QtGui import QColor, QIcon, QImage, QIntValidator, QKeyEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
             from PyQt5.QtWidgets import (
                 QApplication,
@@ -1781,6 +1781,7 @@ def _read_image_size(image_path: object) -> Optional[tuple[int, int]]:
 DEFAULT_MODE_SETTINGS = {
     "celebrity_enabled": True,
     "ai_enabled": False,
+    "id_photo_enabled": False,
 }
 
 DEFAULT_CELEBRITY_SETTINGS = {
@@ -1793,6 +1794,7 @@ DESIGN_PREVIEW_COMPOSE_CACHE_MAX_EDGE = 960
 
 AI_LAYOUT_ID = "4641"
 AI_MODE_PRICING_LAYOUT_ID = "AI_MODE_4641"
+ID_PHOTO_MODE_PRICING_LAYOUT_ID = "ID_PHOTO_MODE"
 AI_CAPTURE_SLOTS = 4
 AI_SELECT_SLOTS = 2
 AI_OUTPUT_SLOTS = 4
@@ -12828,6 +12830,7 @@ class AdminScreen(QWidget):
         self.payment_card_cb = QCheckBox(self)
         self.payment_coupon_cb = QCheckBox(self)
         self.mode_celebrity_cb = QCheckBox(self)
+        self.mode_id_photo_cb = QCheckBox(self)
         self.mode_ai_cb = QCheckBox(self)
         self.ai_style_ids: list[str] = list(DEFAULT_AI_STYLE_PRESETS.keys())[:4]
         self.ai_style_enabled_inputs: dict[str, QCheckBox] = {}
@@ -13044,6 +13047,7 @@ class AdminScreen(QWidget):
         form.addRow("pay_card", self.payment_card_cb)
         form.addRow("pay_coupon", self.payment_coupon_cb)
         form.addRow("mode_celebrity_enabled", self.mode_celebrity_cb)
+        form.addRow("mode_id_photo_enabled", self.mode_id_photo_cb)
         form.addRow("mode_ai_enabled", self.mode_ai_cb)
         form.addRow(self._make_section_label("AI 스타일 / AI Styles"))
         form.addRow("ai_styles", self.ai_style_widget)
@@ -13381,8 +13385,12 @@ class AdminScreen(QWidget):
             mode_settings["celebrity_enabled"] = bool(
                 modes.get("celebrity_enabled", mode_settings["celebrity_enabled"])
             )
+            mode_settings["id_photo_enabled"] = bool(
+                modes.get("id_photo_enabled", mode_settings["id_photo_enabled"])
+            )
             mode_settings["ai_enabled"] = bool(modes.get("ai_enabled", mode_settings["ai_enabled"]))
         self.mode_celebrity_cb.setChecked(bool(mode_settings["celebrity_enabled"]))
+        self.mode_id_photo_cb.setChecked(bool(mode_settings["id_photo_enabled"]))
         self.mode_ai_cb.setChecked(bool(mode_settings["ai_enabled"]))
         self._load_ai_style_controls(ai_styles)
         self._load_printing_controls(printing, printer_names)
@@ -13473,6 +13481,7 @@ class AdminScreen(QWidget):
     def _collect_modes_settings(self) -> dict:
         return {
             "celebrity_enabled": self.mode_celebrity_cb.isChecked(),
+            "id_photo_enabled": self.mode_id_photo_cb.isChecked(),
             "ai_enabled": self.mode_ai_cb.isChecked(),
         }
 
@@ -18123,6 +18132,51 @@ class OfflineLockScreen(QWidget):
             self.main_window.retry_offline_unlock()
 
 
+class ModePlaceholderScreen(QWidget):
+    def __init__(self, main_window, screen_name: str, title: str, subtitle: str) -> None:
+        super().__init__()
+        self.main_window = main_window
+        self.screen_name = str(screen_name or "").strip() or "mode_placeholder"
+        self.setStyleSheet("QWidget { background: #0b1020; color: white; }")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(180, 120, 180, 120)
+        layout.setSpacing(24)
+
+        title_label = QLabel(str(title or "").strip(), self)
+        title_label.setAlignment(ALIGN_CENTER)
+        title_label.setStyleSheet("font-size: 54px; font-weight: 800;")
+
+        subtitle_label = QLabel(str(subtitle or "").strip(), self)
+        subtitle_label.setAlignment(ALIGN_CENTER)
+        subtitle_label.setWordWrap(True)
+        subtitle_label.setStyleSheet(
+            "font-size: 24px; color: #c4cde9; background: rgba(255,255,255,0.06); "
+            "border: 1px solid rgba(255,255,255,0.18); border-radius: 12px; padding: 16px 22px;"
+        )
+
+        back_button = QPushButton("프레임 선택으로 돌아가기 / Back", self)
+        back_button.setMinimumHeight(74)
+        back_button.setStyleSheet(
+            "QPushButton { background: #1f7ae0; color: white; font-size: 30px; font-weight: 700; "
+            "border-radius: 12px; padding: 8px 24px; } "
+            "QPushButton:pressed { background: #1565c0; }"
+        )
+        back_button.clicked.connect(lambda: self.main_window.goto_screen("frame_select"))
+
+        layout.addStretch(1)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addWidget(back_button)
+        layout.addStretch(1)
+
+    def set_hotspots(self, hotspots: list[Hotspot]) -> None:
+        _ = hotspots
+
+    def set_overlay_visible(self, visible: bool) -> None:
+        _ = visible
+
+
 class KioskMainWindow(QMainWindow):
     offline_guard_signal = Signal(str)
     server_lock_signal = Signal(object)
@@ -18130,8 +18184,14 @@ class KioskMainWindow(QMainWindow):
     ota_state_signal = Signal(object)
     remote_action_signal = Signal(object)
     FRAME_SELECT_MODE_RECTS: dict[str, tuple[int, int, int, int]] = {
-        "celebrity": (260, 820, 620, 86),
-        "ai": (1040, 820, 620, 86),
+        "celebrity": (370, 737, 400, 252),
+        "id_photo": (760, 737, 400, 252),
+        "ai": (1150, 737, 400, 252),
+    }
+    FRAME_SELECT_MODE_IMAGE_PATHS: dict[str, Path] = {
+        "celebrity": ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "mode_buttons" / "celebrity_mode.png",
+        "id_photo": ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "mode_buttons" / "AI_id_photo_mode.png",
+        "ai": ROOT_DIR / "assets" / "ui" / "3_select_a_frame" / "mode_buttons" / "ai_mode.png",
     }
     # Price label Y positions for frame cards (design coordinate, 1920x1080).
     # Used as fallback only when frame-bound detection is unavailable.
@@ -18494,6 +18554,12 @@ class KioskMainWindow(QMainWindow):
                 "error",
                 ROOT_DIR / "assets" / "ui" / "errorpage" / "error.png",
                 missing_text="Error",
+            ),
+            "id_photo_mode": ModePlaceholderScreen(
+                self,
+                "id_photo_mode",
+                "ID PHOTO MODE",
+                "준비중입니다.\nID Photo mode is not implemented yet.\n\n나중에 실제 촬영/합성 흐름을 이 화면에 연결할 예정입니다.",
             ),
             "offline_locked": OfflineLockScreen(self),
         }
@@ -19991,6 +20057,10 @@ class KioskMainWindow(QMainWindow):
                 raw_settings.get("ai_enabled"),
                 bool(DEFAULT_MODE_SETTINGS["ai_enabled"]),
             )
+            normalized["id_photo_enabled"] = cls._as_bool(
+                raw_settings.get("id_photo_enabled"),
+                bool(DEFAULT_MODE_SETTINGS["id_photo_enabled"]),
+            )
         return normalized
 
     def _resolve_modes_settings(self) -> dict[str, bool]:
@@ -20620,25 +20690,41 @@ class KioskMainWindow(QMainWindow):
             self._layout_frame_select_mode_buttons()
             return
 
-        celebrity_btn = QPushButton("연예인 모드\nCelebrity Mode", screen)
-        ai_btn = QPushButton("AI모드\nAI Mode", screen)
-        for btn in (celebrity_btn, ai_btn):
-            btn.setStyleSheet(
-                "QPushButton {"
-                "background-color: rgba(0,0,0,150); color: white; font-size: 22px; font-weight: 700; "
-                "border: 2px solid rgba(255,255,255,140); border-radius: 10px; }"
-                "QPushButton:pressed { background-color: rgba(0,0,0,200); }"
-            )
-            btn.setFocusPolicy(Qt.NoFocus if hasattr(Qt, "NoFocus") else Qt.FocusPolicy.NoFocus)
-
-        celebrity_btn.clicked.connect(self._on_frame_select_mode_celebrity_clicked)
-        ai_btn.clicked.connect(self._on_frame_select_mode_ai_clicked)
-        self._frame_select_mode_buttons = {
-            "celebrity": celebrity_btn,
-            "ai": ai_btn,
+        button_specs = {
+            "celebrity": ("연예인 모드\nCelebrity Mode", self._on_frame_select_mode_celebrity_clicked),
+            "id_photo": ("증명사진 모드\nID Photo Mode", self._on_frame_select_mode_id_photo_clicked),
+            "ai": ("AI모드\nAI Mode", self._on_frame_select_mode_ai_clicked),
         }
+        buttons: dict[str, QPushButton] = {}
+        for key, (fallback_text, handler) in button_specs.items():
+            btn = QPushButton(fallback_text, screen)
+            image_path = self.FRAME_SELECT_MODE_IMAGE_PATHS.get(key)
+            uses_image_asset = False
+            if isinstance(image_path, Path) and image_path.is_file():
+                pixmap = QPixmap(str(image_path))
+                if not pixmap.isNull():
+                    btn.setText("")
+                    btn.setIcon(QIcon(pixmap))
+                    btn.setIconSize(QSize(int(pixmap.width()), int(pixmap.height())))
+                    btn.setStyleSheet(
+                        "QPushButton { border: none; background: transparent; padding: 0px; }"
+                    )
+                    uses_image_asset = True
+            if not uses_image_asset:
+                btn.setStyleSheet(
+                    "QPushButton {"
+                    "background-color: rgba(0,0,0,150); color: white; font-size: 22px; font-weight: 700; "
+                    "border: 2px solid rgba(255,255,255,140); border-radius: 10px; }"
+                    "QPushButton:pressed { background-color: rgba(0,0,0,200); }"
+                )
+            btn.setProperty("uses_image_asset", uses_image_asset)
+            btn.setFocusPolicy(Qt.NoFocus if hasattr(Qt, "NoFocus") else Qt.FocusPolicy.NoFocus)
+            btn.clicked.connect(handler)
+            buttons[key] = btn
+
+        self._frame_select_mode_buttons = buttons
         self._frame_select_mode_price_labels = {}
-        for key in ("celebrity", "ai"):
+        for key in ("celebrity", "id_photo", "ai"):
             price_label = QLabel(screen)
             price_label.setAlignment(ALIGN_CENTER)
             price_label.setAttribute(WA_TRANSPARENT, True)
@@ -20660,6 +20746,8 @@ class KioskMainWindow(QMainWindow):
             except Exception:
                 pass
             return celeb_layout
+        if key == "id_photo":
+            return ID_PHOTO_MODE_PRICING_LAYOUT_ID
         return AI_MODE_PRICING_LAYOUT_ID
 
     def _layout_frame_select_mode_buttons(self) -> None:
@@ -20694,12 +20782,15 @@ class KioskMainWindow(QMainWindow):
         layout_price_map = dict(pricing.get("layouts", {}))
         modes = self.get_modes_settings()
         celebrity_enabled = bool(modes.get("celebrity_enabled", DEFAULT_MODE_SETTINGS["celebrity_enabled"]))
+        id_photo_enabled = bool(modes.get("id_photo_enabled", DEFAULT_MODE_SETTINGS["id_photo_enabled"]))
         ai_enabled = bool(modes.get("ai_enabled", DEFAULT_MODE_SETTINGS["ai_enabled"]))
         ai_runtime_ready = self._has_runtime_gemini_api_key()
         ai_enabled = ai_enabled and ai_runtime_ready
         celebrity_btn = self._frame_select_mode_buttons.get("celebrity")
+        id_photo_btn = self._frame_select_mode_buttons.get("id_photo")
         ai_btn = self._frame_select_mode_buttons.get("ai")
         celebrity_price = self._frame_select_mode_price_labels.get("celebrity")
+        id_photo_price = self._frame_select_mode_price_labels.get("id_photo")
         ai_price = self._frame_select_mode_price_labels.get("ai")
         if celebrity_btn is not None:
             celebrity_btn.setVisible(celebrity_enabled)
@@ -20711,6 +20802,16 @@ class KioskMainWindow(QMainWindow):
                 amount_value = default_price
             celebrity_price.setText(format_price(prefix, amount_value))
             celebrity_price.setVisible(celebrity_enabled)
+        if id_photo_btn is not None:
+            id_photo_btn.setVisible(id_photo_enabled)
+        if id_photo_price is not None:
+            amount = layout_price_map.get(self._frame_select_mode_layout_id("id_photo"), default_price)
+            try:
+                amount_value = max(0, int(amount))
+            except Exception:
+                amount_value = default_price
+            id_photo_price.setText(format_price(prefix, amount_value))
+            id_photo_price.setVisible(id_photo_enabled)
         if ai_btn is not None:
             ai_btn.setVisible(ai_enabled)
         if ai_price is not None:
@@ -20755,6 +20856,15 @@ class KioskMainWindow(QMainWindow):
         print("[MODE] click ai -> goto ai_style_select")
         self.goto_screen("ai_style_select")
 
+    def _on_frame_select_mode_id_photo_clicked(self) -> None:
+        self.ui_sound.play("click")
+        self._suppress_nav_sound_until = time.monotonic() + 0.35
+        if not bool(self.mode_settings.get("id_photo_enabled", DEFAULT_MODE_SETTINGS["id_photo_enabled"])):
+            self._show_runtime_notice("ID Photo 모드는 비활성화되었습니다", duration_ms=1000)
+            return
+        print("[MODE] click id_photo -> goto id_photo_mode")
+        self.goto_screen("id_photo_mode")
+
     def _apply_mode_settings(
         self,
         modes: dict,
@@ -20769,6 +20879,7 @@ class KioskMainWindow(QMainWindow):
             print(
                 "[ADMIN] modes "
                 f"celebrity_enabled={1 if self.mode_settings.get('celebrity_enabled') else 0} "
+                f"id_photo_enabled={1 if self.mode_settings.get('id_photo_enabled') else 0} "
                 f"ai_enabled={1 if self.mode_settings.get('ai_enabled') else 0}"
             )
 
@@ -27845,6 +27956,10 @@ class KioskMainWindow(QMainWindow):
                 return
             if key in (KEY_ENTER, KEY_RETURN):
                 self._start_print_from_preview()
+                return
+        if getattr(current, "screen_name", None) == "id_photo_mode":
+            if key in (KEY_ESCAPE, KEY_BACKSPACE, KEY_ENTER, KEY_RETURN, KEY_SPACE):
+                self.goto_screen("frame_select")
                 return
         if getattr(current, "screen_name", None) == "error":
             if key in (KEY_ENTER, KEY_RETURN):
