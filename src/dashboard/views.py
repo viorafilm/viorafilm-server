@@ -659,6 +659,44 @@ def _extract_sale_payment_meta(sale: SaleTransaction) -> dict:
     return dict(payload) if isinstance(payload, dict) else {}
 
 
+def _extract_sale_payment_selection(sale: SaleTransaction) -> str:
+    meta = sale.meta if isinstance(sale.meta, dict) else {}
+    return str(meta.get("kiosk_payment_selection", "") or "").strip().lower()
+
+
+def _resolve_sale_payment_breakdown(sale: SaleTransaction) -> dict[str, int]:
+    method = str(getattr(sale, "payment_method", "") or "").strip().upper()
+    total = max(0, int(getattr(sale, "price_total", 0) or 0))
+    coupon_amount = max(0, int(getattr(sale, "amount_coupon", 0) or 0))
+    cash_amount = max(0, int(getattr(sale, "amount_cash", 0) or 0))
+    selection = _extract_sale_payment_selection(sale)
+
+    if method == SaleTransaction.METHOD_CARD:
+        return {"cash": 0, "card": total, "coupon": 0}
+    if method == SaleTransaction.METHOD_CASH:
+        return {"cash": total if total > 0 else cash_amount, "card": 0, "coupon": 0}
+    if method == SaleTransaction.METHOD_COUPON:
+        coupon_value = coupon_amount if coupon_amount > 0 else total
+        return {"cash": 0, "card": 0, "coupon": coupon_value}
+    if method == SaleTransaction.METHOD_COUPON_CASH:
+        remaining = max(0, total - coupon_amount)
+        if selection == "card":
+            return {"cash": 0, "card": remaining, "coupon": coupon_amount}
+        cash_value = cash_amount if cash_amount > 0 else remaining
+        return {"cash": cash_value, "card": 0, "coupon": coupon_amount}
+    return {"cash": cash_amount, "card": 0, "coupon": coupon_amount}
+
+
+def _resolve_sale_payment_method_label(sale: SaleTransaction) -> str:
+    method = str(getattr(sale, "payment_method", "") or "").strip().upper()
+    selection = _extract_sale_payment_selection(sale)
+    if method == SaleTransaction.METHOD_COUPON_CASH:
+        if selection == "card":
+            return "COUPON + CARD"
+        return "COUPON + CASH"
+    return method
+
+
 def _extract_sale_cancel_meta(sale: SaleTransaction) -> dict:
     meta = sale.meta if isinstance(sale.meta, dict) else {}
     payload = meta.get("payment_cancel")
@@ -1765,6 +1803,11 @@ def sales_view(request):
     sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
     sales = list(sales_qs[:300])
     for sale in sales:
+        payment_breakdown = _resolve_sale_payment_breakdown(sale)
+        setattr(sale, "dashboard_payment_method_label", _resolve_sale_payment_method_label(sale))
+        setattr(sale, "dashboard_amount_cash", int(payment_breakdown.get("cash", 0)))
+        setattr(sale, "dashboard_amount_card", int(payment_breakdown.get("card", 0)))
+        setattr(sale, "dashboard_amount_coupon", int(payment_breakdown.get("coupon", 0)))
         cancel_meta = _extract_sale_cancel_meta(sale)
         setattr(sale, "dashboard_cancel_status", str(cancel_meta.get("status", "")).strip().upper())
         setattr(sale, "dashboard_cancel_message", str(cancel_meta.get("message", "") or cancel_meta.get("error_message", "")).strip())

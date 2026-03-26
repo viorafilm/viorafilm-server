@@ -172,6 +172,7 @@
             <th>{{ sales_text.table_total }}</th>
             <th>{{ sales_text.table_payment_method }}</th>
             <th>{{ sales_text.table_cash }}</th>
+            <th>{{ sales_text.table_card }}</th>
             <th>{{ sales_text.table_coupon }}</th>
             <th>{{ sales_text.table_coupon_code }}</th>
             <th>{{ sales_text.table_cancel_status }}</th>
@@ -191,9 +192,10 @@
               {% endwith %}
             </td>
             <td>{{ dashboard_ui.currency_unit }} {{ s.price_total }}</td>
-            <td>{{ s.payment_method }}</td>
-            <td>{{ s.amount_cash }}</td>
-            <td>{{ s.amount_coupon }}</td>
+            <td>{{ s.dashboard_payment_method_label }}</td>
+            <td>{{ s.dashboard_amount_cash }}</td>
+            <td>{{ s.dashboard_amount_card }}</td>
+            <td>{{ s.dashboard_amount_coupon }}</td>
             <td>{% if s.coupon %}{{ s.coupon.formatted_code }}{% else %}-{% endif %}</td>
             <td>
               {% if s.dashboard_cancel_status == "SUCCESS" %}

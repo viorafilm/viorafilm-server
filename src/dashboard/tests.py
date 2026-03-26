@@ -1,14 +1,40 @@
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import UserRole
 from core.models import Branch, Device, Organization
+from sales.models import SaleTransaction
 
 from .views import REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET, _build_device_rows
+from .views import _resolve_sale_payment_breakdown, _resolve_sale_payment_method_label
+
+
+class SalePaymentBreakdownTests(SimpleTestCase):
+    def test_card_payment_shows_card_amount_only(self):
+        sale = SaleTransaction(
+            payment_method=SaleTransaction.METHOD_CARD,
+            price_total=7000,
+            amount_cash=7000,
+            amount_coupon=0,
+            meta={"kiosk_payment_selection": "card"},
+        )
+        self.assertEqual(_resolve_sale_payment_breakdown(sale), {"cash": 0, "card": 7000, "coupon": 0})
+        self.assertEqual(_resolve_sale_payment_method_label(sale), "CARD")
+
+    def test_coupon_card_payment_moves_remainder_to_card(self):
+        sale = SaleTransaction(
+            payment_method=SaleTransaction.METHOD_COUPON_CASH,
+            price_total=10000,
+            amount_cash=4000,
+            amount_coupon=6000,
+            meta={"kiosk_payment_selection": "card"},
+        )
+        self.assertEqual(_resolve_sale_payment_breakdown(sale), {"cash": 0, "card": 4000, "coupon": 6000})
+        self.assertEqual(_resolve_sale_payment_method_label(sale), "COUPON + CARD")
 
 
 class DeviceUnlockGraceTests(TestCase):
