@@ -121,3 +121,47 @@ class DeviceUnlockGraceTests(TestCase):
         self.assertGreater(int(row["offline_grace_remaining_seconds"]), 2 * 86400 + 23 * 3600)
         self.assertFalse(bool(row["offline_grace_overdue"]))
         self.assertTrue(bool(row["offline_unlock_pending"]))
+
+
+class SalesPaginationTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org", code="org")
+        self.branch = Branch.objects.create(org=self.org, name="Branch", code="branch")
+        self.device = Device.objects.create(org=self.org, branch=self.branch, device_code="dev-sales")
+        self.user = get_user_model().objects.create_user(
+            username="salesadmin",
+            password="pw",
+            is_staff=True,
+            is_superuser=True,
+            role=UserRole.SUPERADMIN,
+        )
+
+    @override_settings(SECURE_SSL_REDIRECT=False)
+    def test_sales_view_defaults_to_ten_rows_and_supports_per_page(self):
+        for idx in range(12):
+            SaleTransaction.objects.create(
+                org=self.org,
+                branch=self.branch,
+                device=self.device,
+                session_id=f"s-{idx}",
+                layout_id="test",
+                prints=2,
+                currency="KRW",
+                price_total=4000,
+                payment_method=SaleTransaction.METHOD_CASH,
+                amount_cash=4000,
+                amount_coupon=0,
+            )
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("dashboard_sales"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["per_page"], 10)
+        self.assertEqual(len(response.context["sales"]), 10)
+        self.assertEqual(response.context["page_obj"].paginator.count, 12)
+
+        response = self.client.get(reverse("dashboard_sales"), {"per_page": 20})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["per_page"], 20)
+        self.assertEqual(len(response.context["sales"]), 12)

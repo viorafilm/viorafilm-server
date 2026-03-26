@@ -55,6 +55,7 @@ AI_EST_SERVER_COST_MULTIPLIER = 10.0
 AI_EST_KRW_PER_IMAGE = int(round(AI_EST_USD_PER_IMAGE * AI_EST_KRW_PER_USD))
 MONTHLY_SERVER_FEE_PER_DEVICE = 60000
 COUPON_PER_PAGE_OPTIONS = (10, 30, 50, 100)
+SALES_PER_PAGE_OPTIONS = (10, 20, 50, 100)
 DASHBOARD_TIMEZONE_KEY = "dashboard_timezone"
 DEFAULT_DASHBOARD_TIMEZONE = "Asia/Seoul"
 REMOTE_CREDIT_ALLOWED_SCREENS = {
@@ -1709,6 +1710,18 @@ def sales_view(request):
     filters = _resolve_scope_filters(request.user, request)
     context, tzinfo = _build_dashboard_page_context(request.user, filters, ui_text=ui_text)
     period_info = _resolve_sales_period(request, tzinfo)
+    per_page_raw = request.GET.get("per_page") or request.POST.get("per_page") or 10
+    try:
+        per_page = int(per_page_raw)
+    except Exception:
+        per_page = 10
+    if per_page not in SALES_PER_PAGE_OPTIONS:
+        per_page = 10
+    page_raw = request.GET.get("page") or request.POST.get("page") or 1
+    try:
+        current_page = int(page_raw)
+    except Exception:
+        current_page = 1
     sales_base_qs = _apply_org_branch_filter(_scoped_sales(request.user), "org_id", "branch_id", filters)
     can_edit = not _is_viewer(request.user)
 
@@ -1794,6 +1807,8 @@ def sales_view(request):
                 "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else None,
                 "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else None,
                 "billing_month": _resolve_billing_month(request, tzinfo).strftime("%Y-%m"),
+                "per_page": per_page,
+                "page": current_page,
             },
         )
         if params:
@@ -1801,7 +1816,13 @@ def sales_view(request):
         return redirect("dashboard_sales")
 
     sales_qs = _apply_sales_period_filter(sales_base_qs, period_info, tzinfo)
-    sales = list(sales_qs[:300])
+    paginator = Paginator(sales_qs, per_page)
+    page_obj = paginator.get_page(current_page)
+    page_numbers = [
+        num
+        for num in range(max(1, page_obj.number - 2), min(paginator.num_pages, page_obj.number + 2) + 1)
+    ]
+    sales = list(page_obj.object_list)
     for sale in sales:
         payment_breakdown = _resolve_sale_payment_breakdown(sale)
         setattr(sale, "dashboard_payment_method_label", _resolve_sale_payment_method_label(sale))
@@ -1858,9 +1879,25 @@ def sales_view(request):
     )
 
     chart_payload = _build_sales_chart_payload(sales_qs, tzinfo)
+    sales_page_base_params = _query_params_from_filters(
+        filters,
+        extra={
+            "lang": request.GET.get("lang") or resolve_dashboard_lang(request),
+            "period": period_info["period"],
+            "start_date": period_info["start_date"].isoformat() if period_info["start_date"] else None,
+            "end_date": period_info["end_date"].isoformat() if period_info["end_date"] else None,
+            "billing_month": billing_month.strftime("%Y-%m"),
+            "per_page": per_page,
+        },
+    )
     context.update(
         {
             "sales": sales,
+            "page_obj": page_obj,
+            "page_numbers": page_numbers,
+            "per_page": per_page,
+            "per_page_options": SALES_PER_PAGE_OPTIONS,
+            "sales_page_base_query": urlencode(sales_page_base_params),
             "sales_total_amount": total_amount,
             "sales_total_count": total_count,
             "period": period_info["period"],

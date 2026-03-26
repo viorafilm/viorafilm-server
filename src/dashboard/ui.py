@@ -241,6 +241,7 @@ _UI_TEXT = {
         "sales": {
             "title": "매출 관리",
             "export_csv": "엑셀 다운로드(CSV)",
+            "per_page": "페이지당 표시",
             "period": "기간",
             "period_week": "최근 7일",
             "period_month": "이번 달",
@@ -300,6 +301,9 @@ _UI_TEXT = {
             "cancel_sale_missing": "취소할 거래를 찾지 못했습니다.",
             "cancel_pending_other": "해당 키오스크에 다른 원격 작업이 이미 대기 중입니다: {device}",
             "cancel_queued": "원격 결제 취소를 요청했습니다. 세션={session} 장치={device}",
+            "previous": "이전",
+            "next": "다음",
+            "pagination_aria": "매출 페이지 이동",
         },
         "photos": {
             "title": "사진 관리",
@@ -607,6 +611,7 @@ _UI_TEXT = {
         "sales": {
             "title": "Sales Analytics",
             "export_csv": "Export CSV",
+            "per_page": "Rows per Page",
             "period": "Period",
             "period_week": "Last 7 Days",
             "period_month": "This Month",
@@ -666,6 +671,9 @@ _UI_TEXT = {
             "cancel_sale_missing": "The selected sale could not be found.",
             "cancel_pending_other": "Another remote action is already pending for this kiosk: {device}",
             "cancel_queued": "Remote payment cancellation queued. Session={session} Device={device}",
+            "previous": "Previous",
+            "next": "Next",
+            "pagination_aria": "Sales pagination",
         },
         "photos": {
             "title": "Photo Sharing",
