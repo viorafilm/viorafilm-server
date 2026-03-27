@@ -70,7 +70,6 @@
             </td>
             <td>
               {% if row.print_url %}<a href="{{ row.print_url }}" target="_blank">{{ photo_text.download_print }}</a><br>{% endif %}
-              {% if row.frame_url %}<a href="{{ row.frame_url }}" target="_blank">{{ photo_text.download_frame }}</a><br>{% endif %}
               {% if row.gif_url %}<a href="{{ row.gif_url }}" target="_blank">{{ photo_text.download_gif }}</a><br>{% endif %}
               {% if row.video_url %}<a href="{{ row.video_url }}" target="_blank">{{ photo_text.download_video }}</a><br>{% endif %}
               {% for original in row.original_links %}
