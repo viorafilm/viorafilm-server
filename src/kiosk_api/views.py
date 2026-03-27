@@ -23,7 +23,7 @@ from storagehub.models import UploadKind
 from storagehub.service import register_asset
 
 from .auth import DeviceTokenAuthentication
-from .models import DeviceHeartbeat
+from .models import DeviceHeartbeat, DeviceRuntimeLog
 from .serializers import (
     ConfigAppliedSerializer,
     CouponCheckSerializer,
@@ -130,6 +130,42 @@ def _merge_health_payload(existing: dict, incoming: dict) -> dict:
     return merged
 
 
+def _ingest_runtime_log_chunk(device: Device, payload: dict) -> None:
+    if not isinstance(payload, dict):
+        return
+    filename = str(payload.get("runtime_log_filename", "") or "").strip()[:255]
+    chunk = str(payload.get("runtime_log_chunk", "") or "")
+    if not filename or not chunk:
+        return
+    try:
+        chunk_start = max(0, int(payload.get("runtime_log_chunk_start", 0) or 0))
+    except Exception:
+        chunk_start = 0
+    try:
+        chunk_end = max(chunk_start, int(payload.get("runtime_log_chunk_end", chunk_start + len(chunk.encode("utf-8", errors="ignore"))) or 0))
+    except Exception:
+        chunk_end = chunk_start
+    try:
+        is_reset = bool(payload.get("runtime_log_chunk_reset", False))
+    except Exception:
+        is_reset = False
+
+    try:
+        DeviceRuntimeLog.objects.create(
+            device=device,
+            log_filename=filename,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+            is_reset=is_reset,
+            content=chunk,
+        )
+    except IntegrityError:
+        pass
+
+    cutoff = timezone.now() - timedelta(days=2)
+    DeviceRuntimeLog.objects.filter(created_at__lt=cutoff).delete()
+
+
 def _apply_remote_action_result(device: Device, payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -201,7 +237,7 @@ class HeartbeatView(APIView):
 
         serializer = HeartbeatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        payload = serializer.validated_data
+        payload = dict(serializer.validated_data)
         remote_action_result = payload.get("remote_action_result")
         if isinstance(remote_action_result, dict):
             _apply_remote_action_result(device, remote_action_result)
@@ -209,6 +245,12 @@ class HeartbeatView(APIView):
         if ack_id:
             _clear_pending_remote_action(device, expected_id=ack_id)
             device.refresh_from_db(fields=["pending_remote_action", "pending_remote_action_updated_at"])
+
+        _ingest_runtime_log_chunk(device, payload)
+        payload.pop("runtime_log_chunk", None)
+        payload.pop("runtime_log_chunk_start", None)
+        payload.pop("runtime_log_chunk_end", None)
+        payload.pop("runtime_log_chunk_reset", None)
 
         device.last_seen_at = timezone.now()
         if payload.get("app_version"):

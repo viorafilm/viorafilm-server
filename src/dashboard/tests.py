@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from accounts.models import UserRole
 from core.models import Branch, Device, Organization
+from kiosk_api.models import DeviceRuntimeLog
 from sales.models import SaleTransaction
 
 from .views import REMOTE_ACTION_KIND_OFFLINE_GUARD_RESET, _build_device_rows
@@ -213,11 +214,6 @@ class DeviceLogsViewTests(TestCase):
             org=self.org,
             branch=self.branch,
             device_code="dev-log",
-            last_health_json={
-                "runtime_log_filename": "kiosk_20260327.log",
-                "runtime_log_updated_at": "2026-03-27T12:34:56",
-                "runtime_log_excerpt": "alpha\nbeta",
-            },
         )
         self.user = get_user_model().objects.create_user(
             username="logadmin",
@@ -225,6 +221,20 @@ class DeviceLogsViewTests(TestCase):
             is_staff=True,
             is_superuser=True,
             role=UserRole.SUPERADMIN,
+        )
+        DeviceRuntimeLog.objects.create(
+            device=self.device,
+            log_filename="kiosk_20260327.log",
+            chunk_start=0,
+            chunk_end=5,
+            content="alpha\n",
+        )
+        DeviceRuntimeLog.objects.create(
+            device=self.device,
+            log_filename="kiosk_20260327.log",
+            chunk_start=6,
+            chunk_end=10,
+            content="beta\n",
         )
 
     @override_settings(SECURE_SSL_REDIRECT=False)

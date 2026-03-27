@@ -33,7 +33,7 @@ from coupons.service import (
     recover_coupon_usage_from_sales,
     resolve_expires_hours,
 )
-from kiosk_api.models import DeviceHeartbeat
+from kiosk_api.models import DeviceHeartbeat, DeviceRuntimeLog
 from mediahub.models import ShareSession
 from sales.models import BranchMonthlyBilling, SaleTransaction
 from storagehub.models import UploadAsset
@@ -1592,12 +1592,37 @@ def device_logs_view(request, device_id: int):
         return redirect("dashboard_devices")
 
     health = target.last_health_json if isinstance(target.last_health_json, dict) else {}
+    cutoff = timezone.now() - timedelta(days=2)
+    chunks = list(
+        DeviceRuntimeLog.objects.filter(device=target, created_at__gte=cutoff)
+        .order_by("created_at", "id")
+    )
+    parts: list[str] = []
+    current_file = ""
+    for chunk in chunks:
+        filename = str(getattr(chunk, "log_filename", "") or "").strip()
+        if filename and filename != current_file:
+            if parts:
+                parts.append("\n")
+            parts.append(f"===== {filename} =====\n")
+            current_file = filename
+        parts.append(str(getattr(chunk, "content", "") or ""))
+    combined_excerpt = "".join(parts).strip()
+    latest_chunk = chunks[-1] if chunks else None
     context.update(
         {
             "device": target,
-            "device_log_excerpt": str(health.get("runtime_log_excerpt", "") or "").strip(),
-            "device_log_filename": str(health.get("runtime_log_filename", "") or "").strip(),
-            "device_log_updated_at": str(health.get("runtime_log_updated_at", "") or "").strip(),
+            "device_log_excerpt": combined_excerpt or str(health.get("runtime_log_excerpt", "") or "").strip(),
+            "device_log_filename": (
+                str(getattr(latest_chunk, "log_filename", "") or "").strip()
+                if latest_chunk is not None
+                else str(health.get("runtime_log_filename", "") or "").strip()
+            ),
+            "device_log_updated_at": (
+                timezone.localtime(latest_chunk.created_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S")
+                if latest_chunk is not None
+                else str(health.get("runtime_log_updated_at", "") or "").strip()
+            ),
         }
     )
     return _render_dashboard_page(request, "dashboard/device_logs.html", context, tzinfo)

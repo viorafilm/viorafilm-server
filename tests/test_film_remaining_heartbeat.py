@@ -43,6 +43,9 @@ class _HeartbeatStub:
     def _build_runtime_log_snapshot(self):
         return {}
 
+    def _build_runtime_log_sync_payload(self):
+        return {}
+
     def _normalize_film_model(self, model):
         return kiosk_main.KioskMainWindow._normalize_film_model(model)
 

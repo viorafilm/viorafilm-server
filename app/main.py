@@ -18347,6 +18347,8 @@ class KioskMainWindow(QMainWindow):
         self._heartbeat_printer_health_cache: dict[str, tuple[float, bool, str]] = {}
         self._runtime_out_dir = _resolve_runtime_out_dir()
         self._runtime_sessions_dir = _resolve_runtime_sessions_dir()
+        self._runtime_log_sync_state_path = self._runtime_out_dir / "runtime_log_sync_state.json"
+        self._pending_runtime_log_sync_state: dict[str, Any] = {}
         self._ensure_runtime_dirs()
         self._apply_startup_runtime_defaults()
         self.payment_config_path = _resolve_runtime_payment_config_path()
@@ -22591,6 +22593,94 @@ class KioskMainWindow(QMainWindow):
             "runtime_log_excerpt": excerpt,
             "runtime_log_updated_at": updated_at,
         }
+
+    def _load_runtime_log_sync_state(self) -> dict[str, Any]:
+        path = Path(self._runtime_log_sync_state_path)
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _save_runtime_log_sync_state(self, state: dict[str, Any]) -> None:
+        path = Path(self._runtime_log_sync_state_path)
+        payload = dict(state or {})
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(path, payload)
+        except Exception:
+            pass
+
+    def _build_runtime_log_sync_payload(self) -> dict[str, Any]:
+        self._pending_runtime_log_sync_state = {}
+        log_file = str(self.get_runtime_log_file_path() or "").strip()
+        if not log_file:
+            return {}
+        path = Path(log_file)
+        if not path.is_file():
+            return {}
+        try:
+            max_chars = int(str(os.environ.get("KIOSK_HEARTBEAT_LOG_CHUNK_CHARS", "12000")).strip())
+        except Exception:
+            max_chars = 12000
+        max_chars = max(2000, min(24000, max_chars))
+        max_bytes = max_chars * 2
+
+        state = self._load_runtime_log_sync_state()
+        saved_path = str(state.get("path", "") or "").strip()
+        try:
+            saved_offset = max(0, int(state.get("offset", 0) or 0))
+        except Exception:
+            saved_offset = 0
+
+        current_path = str(path.resolve()) if path.exists() else str(path)
+        try:
+            size = max(0, int(path.stat().st_size))
+        except Exception:
+            size = 0
+        reset = bool(saved_path != current_path or size < saved_offset)
+        start_offset = 0 if reset else saved_offset
+        if size <= start_offset:
+            return {}
+        read_size = min(max_bytes, max(0, size - start_offset))
+        try:
+            with path.open("rb") as handle:
+                handle.seek(start_offset)
+                raw = handle.read(read_size)
+        except Exception:
+            return {}
+        if not raw:
+            return {}
+        chunk = raw.decode("utf-8", errors="ignore")
+        if not chunk:
+            return {}
+        end_offset = start_offset + len(raw)
+        self._pending_runtime_log_sync_state = {
+            "path": current_path,
+            "offset": end_offset,
+        }
+        try:
+            updated_at = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            updated_at = datetime.now().isoformat(timespec="seconds")
+        return {
+            "runtime_log_filename": str(path.name),
+            "runtime_log_updated_at": updated_at,
+            "runtime_log_chunk": chunk,
+            "runtime_log_chunk_start": start_offset,
+            "runtime_log_chunk_end": end_offset,
+            "runtime_log_chunk_reset": reset,
+        }
+
+    def _mark_runtime_log_sync_sent(self) -> None:
+        state = dict(self._pending_runtime_log_sync_state or {})
+        if not state:
+            return
+        self._save_runtime_log_sync_state(state)
+        self._pending_runtime_log_sync_state = {}
 
     def open_runtime_log_folder(self) -> bool:
         log_file = self.get_runtime_log_file_path()
@@ -26998,6 +27088,7 @@ class KioskMainWindow(QMainWindow):
             payload["film_remaining"] = int(primary_remaining)
         payload.update(self._offline_telemetry_snapshot())
         payload.update(self._build_runtime_log_snapshot())
+        payload.update(self._build_runtime_log_sync_payload())
         return payload
 
     def _send_heartbeat_request(
@@ -27030,6 +27121,8 @@ class KioskMainWindow(QMainWindow):
                 self._pending_remote_action_payload = {}
             if ack_id and ack_id == str(self._pending_remote_action_ack_id or "").strip():
                 self._pending_remote_action_ack_id = ""
+            if isinstance(body, dict) and body.get("runtime_log_chunk"):
+                self._mark_runtime_log_sync_sent()
             heartbeat_id = data.get("heartbeat_id")
             return True, f"id={heartbeat_id}"
         except Exception as exc:

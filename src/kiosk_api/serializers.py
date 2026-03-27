@@ -30,6 +30,10 @@ class HeartbeatSerializer(serializers.Serializer):
     runtime_log_filename = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     runtime_log_excerpt = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     runtime_log_updated_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    runtime_log_chunk = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    runtime_log_chunk_start = serializers.IntegerField(required=False, min_value=0)
+    runtime_log_chunk_end = serializers.IntegerField(required=False, min_value=0)
+    runtime_log_chunk_reset = serializers.BooleanField(required=False)
 
 
 class ConfigAppliedSerializer(serializers.Serializer):
