@@ -22556,6 +22556,49 @@ class KioskMainWindow(QMainWindow):
             return str(latest_file)
         return ""
 
+    def _build_runtime_log_snapshot(self) -> dict[str, Any]:
+        log_file = str(self.get_runtime_log_file_path() or "").strip()
+        if not log_file:
+            return {}
+        path = Path(log_file)
+        if not path.is_file():
+            return {}
+        try:
+            max_lines = int(str(os.environ.get("KIOSK_HEARTBEAT_LOG_LINES", "40")).strip())
+        except Exception:
+            max_lines = 40
+        try:
+            max_chars = int(str(os.environ.get("KIOSK_HEARTBEAT_LOG_CHARS", "6000")).strip())
+        except Exception:
+            max_chars = 6000
+        max_lines = max(10, min(200, max_lines))
+        max_chars = max(1000, min(12000, max_chars))
+        max_bytes = max_chars * 2
+        try:
+            size = max(0, int(path.stat().st_size))
+            with path.open("rb") as handle:
+                if size > max_bytes:
+                    handle.seek(max(0, size - max_bytes))
+                raw = handle.read()
+            text = raw.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
+            lines = [line for line in text.split("\n") if line.strip()]
+            excerpt = "\n".join(lines[-max_lines:]).strip()
+            if len(excerpt) > max_chars:
+                excerpt = excerpt[-max_chars:]
+        except Exception as exc:
+            excerpt = f"[LOG] read failed: {exc}"
+        if not excerpt:
+            return {}
+        try:
+            updated_at = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            updated_at = datetime.now().isoformat(timespec="seconds")
+        return {
+            "runtime_log_filename": str(path.name),
+            "runtime_log_excerpt": excerpt,
+            "runtime_log_updated_at": updated_at,
+        }
+
     def open_runtime_log_folder(self) -> bool:
         log_file = self.get_runtime_log_file_path()
         folder = Path(log_file).parent if log_file else (_default_runtime_data_dir() / "logs")
@@ -26961,6 +27004,7 @@ class KioskMainWindow(QMainWindow):
         if primary_remaining is not None:
             payload["film_remaining"] = int(primary_remaining)
         payload.update(self._offline_telemetry_snapshot())
+        payload.update(self._build_runtime_log_snapshot())
         return payload
 
     def _send_heartbeat_request(

@@ -1577,6 +1577,34 @@ def devices_live_view(request):
 
 @login_required(login_url="/dashboard/login")
 @never_cache
+def device_logs_view(request, device_id: int):
+    user = request.user
+    ui_text = resolve_dashboard_text(request)
+    common_text = ui_text["common"]
+    device_text = ui_text["devices"]
+    if _is_viewer(user):
+        return HttpResponseForbidden(common_text["viewer_read_only"])
+    filters = _resolve_scope_filters(user, request)
+    context, tzinfo = _build_dashboard_page_context(user, filters, ui_text=ui_text)
+    target = _scoped_devices(user).filter(id=int(device_id)).first()
+    if target is None:
+        messages.error(request, device_text["device_not_found"])
+        return redirect("dashboard_devices")
+
+    health = target.last_health_json if isinstance(target.last_health_json, dict) else {}
+    context.update(
+        {
+            "device": target,
+            "device_log_excerpt": str(health.get("runtime_log_excerpt", "") or "").strip(),
+            "device_log_filename": str(health.get("runtime_log_filename", "") or "").strip(),
+            "device_log_updated_at": str(health.get("runtime_log_updated_at", "") or "").strip(),
+        }
+    )
+    return _render_dashboard_page(request, "dashboard/device_logs.html", context, tzinfo)
+
+
+@login_required(login_url="/dashboard/login")
+@never_cache
 def billing_view(request):
     user = request.user
     ui_text = resolve_dashboard_text(request)

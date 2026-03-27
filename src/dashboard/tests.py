@@ -203,3 +203,35 @@ class SalesPaginationTests(TestCase):
         self.assertEqual(response.context["payment_filter"], "card")
         self.assertEqual(len(response.context["sales"]), 1)
         self.assertEqual(response.context["sales"][0].session_id, "card-1")
+
+
+class DeviceLogsViewTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org", code="org")
+        self.branch = Branch.objects.create(org=self.org, name="Branch", code="branch")
+        self.device = Device.objects.create(
+            org=self.org,
+            branch=self.branch,
+            device_code="dev-log",
+            last_health_json={
+                "runtime_log_filename": "kiosk_20260327.log",
+                "runtime_log_updated_at": "2026-03-27T12:34:56",
+                "runtime_log_excerpt": "alpha\nbeta",
+            },
+        )
+        self.user = get_user_model().objects.create_user(
+            username="logadmin",
+            password="pw",
+            is_staff=True,
+            is_superuser=True,
+            role=UserRole.SUPERADMIN,
+        )
+
+    @override_settings(SECURE_SSL_REDIRECT=False)
+    def test_device_logs_view_renders_last_reported_excerpt(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("dashboard_device_logs", args=[self.device.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kiosk_20260327.log")
+        self.assertContains(response, "alpha")
+        self.assertContains(response, "beta")

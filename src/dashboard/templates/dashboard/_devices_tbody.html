@@ -106,6 +106,9 @@
   <td>
     {% if can_manage_locks %}
       <div class="d-flex flex-column gap-1">
+      <div>
+        <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_device_logs' row.device.id %}?lang={{ dashboard_ui.lang }}">{{ device_text.log_view }}</a>
+      </div>
       {% if row.remote_credit_pending %}
       <form method="post" class="d-flex gap-1">
         {% csrf_token %}

@@ -27,6 +27,9 @@ class HeartbeatSerializer(serializers.Serializer):
     offline_reference_source = serializers.CharField(required=False, allow_blank=True)
     offline_last_online_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     offline_first_seen_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    runtime_log_filename = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    runtime_log_excerpt = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    runtime_log_updated_at = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class ConfigAppliedSerializer(serializers.Serializer):

@@ -1,0 +1,48 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+{% with device_text=dashboard_ui.text.devices common_text=dashboard_ui.text.common %}
+<div class="card card-soft">
+  <div class="card-body">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div>
+        <h5 class="mb-1">{{ device_text.log_title }}</h5>
+        <div class="text-muted small">
+          {{ common_text.device }}: <strong>{{ device.device_code }}</strong>
+          · {{ device.org.code }}/{{ device.branch.code }}
+        </div>
+      </div>
+      <a class="btn btn-sm btn-outline-secondary" href="{% url 'dashboard_devices' %}?lang={{ dashboard_ui.lang }}">{{ device_text.title }}</a>
+    </div>
+
+    <div class="alert alert-info small mb-3">{{ device_text.log_notice }}</div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">{{ device_text.table_last_seen }}</div>
+          <div class="fw-semibold">{{ device.last_seen_at|default:"-" }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">{{ device_text.log_filename }}</div>
+          <div class="fw-semibold">{{ device_log_filename|default:"-" }}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-4">
+        <div class="border rounded-3 p-3 bg-light-subtle">
+          <div class="text-muted small">{{ device_text.log_updated_at }}</div>
+          <div class="fw-semibold">{{ device_log_updated_at|default:"-" }}</div>
+        </div>
+      </div>
+    </div>
+
+    {% if device_log_excerpt %}
+    <pre class="bg-dark text-light rounded-3 p-3 mb-0" style="min-height: 420px; white-space: pre-wrap; word-break: break-word;">{{ device_log_excerpt }}</pre>
+    {% else %}
+    <div class="alert alert-secondary mb-0">{{ device_text.log_empty }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endwith %}
+{% endblock %}
