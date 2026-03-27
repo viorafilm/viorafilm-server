@@ -11206,7 +11206,7 @@ class AppQrUploadWorker(QObject):
             raise RuntimeError(f"{url} invalid json payload")
         return payload
 
-    def _build_dummy_urls(self, session_id: str) -> tuple[str, str, str, str]:
+    def _build_dummy_urls(self, session_id: str) -> tuple[str, str, str]:
         base_page_url = str(
             self.share_settings.get("base_page_url", DEFAULT_SHARE_SETTINGS["base_page_url"])
         ).rstrip("/")
@@ -11214,16 +11214,14 @@ class AppQrUploadWorker(QObject):
             self.share_settings.get("base_file_url", DEFAULT_SHARE_SETTINGS["base_file_url"])
         ).rstrip("/")
         page_url = f"{base_page_url}/{session_id}"
-        frame_url = f"{base_file_url}/{session_id}/frame.png"
         image_url = f"{base_file_url}/{session_id}/print.jpg"
         video_url = f"{base_file_url}/{session_id}/video.gif"
-        return page_url, frame_url, image_url, video_url
+        return page_url, image_url, video_url
 
     def _upload_via_server(
         self,
         session_id: str,
         image_local: Path,
-        frame_local: Path,
         video_local: Path,
     ) -> tuple[str, dict[str, dict[str, Any]], str]:
         if requests is None:
@@ -11253,7 +11251,6 @@ class AppQrUploadWorker(QObject):
             files_meta: dict[str, dict[str, Any]] = {}
             upload_specs = [
                 ("PRINT", image_local, "image"),
-                ("FRAME", frame_local, "frame"),
                 ("GIF", video_local, "video"),
             ]
             for kind, file_path, local_key in upload_specs:
@@ -11332,7 +11329,6 @@ class AppQrUploadWorker(QObject):
             session_id = self.session.session_id or self.session.session_dir.name
             share_dir = ensure_share_dir(self.session.session_dir)
             share_json_path = share_dir / "share.json"
-            frame_local = share_dir / "frame.png"
             image_local = share_dir / "print.jpg"
             video_local = share_dir / "video.gif"
 
@@ -11342,9 +11338,7 @@ class AppQrUploadWorker(QObject):
             if dry_run_upload:
                 print("[UPLOAD] DRY_RUN reason=upload_dry_run")
                 time.sleep(1.0)
-                page_url, frame_url, image_url, video_url = self._build_dummy_urls(session_id)
-                if frame_local.is_file():
-                    file_entries["frame"] = {"name": "frame.png", "url": frame_url}
+                page_url, image_url, video_url = self._build_dummy_urls(session_id)
                 if image_local.is_file():
                     file_entries["image"] = {"name": "print.jpg", "url": image_url}
                 if video_local.is_file():
@@ -11353,7 +11347,6 @@ class AppQrUploadWorker(QObject):
                 page_url, server_files, server_token = self._upload_via_server(
                     session_id=session_id,
                     image_local=image_local,
-                    frame_local=frame_local,
                     video_local=video_local,
                 )
                 file_entries.update(server_files)
@@ -27308,7 +27301,6 @@ class KioskMainWindow(QMainWindow):
         try:
             share_dir = ensure_share_dir(session.session_dir)
             share_json_path = share_dir / "share.json"
-            frame_local = share_dir / "frame.png"
             image_local = share_dir / "print.jpg"
             video_local = share_dir / "video.gif"
             payload: dict[str, Any] = {
@@ -27320,10 +27312,6 @@ class KioskMainWindow(QMainWindow):
                 "design_index": self.current_design_index,
                 "page_url": urls.get("page_url"),
                 "files": {
-                    "frame": {
-                        "name": "frame.png",
-                        "url": urls.get("frame_url"),
-                    },
                     "image": {
                         "name": "print.jpg",
                         "url": urls.get("image_url"),

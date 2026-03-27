@@ -553,8 +553,6 @@ class ShareUploadFileView(APIView):
         assets = dict(session.assets or {})
         if kind == UploadKind.PRINT:
             assets["print_key"] = file_meta["key"]
-        elif kind == UploadKind.FRAME:
-            assets["frame_key"] = file_meta["key"]
         elif kind == UploadKind.GIF:
             assets["gif_key"] = file_meta["key"]
         elif kind == UploadKind.VIDEO:
