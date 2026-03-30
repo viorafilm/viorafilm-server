@@ -28,8 +28,8 @@ class Coupon(models.Model):
     STATUS_USED = "USED"
     STATUS_EXPIRED = "EXPIRED"
 
-    batch = models.ForeignKey(CouponBatch, on_delete=models.CASCADE, related_name="coupons")
-    code = models.CharField(max_length=6, unique=True)
+    batch = models.ForeignKey(CouponBatch, null=True, blank=True, on_delete=models.CASCADE, related_name="coupons")
+    code = models.CharField(max_length=8, unique=True)
     amount = models.IntegerField(default=0)
     currency = models.CharField(max_length=8, default="KRW")
     created_at = models.DateTimeField(default=timezone.now)
@@ -47,7 +47,11 @@ class Coupon(models.Model):
 
     @property
     def formatted_code(self) -> str:
-        return f"{self.code[:3]}-{self.code[3:]}" if len(self.code) == 6 else self.code
+        if len(self.code) == 6:
+            return f"{self.code[:3]}-{self.code[3:]}"
+        if len(self.code) == 8:
+            return f"{self.code[:4]}-{self.code[4:]}"
+        return self.code
 
     @property
     def is_used(self) -> bool:

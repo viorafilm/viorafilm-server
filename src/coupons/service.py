@@ -8,6 +8,7 @@ from django.utils import timezone
 from audit.service import log_event
 from sales.models import SaleTransaction
 
+from .legacy_old import get_legacy_old_coupon_record
 from .models import Coupon, CouponBatch
 
 MAX_COUPON_BATCH_COUNT = 1000
@@ -21,11 +22,101 @@ COUPON_EXPIRE_PRESETS_HOURS = {
 }
 
 
-def normalize_coupon_code(text) -> str:
+def normalize_coupon_code(text, *, allowed_lengths=(6, 8)) -> str:
     digits = "".join(ch for ch in str(text or "") if ch.isdigit())
-    if len(digits) != 6:
-        raise ValueError("Coupon code must be 6 digits")
+    normalized_lengths: list[int] = []
+    for value in allowed_lengths:
+        try:
+            parsed = int(value)
+        except Exception:
+            continue
+        if parsed > 0 and parsed not in normalized_lengths:
+            normalized_lengths.append(parsed)
+    if not normalized_lengths:
+        normalized_lengths = [6]
+    if len(digits) not in normalized_lengths:
+        label = " or ".join(str(length) for length in normalized_lengths)
+        raise ValueError(f"Coupon code must be {label} digits")
     return digits
+
+
+def _coupon_queryset(*, lock: bool = False):
+    queryset = Coupon.objects.select_related("batch")
+    if lock:
+        queryset = queryset.select_for_update()
+    return queryset
+
+
+def _build_legacy_coupon_meta(record) -> dict:
+    return {
+        "legacy_old_coupon": True,
+        "legacy_source_file": record.source_file,
+        "legacy_row_number": record.row_number,
+        "legacy_group_name": record.group_name,
+        "legacy_branch_name": record.branch_name,
+        "legacy_raw_code": record.raw_code,
+        "legacy_used_flag": "Y" if record.used else "N",
+        "legacy_imported_at": timezone.now().isoformat(),
+    }
+
+
+def _ensure_legacy_coupon_imported(code: str, *, lock: bool = False):
+    normalized = normalize_coupon_code(code, allowed_lengths=(8,))
+    queryset = _coupon_queryset(lock=lock)
+    coupon = queryset.filter(code=normalized).first()
+    if coupon:
+        return coupon
+
+    record = get_legacy_old_coupon_record(normalized)
+    if record is None:
+        return None
+
+    create_kwargs = {
+        "batch": None,
+        "code": normalized,
+        "amount": int(record.amount),
+        "currency": "KRW",
+        "created_at": record.issued_at or timezone.now(),
+        "expires_at": record.expires_at,
+        "used_at": timezone.now() if record.used else None,
+        "meta": _build_legacy_coupon_meta(record),
+    }
+    try:
+        Coupon.objects.create(**create_kwargs)
+    except IntegrityError:
+        pass
+
+    queryset = _coupon_queryset(lock=lock)
+    coupon = queryset.filter(code=normalized).first()
+    if coupon:
+        fields_to_update: list[str] = []
+        if int(coupon.amount or 0) <= 0 and int(record.amount or 0) > 0:
+            coupon.amount = int(record.amount)
+            fields_to_update.append("amount")
+        if coupon.expires_at != record.expires_at:
+            coupon.expires_at = record.expires_at
+            fields_to_update.append("expires_at")
+        merged_meta = {**dict(coupon.meta or {}), **_build_legacy_coupon_meta(record)}
+        if merged_meta != dict(coupon.meta or {}):
+            coupon.meta = merged_meta
+            fields_to_update.append("meta")
+        if record.used and coupon.used_at is None:
+            coupon.used_at = timezone.now()
+            fields_to_update.append("used_at")
+        if fields_to_update:
+            coupon.save(update_fields=fields_to_update)
+    return coupon
+
+
+def _resolve_coupon(code: str, *, lock: bool = False):
+    normalized = normalize_coupon_code(code, allowed_lengths=(6, 8))
+    queryset = _coupon_queryset(lock=lock)
+    coupon = queryset.filter(code=normalized).first()
+    if coupon:
+        return normalized, coupon
+    if len(normalized) == 8:
+        coupon = _ensure_legacy_coupon_imported(normalized, lock=lock)
+    return normalized, coupon
 
 
 def _generate_unique_code(max_retries: int = 100) -> str:
@@ -127,11 +218,11 @@ def create_batch_and_coupons(org, branch, amount, count, created_by, title="", e
 
 def quote_coupon(code, amount_due):
     try:
-        normalized = normalize_coupon_code(code)
+        normalized = normalize_coupon_code(code, allowed_lengths=(6, 8))
     except ValueError:
         return False, 0, int(amount_due), "INVALID_FORMAT", None
 
-    coupon = Coupon.objects.filter(code=normalized).select_related("batch").first()
+    _normalized, coupon = _resolve_coupon(normalized, lock=False)
     if not coupon:
         return False, 0, int(amount_due), "NOT_FOUND", None
     if coupon.is_used:
@@ -145,9 +236,9 @@ def quote_coupon(code, amount_due):
 
 
 def redeem_coupon_atomic(device, code, session_id, amount_due, amount_coupon_expected=None):
-    normalized = normalize_coupon_code(code)
+    normalized = normalize_coupon_code(code, allowed_lengths=(6, 8))
     with transaction.atomic():
-        coupon = Coupon.objects.select_for_update().filter(code=normalized).first()
+        _normalized, coupon = _resolve_coupon(normalized, lock=True)
         if not coupon:
             raise ValueError("COUPON_NOT_FOUND")
         if coupon.is_used:
@@ -231,13 +322,13 @@ def recover_coupon_usage_from_sales(*, actor_user=None, org_id=None, branch_id=N
             stats["skipped_no_code"] += 1
             continue
         try:
-            normalized = normalize_coupon_code(raw_code)
+            normalized = normalize_coupon_code(raw_code, allowed_lengths=(6, 8))
         except ValueError:
             stats["skipped_invalid_code"] += 1
             continue
 
         with transaction.atomic():
-            coupon = Coupon.objects.select_for_update().filter(code=normalized).first()
+            _normalized, coupon = _resolve_coupon(normalized, lock=True)
             if not coupon:
                 stats["skipped_not_found"] += 1
                 continue

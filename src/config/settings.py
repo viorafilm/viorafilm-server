@@ -199,6 +199,10 @@ STORAGE_BACKEND = env("STORAGE_BACKEND", default="auto")
 PUBLIC_BASE_URL = env("PUBLIC_BASE_URL", default="")
 SHARE_TOKEN_TTL_HOURS = int(env("SHARE_TOKEN_TTL_HOURS", default=24))
 PRESIGNED_EXPIRES_SECONDS = int(env("PRESIGNED_EXPIRES_SECONDS", default=600))
+LEGACY_OLD_COUPON_DIR = env(
+    "LEGACY_OLD_COUPON_DIR",
+    default=str(BASE_DIR.parent / "OLDVERSIONCOUPON"),
+).strip()
 
 R2_ACCOUNT_ID = env("R2_ACCOUNT_ID", default="")
 R2_ACCESS_KEY_ID = env("R2_ACCESS_KEY_ID", default="")
