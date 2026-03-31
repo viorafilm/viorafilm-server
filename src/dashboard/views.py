@@ -706,6 +706,74 @@ def _resolve_sale_payment_method_label(sale: SaleTransaction) -> str:
     return method
 
 
+def _normalize_compose_mode(raw_value) -> str:
+    value = str(raw_value or "").strip().lower()
+    return value if value in {"normal", "ai", "celebrity"} else "normal"
+
+
+def _extract_tracking_meta(raw_meta, *, layout_fallback="", design_fallback=None):
+    meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    compose_mode = _normalize_compose_mode(meta.get("compose_mode", "normal"))
+    layout_id = str(meta.get("layout_id", layout_fallback) or layout_fallback or "").strip()
+    raw_design_index = meta.get("frame_design_index", meta.get("design_index", design_fallback))
+    try:
+        design_index = int(raw_design_index) if raw_design_index not in {None, ""} else None
+    except Exception:
+        design_index = None
+
+    frame_design_key = str(meta.get("frame_design_key", "") or "").strip()
+    if not frame_design_key:
+        if design_index is not None and layout_id:
+            frame_design_key = f"{layout_id}:{design_index}"
+        elif design_index is not None:
+            frame_design_key = str(design_index)
+        else:
+            frame_design_key = layout_id
+
+    frame_design_label = str(meta.get("frame_design_label", "") or "").strip()
+    if not frame_design_label and design_index is not None:
+        frame_design_label = f"{design_index}번"
+
+    frame_design_full_label = str(meta.get("frame_design_full_label", "") or "").strip()
+    if not frame_design_full_label:
+        if layout_id and frame_design_label:
+            frame_design_full_label = f"{layout_id} / {frame_design_label}"
+        else:
+            frame_design_full_label = layout_id or frame_design_label
+
+    ai_style_id = str(meta.get("ai_style_id", "") or "").strip()
+    ai_style_label = str(meta.get("ai_style_label", "") or "").strip()
+    ai_prompt_title = str(meta.get("ai_prompt_title", "") or ai_style_label).strip()
+    ai_prompt_key = ai_style_id or ai_prompt_title
+
+    return {
+        "compose_mode": compose_mode,
+        "layout_id": layout_id,
+        "frame_design_index": design_index,
+        "frame_design_key": frame_design_key,
+        "frame_design_label": frame_design_label,
+        "frame_design_full_label": frame_design_full_label,
+        "ai_prompt_title": ai_prompt_title,
+        "ai_prompt_key": ai_prompt_key,
+    }
+
+
+def _accumulate_popularity(bucket, *, key, label, amount=0):
+    clean_key = str(key or "").strip()
+    clean_label = str(label or "").strip()
+    if not clean_key or not clean_label:
+        return
+    row = bucket.setdefault(clean_key, {"label": clean_label, "count": 0, "amount": 0})
+    row["count"] += 1
+    row["amount"] += max(0, int(amount or 0))
+
+
+def _sorted_popularity_rows(bucket, limit=5):
+    rows = list(bucket.values())
+    rows.sort(key=lambda item: (-int(item.get("count", 0)), -int(item.get("amount", 0)), str(item.get("label", ""))))
+    return rows[: max(1, int(limit or 5))]
+
+
 def _normalize_sales_payment_filter(value) -> str:
     selected = str(value or "").strip().lower()
     if selected not in SALES_PAYMENT_FILTER_OPTIONS:
@@ -1913,10 +1981,14 @@ def sales_view(request):
     sales = list(page_obj.object_list)
     for sale in sales:
         payment_breakdown = _resolve_sale_payment_breakdown(sale)
+        tracking_meta = _extract_tracking_meta(sale.meta if isinstance(sale.meta, dict) else {}, layout_fallback=sale.layout_id)
         setattr(sale, "dashboard_payment_method_label", _resolve_sale_payment_method_label(sale))
         setattr(sale, "dashboard_amount_cash", int(payment_breakdown.get("cash", 0)))
         setattr(sale, "dashboard_amount_card", int(payment_breakdown.get("card", 0)))
         setattr(sale, "dashboard_amount_coupon", int(payment_breakdown.get("coupon", 0)))
+        setattr(sale, "dashboard_compose_mode", str(tracking_meta.get("compose_mode", "normal") or "normal"))
+        setattr(sale, "dashboard_frame_design_label", str(tracking_meta.get("frame_design_label", "") or "-"))
+        setattr(sale, "dashboard_ai_prompt_title", str(tracking_meta.get("ai_prompt_title", "") or "-"))
         cancel_meta = _extract_sale_cancel_meta(sale)
         setattr(sale, "dashboard_cancel_status", str(cancel_meta.get("status", "")).strip().upper())
         setattr(sale, "dashboard_cancel_message", str(cancel_meta.get("message", "") or cancel_meta.get("error_message", "")).strip())
@@ -1936,14 +2008,14 @@ def sales_view(request):
 
     mode_counts = {"normal": 0, "ai": 0, "celebrity": 0}
     mode_amounts = {"normal": 0, "ai": 0, "celebrity": 0}
+    frame_popularity = {}
+    ai_prompt_popularity = {}
     ai_generated_images = 0
-    for price_total, meta in sales_qs.values_list("price_total", "meta"):
-        mode = "normal"
+    for price_total, meta, layout_id in sales_qs.values_list("price_total", "meta", "layout_id"):
+        tracking_meta = _extract_tracking_meta(meta, layout_fallback=layout_id)
+        mode = str(tracking_meta.get("compose_mode", "normal") or "normal")
         sale_ai_images = 0
         if isinstance(meta, dict):
-            raw_mode = str(meta.get("compose_mode", "")).strip().lower()
-            if raw_mode in {"ai", "celebrity"}:
-                mode = raw_mode
             if mode == "ai":
                 try:
                     sale_ai_images = int(meta.get("ai_generated_count", AI_EST_DEFAULT_IMAGES_PER_SALE) or 0)
@@ -1954,6 +2026,19 @@ def sales_view(request):
         amount = int(price_total or 0)
         mode_counts[mode] += 1
         mode_amounts[mode] += amount
+        _accumulate_popularity(
+            frame_popularity,
+            key=tracking_meta.get("frame_design_key"),
+            label=tracking_meta.get("frame_design_full_label"),
+            amount=amount,
+        )
+        if mode == "ai":
+            _accumulate_popularity(
+                ai_prompt_popularity,
+                key=tracking_meta.get("ai_prompt_key"),
+                label=tracking_meta.get("ai_prompt_title"),
+                amount=amount,
+            )
         if mode == "ai":
             ai_generated_images += sale_ai_images
 
@@ -1998,6 +2083,8 @@ def sales_view(request):
             "chart_counts": chart_payload["counts"],
             "mode_counts": mode_counts,
             "mode_amounts": mode_amounts,
+            "sales_frame_popularity_rows": _sorted_popularity_rows(frame_popularity),
+            "sales_ai_prompt_rows": _sorted_popularity_rows(ai_prompt_popularity),
             "ai_generated_images": ai_generated_images,
             "billing_month_value": billing_month.strftime("%Y-%m"),
             "billing_start_date": billing_start_date.isoformat(),
@@ -2033,10 +2120,7 @@ def sales_export_view(request):
 
     rows = []
     for s in sales_qs.order_by("-created_at").iterator():
-        meta = s.meta if isinstance(s.meta, dict) else {}
-        compose_mode = str(meta.get("compose_mode", "normal")).strip().lower() or "normal"
-        if compose_mode not in {"normal", "ai", "celebrity"}:
-            compose_mode = "normal"
+        tracking_meta = _extract_tracking_meta(s.meta if isinstance(s.meta, dict) else {}, layout_fallback=s.layout_id)
         rows.append(
             [
                 timezone.localtime(s.created_at, tzinfo).strftime("%Y-%m-%d %H:%M:%S"),
@@ -2052,7 +2136,9 @@ def sales_export_view(request):
                 s.amount_cash,
                 s.amount_coupon,
                 s.coupon.formatted_code if s.coupon else "",
-                compose_mode,
+                tracking_meta.get("compose_mode", "normal"),
+                tracking_meta.get("frame_design_full_label", ""),
+                tracking_meta.get("ai_prompt_title", ""),
             ]
         )
 
@@ -2074,6 +2160,8 @@ def sales_export_view(request):
             "amount_coupon",
             "coupon_code",
             "compose_mode",
+            "frame_design",
+            "ai_prompt_title",
         ],
         rows=rows,
     )
@@ -2365,10 +2453,17 @@ def photos_view(request):
         sessions_qs = sessions_qs.filter(created_at__gte=now - timedelta(days=7))
     sessions = sessions_qs.order_by("-created_at")[:300]
 
+    frame_popularity = {}
+    ai_prompt_popularity = {}
     rows = []
     for s in sessions:
         assets = s.assets if isinstance(s.assets, dict) else {}
         files = s.files if isinstance(s.files, dict) else {}
+        tracking_meta = _extract_tracking_meta(
+            assets.get("meta") if isinstance(assets.get("meta"), dict) else {},
+            layout_fallback=assets.get("layout_id", ""),
+            design_fallback=assets.get("design_index"),
+        )
 
         print_url = generate_download_url_from_meta(files.get("print"), request=request)
         frame_url = generate_download_url_from_meta(files.get("frame"), request=request)
@@ -2400,6 +2495,17 @@ def photos_view(request):
             for index, url in enumerate(original_urls)
         ]
         is_expired = s.is_expired()
+        _accumulate_popularity(
+            frame_popularity,
+            key=tracking_meta.get("frame_design_key"),
+            label=tracking_meta.get("frame_design_full_label"),
+        )
+        if str(tracking_meta.get("compose_mode", "normal")) == "ai":
+            _accumulate_popularity(
+                ai_prompt_popularity,
+                key=tracking_meta.get("ai_prompt_key"),
+                label=tracking_meta.get("ai_prompt_title"),
+            )
         rows.append(
             {
                 "session": s,
@@ -2412,12 +2518,21 @@ def photos_view(request):
                 "video_url": video_url,
                 "frame_url": frame_url,
                 "original_links": original_links,
+                "layout_id": str(tracking_meta.get("layout_id", "") or "-"),
+                "frame_design_label": str(tracking_meta.get("frame_design_label", "") or "-"),
+                "compose_mode_label": photo_text.get(
+                    f"mode_{str(tracking_meta.get('compose_mode', 'normal') or 'normal')}",
+                    str(tracking_meta.get("compose_mode", "normal") or "normal").upper(),
+                ),
+                "ai_prompt_title": str(tracking_meta.get("ai_prompt_title", "") or "-"),
             }
         )
     context.update(
         {
             "rows": rows,
             "q": q,
+            "photo_frame_popularity_rows": _sorted_popularity_rows(frame_popularity),
+            "photo_ai_prompt_rows": _sorted_popularity_rows(ai_prompt_popularity),
             "filter_org_id": filters["org_id"],
             "filter_branch_id": filters["branch_id"],
             "filter_orgs": filters["orgs"],

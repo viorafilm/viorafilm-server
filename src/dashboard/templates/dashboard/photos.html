@@ -37,6 +37,63 @@
   {% if q %}{{ photo_text.search_results }}{% else %}{{ photo_text.recent_7days }}{% endif %}
 </p>
 
+<div class="row g-3 mb-3">
+  <div class="col-12 col-lg-6">
+    <div class="card card-soft h-100">
+      <div class="card-body">
+        <h6 class="mb-3">{{ photo_text.frame_popularity_title }}</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>{{ photo_text.table_usage_target }}</th>
+                <th>{{ photo_text.table_usage_count }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in photo_frame_popularity_rows %}
+              <tr>
+                <td>{{ row.label }}</td>
+                <td>{{ row.count }}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="2" class="text-center text-muted py-3">{{ photo_text.empty }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-lg-6">
+    <div class="card card-soft h-100">
+      <div class="card-body">
+        <h6 class="mb-3">{{ photo_text.ai_prompt_popularity_title }}</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>{{ photo_text.table_usage_target }}</th>
+                <th>{{ photo_text.table_usage_count }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in photo_ai_prompt_rows %}
+              <tr>
+                <td>{{ row.label }}</td>
+                <td>{{ row.count }}</td>
+              </tr>
+              {% empty %}
+              <tr><td colspan="2" class="text-center text-muted py-3">{{ photo_text.empty }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card card-soft">
   <div class="card-body p-0">
     <div class="table-responsive">
@@ -46,6 +103,10 @@
             <th>{{ photo_text.table_created_at }}</th>
             <th>{{ common_text.device }}</th>
             <th>{{ photo_text.table_token }}</th>
+            <th>{{ photo_text.table_layout }}</th>
+            <th>{{ photo_text.table_mode }}</th>
+            <th>{{ photo_text.table_frame_design }}</th>
+            <th>{{ photo_text.table_ai_prompt_title }}</th>
             <th>{{ photo_text.table_status }}</th>
             <th>{{ photo_text.table_expires }}</th>
             <th>{{ photo_text.table_views }}</th>
@@ -60,6 +121,10 @@
             <td>{{ row.session.created_at }}</td>
             <td>{{ row.session.device.device_code }}</td>
             <td><code>{{ row.session.token }}</code></td>
+            <td>{{ row.layout_id }}</td>
+            <td>{{ row.compose_mode_label }}</td>
+            <td>{{ row.frame_design_label }}</td>
+            <td>{{ row.ai_prompt_title }}</td>
             <td>{% if row.is_expired %}{{ photo_text.status_expired }}{% else %}{{ photo_text.status_active }}{% endif %}</td>
             <td>{{ row.session.expires_at }}</td>
             <td>{{ row.session.view_count }}</td>
@@ -79,7 +144,7 @@
             <td><a href="{{ row.share_url }}" target="_blank">{{ photo_text.share_open }}</a></td>
           </tr>
           {% empty %}
-          <tr><td colspan="9" class="text-center text-muted py-4">{{ photo_text.empty }}</td></tr>
+          <tr><td colspan="13" class="text-center text-muted py-4">{{ photo_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>

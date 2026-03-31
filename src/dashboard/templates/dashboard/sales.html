@@ -114,6 +114,67 @@
       </div>
     </div>
 
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-lg-6">
+        <div class="card card-soft h-100">
+          <div class="card-body">
+            <h6 class="mb-3">{{ sales_text.frame_popularity_title }}</h6>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>{{ sales_text.table_usage_target }}</th>
+                    <th>{{ sales_text.table_usage_count }}</th>
+                    <th>{{ sales_text.table_usage_revenue }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in sales_frame_popularity_rows %}
+                  <tr>
+                    <td>{{ row.label }}</td>
+                    <td>{{ row.count }}</td>
+                    <td>{{ dashboard_ui.currency_unit }} {{ row.amount }}</td>
+                  </tr>
+                  {% empty %}
+                  <tr><td colspan="3" class="text-center text-muted py-3">{{ sales_text.empty }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card card-soft h-100">
+          <div class="card-body">
+            <h6 class="mb-3">{{ sales_text.ai_prompt_popularity_title }}</h6>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>{{ sales_text.table_usage_target }}</th>
+                    <th>{{ sales_text.table_usage_count }}</th>
+                    <th>{{ sales_text.table_usage_revenue }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in sales_ai_prompt_rows %}
+                  <tr>
+                    <td>{{ row.label }}</td>
+                    <td>{{ row.count }}</td>
+                    <td>{{ dashboard_ui.currency_unit }} {{ row.amount }}</td>
+                  </tr>
+                  {% empty %}
+                  <tr><td colspan="3" class="text-center text-muted py-3">{{ sales_text.ai_empty }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="card card-soft mb-3">
       <div class="card-body">
         <h6 class="mb-2">{{ sales_text.ai_billing_title }}</h6>
@@ -188,6 +249,8 @@
             <th>{{ sales_text.table_session }}</th>
             <th>{{ sales_text.table_layout }}</th>
             <th>{{ sales_text.table_mode }}</th>
+            <th>{{ sales_text.table_frame_design }}</th>
+            <th>{{ sales_text.table_ai_prompt_title }}</th>
             <th>{{ sales_text.table_total }}</th>
             <th>{{ sales_text.table_payment_method }}</th>
             <th>{{ sales_text.table_cash }}</th>
@@ -206,10 +269,12 @@
             <td><code>{{ s.session_id }}</code></td>
             <td>{{ s.layout_id }}</td>
             <td>
-              {% with m=s.meta.compose_mode|default:"normal" %}
+              {% with m=s.dashboard_compose_mode|default:"normal" %}
                 {% if m == "ai" %}{{ sales_text.mode_ai }}{% elif m == "celebrity" %}{{ sales_text.mode_celebrity }}{% else %}{{ sales_text.mode_normal }}{% endif %}
               {% endwith %}
             </td>
+            <td>{{ s.dashboard_frame_design_label }}</td>
+            <td>{{ s.dashboard_ai_prompt_title }}</td>
             <td>{{ dashboard_ui.currency_unit }} {{ s.price_total }}</td>
             <td>{{ s.dashboard_payment_method_label }}</td>
             <td>{{ s.dashboard_amount_cash }}</td>
@@ -250,7 +315,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="12" class="text-center text-muted py-4">{{ sales_text.empty }}</td></tr>
+          <tr><td colspan="15" class="text-center text-muted py-4">{{ sales_text.empty }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
